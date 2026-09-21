@@ -1,0 +1,18 @@
+facts:
+  fact_demo_001:
+    type: experience
+    statement:
+      pt-BR: "Desenvolvimento de plugins personalizados para WordPress."
+      en-US: "Developed custom WordPress plugins."
+    tags: [wordpress, php, plugin-development]
+    source: demo-fixture
+    verified: true
+  fact_demo_002:
+    type: technology
+    statement:
+      pt-BR: "Experiência com WooCommerce e integrações REST."
+      en-US: "Experience with WooCommerce and REST integrations."
+    tags: [woocommerce, rest, api, integrations]
+    source: demo-fixture
+    verified: true
+

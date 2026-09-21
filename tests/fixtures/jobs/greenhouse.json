@@ -1,0 +1,10 @@
+{
+  "id": 12345,
+  "title": "Senior WordPress Developer",
+  "company_name": "Example Labs",
+  "absolute_url": "https://boards.greenhouse.io/example/jobs/12345",
+  "location": {"name": "Remote - Brazil"},
+  "content": "<p>We are looking for a Senior WordPress Developer with strong experience in WordPress, PHP and WooCommerce.</p><p>Experience with REST API, Git and Docker is preferred. You will build custom plugins and integrations for our platform.</p>",
+  "updated_at": "2026-09-20T12:00:00Z"
+}
+

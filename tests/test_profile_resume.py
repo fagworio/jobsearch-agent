@@ -1,0 +1,34 @@
+from pathlib import Path
+
+from jobsearch_agent.models import Job, Resume, ResumeClaim
+from jobsearch_agent.profile import load_facts, load_profile, validate_facts as validate_profile_facts
+from jobsearch_agent.resume import validate_ats, validate_facts
+
+
+ROOT = Path(__file__).parents[1]
+
+
+def test_demo_profile_and_locked_facts_are_valid():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    assert profile.demo is True
+    assert validate_profile_facts(profile, facts) == []
+
+
+def test_unsupported_claim_is_blocked():
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    resume = Resume(
+        id="r", job_id="j", language="en-US", header={"name": "Candidate"}, summary="summary",
+        skills=[], experience=[{"role": "Developer", "company": "Co", "bullets": ["Improved conversion by 35%"], "fact_ids": ["fact_demo_001"]}],
+        claims=[ResumeClaim("Improved conversion by 35%", ["fact_demo_001"])],
+    )
+    result = validate_facts(resume, facts)
+    assert not result.valid
+    assert result.code == "RESUME_VALIDATION_FAILED"
+
+
+def test_ats_validator_requires_contact_and_experience():
+    result = validate_ats(Resume(id="r", job_id="j", language="en-US", header={}, summary="", skills=[], experience=[]))
+    assert not result.valid
+    assert len(result.errors) >= 3
+
