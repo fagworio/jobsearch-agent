@@ -8,6 +8,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -185,8 +186,8 @@ class JobSpyAdapter:
         return jobs
 
 
-ADAPTERS: tuple[SourceAdapter, ...] = (GreenhouseAdapter(), LeverAdapter(), AshbyAdapter(), GenericAdapter())
 JOBSPY = JobSpyAdapter()
+ADAPTERS: tuple[SourceAdapter, ...] = (GreenhouseAdapter(), LeverAdapter(), AshbyAdapter(), JOBSPY, GenericAdapter())
 
 
 def choose_adapter(url: str, payload: dict[str, Any] | None = None) -> SourceAdapter:
@@ -223,7 +224,7 @@ def fetch_payload(url: str, timeout: float = 20.0) -> dict[str, Any]:
                 payloads.extend(data if isinstance(data, list) else [data])
             except (json.JSONDecodeError, TypeError):
                 continue
-        job_posting = next((item for item in payloads if isinstance(item, dict) and (item.get("@type") == "JobPosting" or "JobPosting" in item.get("@type", []))), None)
+        job_posting = next((item for item in payloads if isinstance(item, dict) and (item.get("@type") == "JobPosting" or isinstance(item.get("@type"), list) and "JobPosting" in item["@type"])), None)
     else:
         parser = JsonLdParser()
         parser.feed(html_body)
@@ -243,9 +244,27 @@ def normalize_payload(payload: dict[str, Any], url: str = "") -> Job:
 
 
 def canonical_job_key(job: Job) -> str:
-    if job.source and job.external_id:
-        return f"source:{job.source}:{job.external_id}"
-    if job.url:
-        return f"url:{job.url.rstrip('/').lower()}"
-    normalized = re.sub(r"\W+", " ", f"{job.company} {job.title} {job.location}".lower()).strip()
-    return f"text:{normalized}"
+    return identity_candidates(job)[0]
+
+
+def _canonical_url(url: str) -> str:
+    parsed = urlsplit(url.strip())
+    if not parsed.netloc:
+        return url.rstrip("/").lower()
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
+
+
+def _normalized_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", value or "").lower()).strip()
+
+
+def identity_candidates(job: Job) -> list[str]:
+    """Identidades em camadas: source, URL, texto e hash da descrição."""
+    raw = job.raw_payload or {}
+    platform = _text(raw.get("site") or raw.get("source_platform") or raw.get("job_source"))
+    source_key = f"source:{job.source}:{platform + ':' if platform else ''}{job.external_id}" if job.external_id else ""
+    url = _canonical_url(job.url or _text(raw.get("job_url") or raw.get("hostedUrl") or raw.get("jobUrl")))
+    text_key = _normalized_text(f"{job.company}|{job.title}|{job.location}")
+    description_key = hashlib.sha256(_normalized_text(job.description).encode("utf-8")).hexdigest()
+    candidates = [item for item in (source_key, f"url:{url}" if url else "", f"text:{text_key}" if text_key.strip("|") else "", f"description:{description_key}" if job.description else "") if item]
+    return candidates or [f"generated:{job.id}"]

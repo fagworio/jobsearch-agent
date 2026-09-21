@@ -119,7 +119,7 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
         job.preferred_requirements = list(analysis.preferred_skills)
         strategy = build_strategy(job, analysis, fit, profile)
         selected = select_fact_ids(job, strategy, profile, facts)
-        resume = generate_resume(job, strategy, profile, facts, selected)
+        resume = generate_resume(job, strategy, profile, facts, selected, provider_for(settings))
         validate_contract("job", job)
         validate_contract("analysis", analysis)
         validate_contract("fit", fit)

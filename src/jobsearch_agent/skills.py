@@ -56,6 +56,8 @@ class SkillRegistry:
             values = (skill.key, skill.label, *skill.aliases)
             if any(candidate == normalize(item) for item in values):
                 return skill
+        if len(candidate) <= 3:
+            return None
         scored = max(((self._score(candidate, alias), skill) for skill in self.skills for alias in (skill.label, *skill.aliases)), key=lambda item: item[0], default=(0, None))
         return scored[1] if scored[0] >= threshold else None
 
@@ -77,7 +79,7 @@ class SkillRegistry:
             # Tenta janelas curtas para variações como “RESTful APIs”.
             words = re.findall(r"[a-z0-9.+#-]+", lowered)
             for size in range(1, min(4, len(words)) + 1):
-                if any(self._score(normalize(" ".join(words[index:index + size])), normalize(alias)) >= threshold for index in range(len(words) - size + 1) for alias in aliases):
+                if any(len(normalize(alias)) > 3 and len(normalize(" ".join(words[index:index + size]))) > 3 and self._score(normalize(" ".join(words[index:index + size])), normalize(alias)) >= threshold for index in range(len(words) - size + 1) for alias in aliases):
                     found.append(skill.label)
                     break
         return found

@@ -27,6 +27,13 @@ def skill_registry() -> SkillRegistry:
     return SkillRegistry.load()
 
 
+@lru_cache(maxsize=1)
+def language_detector():
+    if not (LanguageDetectorBuilder and LinguaLanguage):
+        return None
+    return LanguageDetectorBuilder.from_languages(LinguaLanguage.PORTUGUESE, LinguaLanguage.ENGLISH).build()
+
+
 def _normalized_language(value: str) -> tuple[str, str, str]:
     lowered = value.lower().replace("_", "-")
     if lowered.startswith("pt"):
@@ -40,9 +47,9 @@ def detect_language(text: str, override: str | None = None) -> LanguageResult:
     if override:
         language, locale, country = _normalized_language(override)
         return LanguageResult(language, locale, country, 1.0, "override")
-    if LanguageDetectorBuilder and LinguaLanguage:
+    detector = language_detector()
+    if detector:
         try:
-            detector = LanguageDetectorBuilder.from_languages(LinguaLanguage.PORTUGUESE, LinguaLanguage.ENGLISH).build()
             detected = detector.detect_language_of(text)
             if detected is not None:
                 language, locale, country = _normalized_language(detected.iso_code_639_1.name.lower())
@@ -148,6 +155,71 @@ def _skill_matches(skill: str, profile_values: Iterable[str]) -> bool:
     return any(skill_registry().matches(skill, value) for value in profile_values)
 
 
+LANGUAGE_LEVELS = {
+    "basic": 0.3,
+    "beginner": 0.3,
+    "intermediate": 0.6,
+    "advanced": 0.85,
+    "fluent": 1.0,
+    "native": 1.0,
+}
+
+
+def _profile_language_level(profile: CareerProfile, language: str) -> float:
+    aliases = {"en": {"english", "en", "inglês", "ingles"}, "pt": {"portuguese", "pt", "português", "portugues"}}
+    keys = aliases.get(language, set())
+    for key, value in profile.languages.items():
+        if key.lower() in keys:
+            level = value.get("level", "") if isinstance(value, dict) else value
+            return LANGUAGE_LEVELS.get(str(level).lower(), 0.0)
+    return 0.0
+
+
+def _required_language_level(analysis: JobAnalysis, language: str) -> float:
+    text = " ".join(analysis.language_requirements).lower()
+    if language == "en" and not text:
+        # A vaga predominantemente em inglês exige capacidade operacional, mas
+        # não presume fluência nativa sem declarar isso.
+        return 0.6
+    for label, score in (("native", 1.0), ("fluent", 1.0), ("advanced", 0.85), ("intermediate", 0.6), ("basic", 0.3)):
+        if label in text or (language == "en" and label in text) or (language == "pt" and label in text):
+            return score
+    return 0.6 if text else 0.5
+
+
+def _language_fit(analysis: JobAnalysis, profile: CareerProfile) -> tuple[float, bool]:
+    language = analysis.language.language
+    if language not in {"en", "pt"}:
+        return 0.5, False
+    candidate = _profile_language_level(profile, language)
+    required = _required_language_level(analysis, language)
+    if candidate <= 0:
+        return 0.0, True
+    return round(min(1.0, candidate / required), 3), candidate < required * 0.75
+
+
+def _location_fit(job: Job, profile: CareerProfile) -> tuple[float, bool]:
+    preferences = profile.preferences
+    location = f"{job.remote_type} {job.location}".lower()
+    is_remote = any(term in location for term in ("remote", "remoto", "distributed", "work from home"))
+    if is_remote:
+        return (1.0 if preferences.get("remote", False) else 0.5), False
+    allowed = [str(item).lower() for item in preferences.get("allowed_locations", []) if item]
+    job_location = job.location.lower()
+    if not job_location:
+        return 0.5, False
+    if any(item in job_location or job_location in item for item in allowed):
+        return 1.0, False
+    if preferences.get("relocation", False):
+        return 0.6, False
+    # Vaga presencial/híbrida fora das localidades permitidas.
+    if any(term in location for term in ("on-site", "onsite", "presencial", "hybrid", "híbrido")):
+        return 0.25, True
+    if preferences.get("remote", False):
+        return 0.25, True
+    return 0.5, False
+
+
 def _ratio(found: Iterable[str], wanted: Iterable[str]) -> float:
     wanted_set = {item.lower() for item in wanted}
     return 1.0 if not wanted_set else len({item.lower() for item in found} & wanted_set) / len(wanted_set)
@@ -163,13 +235,17 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     required_match = _ratio(matched, required)
     preferred_match = _ratio(matched, preferred)
     experience_match = 1.0 if profile.experiences else 0.0
-    language_match = 1.0 if analysis.language.language in {"pt", "en"} else 0.5
-    location_match = 1.0 if not job.location or bool(profile.preferences.get("remote", False)) else 0.5
+    language_match, language_blocker = _language_fit(analysis, profile)
+    location_match, location_blocker = _location_fit(job, profile)
     blockers = []
     if analysis.work_authorization == "unknown":
         blockers.append("work_authorization_unknown")
+    if language_blocker:
+        blockers.append("language_mismatch")
+    if location_blocker:
+        blockers.append("location_mismatch")
     score = round(100 * (0.45 * required_match + 0.15 * preferred_match + 0.15 * experience_match + 0.15 * language_match + 0.10 * location_match), 2)
-    explanation = [f"Required coverage: {required_match:.0%}.", f"Preferred coverage: {preferred_match:.0%}."]
+    explanation = [f"Required coverage: {required_match:.0%}.", f"Preferred coverage: {preferred_match:.0%}.", f"Language match: {language_match:.0%}.", f"Location match: {location_match:.0%}."]
     if missing_required:
         explanation.append("Missing required skills: " + ", ".join(missing_required))
     return FitResult(score, required_match, preferred_match, experience_match, language_match, location_match, matched, missing_required, missing_preferred, blockers, explanation)

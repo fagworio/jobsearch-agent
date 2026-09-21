@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
+try:
+    from pydantic.dataclasses import dataclass as domain_dataclass
+except ImportError:  # pragma: no cover - modo mínimo sem dependências instaladas
+    domain_dataclass = dataclass
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -23,7 +28,7 @@ class JobState(StrEnum):
     NEEDS_HUMAN = "NEEDS_HUMAN"
 
 
-@dataclass
+@domain_dataclass
 class Job:
     id: str
     source: str
@@ -47,7 +52,7 @@ class Job:
     state: JobState = JobState.DISCOVERED
 
 
-@dataclass
+@domain_dataclass
 class Fact:
     id: str
     type: str
@@ -57,7 +62,7 @@ class Fact:
     verified: bool = True
 
 
-@dataclass
+@domain_dataclass
 class Experience:
     id: str
     company: str
@@ -67,7 +72,7 @@ class Experience:
     fact_ids: list[str] = field(default_factory=list)
 
 
-@dataclass
+@domain_dataclass
 class CareerProfile:
     identity: dict[str, str]
     professional_summary: dict[str, str]
@@ -79,7 +84,7 @@ class CareerProfile:
     version: str = "1"
 
 
-@dataclass
+@domain_dataclass
 class LanguageResult:
     language: str
     locale: str
@@ -88,7 +93,7 @@ class LanguageResult:
     method: str
 
 
-@dataclass
+@domain_dataclass
 class JobAnalysis:
     language: LanguageResult
     required_skills: list[str] = field(default_factory=list)
@@ -107,7 +112,7 @@ class JobAnalysis:
     explanation: list[str] = field(default_factory=list)
 
 
-@dataclass
+@domain_dataclass
 class FitResult:
     score: float
     required_match: float
@@ -122,7 +127,7 @@ class FitResult:
     explanation: list[str] = field(default_factory=list)
 
 
-@dataclass
+@domain_dataclass
 class ResumeStrategy:
     target_role: str
     language: str
@@ -135,14 +140,14 @@ class ResumeStrategy:
     template: str = "ats"
 
 
-@dataclass
+@domain_dataclass
 class ResumeClaim:
     claim: str
     supported_by: list[str]
     valid: bool = True
 
 
-@dataclass
+@domain_dataclass
 class Resume:
     id: str
     job_id: str
@@ -156,7 +161,7 @@ class Resume:
     template: str = "ats"
 
 
-@dataclass
+@domain_dataclass
 class ValidationResult:
     valid: bool
     code: str

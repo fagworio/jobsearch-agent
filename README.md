@@ -14,7 +14,8 @@ desenvolvimento sem instalação, prefixe os comandos com `PYTHONPATH=src`.
 As dependências principais incluem Pydantic, httpx, BeautifulSoup, Lingua, RapidFuzz e
 python-docx. A integração JobSpy é opcional e pode ser instalada com o grupo de discovery
 (`poetry install --with discovery`). Playwright permanece reservado para a futura camada de
-aplicação ATS.
+aplicação ATS. O código mantém um modo mínimo para executar fixtures em ambientes sem as
+dependências opcionais instaladas; a instalação de produção deve usar o ambiente Poetry.
 
 ```bash
 PYTHONPATH=src python3 -m jobsearch_agent.cli --help

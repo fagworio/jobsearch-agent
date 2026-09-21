@@ -46,15 +46,37 @@ try:
         company: str
         title: str
         description: str
+        location: str = ""
+        country: str = ""
+        remote_type: str = "unknown"
+        employment_type: str = "unknown"
+        salary: str = ""
+        currency: str = ""
         language: str = "unknown"
         url: str = ""
+        posted_at: str = ""
+        discovered_at: str = ""
+        requirements: list[str] = Field(default_factory=list)
+        preferred_requirements: list[str] = Field(default_factory=list)
         raw_payload: dict[str, Any] = Field(default_factory=dict)
+        state: str = "DISCOVERED"
 
     class JobAnalysisSchema(BaseModel):
         language: LanguageResultSchema
         required_skills: list[str] = Field(default_factory=list)
         preferred_skills: list[str] = Field(default_factory=list)
+        years_of_experience: str = ""
+        education: list[str] = Field(default_factory=list)
+        language_requirements: list[str] = Field(default_factory=list)
+        location_requirements: list[str] = Field(default_factory=list)
+        work_authorization: str = "unknown"
+        employment_type: str = "unknown"
+        technologies: list[str] = Field(default_factory=list)
         responsibilities: list[str] = Field(default_factory=list)
+        seniority: str = "unknown"
+        salary: str = ""
+        domain: str = ""
+        explanation: list[str] = Field(default_factory=list)
 
     class FitResultSchema(BaseModel):
         score: float
@@ -66,6 +88,8 @@ try:
         matched_skills: list[str] = Field(default_factory=list)
         missing_required: list[str] = Field(default_factory=list)
         missing_preferred: list[str] = Field(default_factory=list)
+        blockers: list[str] = Field(default_factory=list)
+        explanation: list[str] = Field(default_factory=list)
 
     class ResumeStrategySchema(BaseModel):
         target_role: str
@@ -75,6 +99,8 @@ try:
         secondary: list[str] = Field(default_factory=list)
         deprioritize: list[str] = Field(default_factory=list)
         keywords: list[str] = Field(default_factory=list)
+        max_pages: int = 2
+        template: str = "ats"
 
     class ResumeSchema(BaseModel):
         id: str
@@ -84,6 +110,9 @@ try:
         summary: str
         skills: list[str] = Field(default_factory=list)
         experience: list[dict[str, Any]] = Field(default_factory=list)
+        education: list[dict[str, Any]] = Field(default_factory=list)
+        claims: list[dict[str, Any]] = Field(default_factory=list)
+        template: str = "ats"
 
 except ImportError:  # pragma: no cover - fallback do ambiente mínimo
     class ExternalJobSchema:  # type: ignore[no-redef]

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from jobsearch_agent.models import Job, Resume, ResumeClaim
 from jobsearch_agent.profile import load_facts, load_profile, validate_facts as validate_profile_facts
-from jobsearch_agent.resume import validate_ats, validate_facts
+from jobsearch_agent.resume import cluster_fact_ids, validate_ats, validate_facts
 from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit
 from jobsearch_agent.resume import generate_resume, select_fact_ids
 from jobsearch_agent.sources import normalize_payload
@@ -29,6 +29,19 @@ def test_unsupported_claim_is_blocked():
     result = validate_facts(resume, facts)
     assert not result.valid
     assert result.code == "RESUME_VALIDATION_FAILED"
+    assert result.details["unsupported_claim_atoms"]
+
+
+def test_validator_rejects_unfounded_metric_even_when_words_overlap():
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    resume = Resume(
+        id="r", job_id="j", language="en-US", header={"name": "Candidate"}, summary="summary",
+        skills=[], experience=[{"role": "Developer", "company": "Co", "bullets": ["Developed WordPress plugins that increased revenue by 80%"], "fact_ids": ["fact_demo_001"]}],
+        claims=[ResumeClaim("Developed WordPress plugins that increased revenue by 80%", ["fact_demo_001"])],
+    )
+    result = validate_facts(resume, facts)
+    assert not result.valid
+    assert "number:80%" in result.details["unsupported_claim_atoms"][0]["atoms"]
 
 
 def test_ats_validator_requires_contact_and_experience():
@@ -45,5 +58,12 @@ def test_dynamic_rewrite_changes_positioning_but_keeps_fact_support():
     analysis = analyze_requirements(job)
     strategy = build_strategy(job, analysis, calculate_fit(job, analysis, profile), profile)
     resume = generate_resume(job, strategy, profile, facts, select_fact_ids(job, strategy, profile, facts))
-    assert resume.experience[0]["bullets"] == ["Developed custom WordPress plugins and REST integrations with WooCommerce."]
+    assert len(resume.experience[0]["bullets"]) == 2
+    assert set(resume.experience[0]["fact_ids"]) == {"fact_demo_001", "fact_demo_002"}
     assert validate_facts(resume, facts).valid
+
+
+def test_fact_clustering_preserves_every_selected_id():
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    clusters = cluster_fact_ids(["fact_demo_001", "fact_demo_002"], facts)
+    assert sorted(item for cluster in clusters for item in cluster) == ["fact_demo_001", "fact_demo_002"]

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from jobsearch_agent.models import Job
 from jobsearch_agent.persistence import Database
-from jobsearch_agent.sources import canonical_job_key
+from jobsearch_agent.sources import JobSpyAdapter, canonical_job_key
 
 
 def test_sqlite_round_trip_and_deduplication(tmp_path: Path):
@@ -16,3 +16,13 @@ def test_sqlite_round_trip_and_deduplication(tmp_path: Path):
     assert db.get_job(first.id).description == "updated"
     db.close()
 
+
+def test_cross_source_identity_deduplicates_direct_url(tmp_path: Path):
+    db = Database(tmp_path / "jobs.db")
+    direct = Job(id="direct", source="greenhouse", external_id="123", company="Acme", title="Engineer", description="Build APIs", url="https://boards.greenhouse.io/acme/jobs/123", location="Remote")
+    db.save_job(direct, canonical_job_key(direct), direct.raw_payload)
+    jobspy = JobSpyAdapter().normalize({"id": "abc", "site": "indeed", "company": "Acme", "title": "Engineer", "description": "Build APIs", "job_url": "https://boards.greenhouse.io/acme/jobs/123", "location": "Remote"})
+    saved = db.save_job(jobspy, canonical_job_key(jobspy), jobspy.raw_payload)
+    assert saved.id == "direct"
+    assert len(db.list_jobs()) == 1
+    db.close()

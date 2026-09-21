@@ -9,6 +9,7 @@ from typing import Any
 
 from .models import Job, JobState, to_dict
 from .serialization import canonical_json
+from .sources import identity_candidates
 
 
 SCHEMA = """
@@ -26,6 +27,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS job_identities (
+  identity TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id)
 );
 CREATE TABLE IF NOT EXISTS analyses (
   job_id TEXT PRIMARY KEY REFERENCES jobs(id),
@@ -54,6 +59,7 @@ class Database:
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
         self.connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (1)")
+        self.connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (2)")
         self.connection.commit()
 
     def close(self) -> None:
@@ -61,9 +67,15 @@ class Database:
 
     def save_job(self, job: Job, canonical_key: str, raw_payload: dict[str, Any]) -> Job:
         payload = canonical_json(raw_payload)
+        identities = identity_candidates(job)
         existing = self.connection.execute(
             "SELECT id FROM jobs WHERE canonical_key = ?", (canonical_key,)
         ).fetchone()
+        if not existing:
+            placeholders = ",".join("?" for _ in identities)
+            existing = self.connection.execute(
+                f"SELECT job_id AS id FROM job_identities WHERE identity IN ({placeholders}) ORDER BY rowid LIMIT 1", identities
+            ).fetchone()
         if existing:
             job.id = str(existing[0])
         data = canonical_json(job)
@@ -78,6 +90,8 @@ class Database:
                 (job.id, job.source, job.external_id, canonical_key, job.company, job.title,
                  job.url, job.state.value, payload, data, job.discovered_at, job.discovered_at),
             )
+        for identity in identities:
+            self.connection.execute("INSERT OR IGNORE INTO job_identities(identity, job_id) VALUES (?,?)", (identity, job.id))
         self.connection.commit()
         return job
 

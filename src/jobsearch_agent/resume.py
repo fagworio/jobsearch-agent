@@ -11,7 +11,9 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from .llm import LLMProvider, LLMRequest
 from .models import CareerProfile, Fact, Job, Resume, ResumeClaim, ResumeStrategy, ValidationResult
+from .skills import SkillRegistry
 
 try:
     from docx import Document
@@ -25,32 +27,104 @@ def _statement(fact: Fact, language: str) -> str:
     return fact.statements.get(language) or fact.statements.get("en-US") or next(iter(fact.statements.values()))
 
 
-def select_fact_ids(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
-    wanted = {term.lower() for term in strategy.keywords + strategy.focus}
-    selected: list[str] = []
+STOPWORDS = {
+    "a", "an", "and", "as", "at", "by", "com", "da", "de", "do", "e", "for", "in", "na", "no", "of", "on", "or", "para", "the", "to", "um", "uma", "with",
+}
+NUMBER_RE = re.compile(r"(?<![\w])(?:\$|€|R\$)?\s*\d+(?:[.,]\d+)?\s*%?(?![\w])")
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-záéíóúãõç0-9][a-záéíóúãõç0-9+.#-]*", text.lower())
+
+
+def _token_supported(token: str, corpus_tokens: set[str]) -> bool:
+    if token in STOPWORDS or len(token) <= 2:
+        return True
+    if token in corpus_tokens:
+        return True
+    # Permite flexões simples sem liberar novos conceitos: developer/developed,
+    # integrations/integration e equivalentes compartilham raiz lexical.
+    if len(token) >= 7 and any(len(other) >= 7 and token[:6] == other[:6] for other in corpus_tokens):
+        return True
+    return False
+
+
+def rank_fact_ids(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
+    registry = SkillRegistry.load()
+    wanted = strategy.keywords + strategy.focus + strategy.secondary
+    target = f"{job.title} {job.description}".lower()
+    scored: list[tuple[float, int, str]] = []
+    order = 0
     for experience in profile.experiences:
         for fact_id in experience.fact_ids:
             fact = facts.get(fact_id)
-            if fact and (not wanted or wanted & {tag.lower() for tag in fact.tags} or any(term in _statement(fact, strategy.language).lower() for term in wanted)):
-                selected.append(fact_id)
-    return selected or [fact_id for experience in profile.experiences for fact_id in experience.fact_ids]
+            if not fact:
+                continue
+            score = 0.0
+            for tag in fact.tags:
+                if any(registry.matches(tag, term) for term in wanted):
+                    score += 4.0
+                if tag.lower() in target:
+                    score += 1.0
+            statement = _statement(fact, strategy.language).lower()
+            score += sum(0.5 for term in wanted if term.lower() in statement or term.lower() in target and term.lower() in statement)
+            scored.append((score, order, fact_id))
+            order += 1
+    return [fact_id for _, _, fact_id in sorted(scored, key=lambda item: (-item[0], item[1]))]
 
 
-def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts: dict[str, Fact]) -> tuple[str, list[str]]:
-    """Reescreve fatos em contexto sem adicionar conceitos fora dos facts."""
+def select_fact_ids(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], max_facts: int = 8) -> list[str]:
+    ranked = rank_fact_ids(job, strategy, profile, facts)
+    selected = ranked[:max_facts]
+    if selected:
+        return selected
+    return [fact_id for experience in profile.experiences for fact_id in experience.fact_ids if fact_id in facts][:max_facts]
+
+
+def cluster_fact_ids(fact_ids: list[str], facts: dict[str, Fact], max_per_claim: int = 2) -> list[list[str]]:
+    """Agrupa facts pequenos sem jamais descartar um ID selecionado."""
+    clusters: list[list[str]] = []
+    for fact_id in fact_ids:
+        tags = {tag.lower() for tag in facts[fact_id].tags}
+        target = next((cluster for cluster in clusters if len(cluster) < max_per_claim and tags & {tag.lower() for item in cluster for tag in facts[item].tags}), None)
+        if target is None:
+            clusters.append([fact_id])
+        else:
+            target.append(fact_id)
+    return clusters
+
+
+def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts: dict[str, Fact], provider: LLMProvider | None = None) -> tuple[str, list[str]]:
+    """Monta um claim contextual preservando todos os facts do grupo.
+
+    Quando configurado, o LLM recebe somente os facts selecionados e deve
+    devolver ``text`` + ``supported_by``. Qualquer resposta que omita um fact
+    selecionado ou não tenha estrutura válida cai no compositor determinístico.
+    """
     language = strategy.language
     statements = [_statement(facts[fact_id], language) for fact_id in fact_ids]
-    tags = {tag.lower() for fact_id in fact_ids for tag in facts[fact_id].tags}
-    target = f"{job.title} {job.description}".lower()
-    integration_context = bool(tags & {"rest", "api", "integrations", "integration"}) and any(term in target for term in ("backend", "integration", "rest api", "platform"))
-    if len(fact_ids) >= 2 and integration_context:
-        if language == "pt-BR":
-            return "Desenvolveu plugins personalizados para WordPress e integrações REST com WooCommerce.", fact_ids
-        return "Developed custom WordPress plugins and REST integrations with WooCommerce.", fact_ids
-    return statements[0] if statements else "", fact_ids[:1]
+    if provider and fact_ids:
+        response = provider.complete(LLMRequest(
+            system="Rewrite only the supplied facts for the target role. Return JSON with text and supported_by. Never add metrics, technologies, entities or responsibilities.",
+            user="\n".join([
+                f"Target role: {job.title}",
+                f"Language: {language}",
+                f"Focus: {', '.join(strategy.focus + strategy.secondary)}",
+                "Facts:",
+                *[f"{fact_id}: {_statement(facts[fact_id], language)}" for fact_id in fact_ids],
+            ]),
+            schema="{text: string, supported_by: string[]}",
+        ))
+        text = response.get("text") if isinstance(response, dict) else None
+        support = response.get("supported_by") if isinstance(response, dict) else None
+        if isinstance(text, str) and text.strip() and isinstance(support, list) and set(support) == set(fact_ids):
+            return text.strip(), list(support)
+    if len(statements) > 1:
+        return "; ".join(statement.rstrip(".") for statement in statements) + ".", fact_ids
+    return statements[0] if statements else "", fact_ids
 
 
-def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], selected_ids: list[str]) -> Resume:
+def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], selected_ids: list[str], provider: LLMProvider | None = None) -> Resume:
     language = strategy.language
     claims: list[ResumeClaim] = []
     summary = profile.professional_summary.get(language) or profile.professional_summary.get("en-US", "")
@@ -61,10 +135,10 @@ def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
         exp_facts = [fact_id for fact_id in experience.fact_ids if fact_id in selected_ids]
         if not exp_facts:
             continue
-        grouped_ids = [exp_facts] if len(exp_facts) >= 2 else [[fact_id] for fact_id in exp_facts]
+        grouped_ids = cluster_fact_ids(exp_facts, facts)
         bullets: list[str] = []
         for group in grouped_ids:
-            bullet, support = rewrite_claim(job, strategy, group, facts)
+            bullet, support = rewrite_claim(job, strategy, group, facts, provider)
             bullets.append(bullet)
             claims.append(ResumeClaim(bullet, support, True))
         experience_rows.append({"company": experience.company, "role": experience.role, "start_date": experience.start_date, "end_date": experience.end_date, "bullets": bullets, "fact_ids": exp_facts})
@@ -77,19 +151,31 @@ def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
 
 def validate_facts(resume: Resume, facts: dict[str, Fact]) -> ValidationResult:
     errors: list[str] = []
+    details: dict[str, Any] = {"unsupported_claim_atoms": [], "claims": []}
+    registry = SkillRegistry.load()
     for claim in resume.claims:
         supported = [fact_id for fact_id in claim.supported_by if fact_id in facts and facts[fact_id].verified]
         if not supported:
             claim.valid = False
             errors.append(f"unsupported claim: {claim.claim}")
+            details["unsupported_claim_atoms"].append({"claim": claim.claim, "atoms": ["missing_fact_support"]})
             continue
         corpus = " ".join(_statement(facts[fact_id], resume.language).lower() for fact_id in supported)
-        normalized_claim = re.sub(r"[^a-z0-9áéíóúãõç ]", " ", claim.claim.lower())
-        important = [token for token in normalized_claim.split() if len(token) > 3]
-        if important and not any(token in corpus for token in important):
+        corpus_tokens = set(_tokens(corpus))
+        unsupported_atoms: list[str] = []
+        claim_numbers = {number.replace(" ", "") for number in NUMBER_RE.findall(claim.claim)}
+        corpus_numbers = {number.replace(" ", "") for number in NUMBER_RE.findall(corpus)}
+        unsupported_atoms.extend(f"number:{number}" for number in sorted(claim_numbers - corpus_numbers))
+        unsupported_atoms.extend(token for token in _tokens(claim.claim) if not _token_supported(token, corpus_tokens))
+        claim_skills = set(registry.extract(claim.claim))
+        corpus_skills = set(registry.extract(corpus))
+        unsupported_atoms.extend(f"technology:{skill}" for skill in sorted(claim_skills - corpus_skills))
+        if unsupported_atoms:
             claim.valid = False
             errors.append(f"claim does not match supporting facts: {claim.claim}")
-    return ValidationResult(not errors, "RESUME_VALIDATION_FAILED" if errors else "OK", errors)
+            details["unsupported_claim_atoms"].append({"claim": claim.claim, "atoms": sorted(set(unsupported_atoms))})
+        details["claims"].append({"claim": claim.claim, "supported_by": supported, "valid": claim.valid})
+    return ValidationResult(not errors, "RESUME_VALIDATION_FAILED" if errors else "OK", errors, details=details)
 
 
 def validate_ats(resume: Resume) -> ValidationResult:
@@ -106,9 +192,13 @@ def validate_ats(resume: Resume) -> ValidationResult:
 
 
 def render_text(resume: Resume) -> str:
-    lines = [resume.header.get("name", ""), resume.header.get("email", ""), resume.header.get("location", ""), "", "SUMMARY", resume.summary, "", "SKILLS", ", ".join(resume.skills), "", "EXPERIENCE"]
+    labels = {
+        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "present": "Atual"},
+        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"},
+    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"})
+    lines = [resume.header.get("name", ""), resume.header.get("email", ""), resume.header.get("location", ""), "", labels["summary"], resume.summary, "", labels["skills"], ", ".join(resume.skills), "", labels["experience"]]
     for row in resume.experience:
-        dates = f"{row['start_date']} - {row['end_date'] or 'Present'}"
+        dates = f"{row['start_date']} - {row['end_date'] or labels['present']}"
         lines.extend([f"{row['role']} | {row['company']} | {dates}"] + [f"- {bullet}" for bullet in row["bullets"]] + [""])
     return "\n".join(line for line in lines if line is not None).strip() + "\n"
 
@@ -118,6 +208,10 @@ def _xml_text(text: str) -> str:
 
 
 def _render_docx_python_docx(resume: Resume, target: Path) -> Path:
+    labels = {
+        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "present": "Atual"},
+        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"},
+    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"})
     document = Document()
     section = document.sections[0]
     section.top_margin = Inches(0.75)
@@ -131,14 +225,14 @@ def _render_docx_python_docx(resume: Resume, target: Path) -> Path:
     contact = " | ".join(value for value in (resume.header.get("email", ""), resume.header.get("location", "")) if value)
     if contact:
         document.add_paragraph(contact)
-    document.add_heading("Summary", level=1)
+    document.add_heading(labels["summary"], level=1)
     document.add_paragraph(resume.summary)
-    document.add_heading("Skills", level=1)
+    document.add_heading(labels["skills"], level=1)
     document.add_paragraph(", ".join(resume.skills))
-    document.add_heading("Experience", level=1)
+    document.add_heading(labels["experience"], level=1)
     for row in resume.experience:
         document.add_heading(f"{row['role']} | {row['company']}", level=2)
-        document.add_paragraph(f"{row['start_date']} - {row['end_date'] or 'Present'}")
+        document.add_paragraph(f"{row['start_date']} - {row['end_date'] or labels['present']}")
         for bullet in row["bullets"]:
             document.add_paragraph(bullet, style="List Bullet")
     document.save(target)

@@ -36,6 +36,8 @@ def test_generic_json_ld_and_language_override():
     assert detect_language("We need experience with development and responsibilities").locale == "en-US"
     assert SkillRegistry.load().matches("RESTful APIs", "REST API")
     assert JOBSPY.can_handle("", {"source": "jobspy"})
+    jobspy_job = normalize_payload({"source": "jobspy", "site": "indeed", "id": "1", "title": "Engineer", "company": "Co", "description": "Build APIs", "job_url": "https://example.invalid/jobs/1"})
+    assert jobspy_job.source == "jobspy"
 
 
 def test_requirements_fit_and_strategy_do_not_promote_missing_preferred_skills():
@@ -58,6 +60,16 @@ def test_language_override_normalizes_language_and_locale():
     assert detect_language("", "en-US").language == "en"
     assert detect_language("", "en-US").locale == "en-US"
     assert detect_language("", "pt-BR").language == "pt"
+
+
+def test_location_and_language_fit_use_profile_capabilities():
+    payload = fixture("greenhouse.json")
+    job = normalize_payload(payload, payload["absolute_url"])
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    analysis = analyze_requirements(job)
+    fit = calculate_fit(job, analysis, profile)
+    assert fit.language_match == 1.0
+    assert fit.location_match == 1.0
 
 
 def test_configured_provider_can_enrich_structured_requirements_without_free_text_claims():
