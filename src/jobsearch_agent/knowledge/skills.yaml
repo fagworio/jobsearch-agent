@@ -1,0 +1,53 @@
+wordpress:
+  label: WordPress
+  aliases: [wordpress, wp]
+  categories: [cms, php]
+woocommerce:
+  label: WooCommerce
+  aliases: [woocommerce, woo commerce]
+  categories: [ecommerce, wordpress]
+php:
+  label: PHP
+  aliases: [php]
+  categories: [backend]
+python:
+  label: Python
+  aliases: [python, py]
+  categories: [backend]
+javascript:
+  label: JavaScript
+  aliases: [javascript, js, ecmascript]
+  categories: [frontend]
+typescript:
+  label: TypeScript
+  aliases: [typescript, ts]
+  categories: [frontend]
+react:
+  label: React
+  aliases: [react, reactjs, react.js]
+  categories: [frontend]
+rest_api:
+  label: REST API
+  aliases: [rest api, rest apis, restful api, restful apis, api integration, api integrations]
+  categories: [backend, integrations]
+docker:
+  label: Docker
+  aliases: [docker, containers, containerization]
+  categories: [devops]
+git:
+  label: Git
+  aliases: [git, version control]
+  categories: [tools]
+gutenberg:
+  label: Gutenberg
+  aliases: [gutenberg, wordpress editor, block editor]
+  categories: [wordpress, frontend]
+aws:
+  label: AWS
+  aliases: [aws, amazon web services]
+  categories: [cloud]
+sql:
+  label: SQL
+  aliases: [sql, postgresql, postgres, mysql]
+  categories: [database]
+

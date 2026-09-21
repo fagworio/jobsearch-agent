@@ -166,6 +166,8 @@ class ValidationResult:
 
 
 def to_dict(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return {key: to_dict(item) for key, item in value.model_dump(mode="json").items()}
     if isinstance(value, StrEnum):
         return value.value
     if hasattr(value, "__dataclass_fields__"):
@@ -175,4 +177,3 @@ def to_dict(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [to_dict(item) for item in value]
     return value
-

@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from .models import CareerProfile, Experience, Fact
+from .schemas import FactSchema, ProfileSchema
 
 
 class ProfileError(ValueError):
@@ -23,6 +24,7 @@ def _mapping(value: Any, label: str) -> dict[str, Any]:
 def load_profile(path: str | Path) -> CareerProfile:
     source = Path(path)
     data = _mapping(yaml.safe_load(source.read_text(encoding="utf-8")) or {}, "profile")
+    ProfileSchema.model_validate(data)
     identity = _mapping(data.get("identity"), "identity")
     summary = _mapping(data.get("professional_summary"), "professional_summary")
     raw_experiences = data.get("experience", [])
@@ -62,6 +64,7 @@ def load_facts(path: str | Path) -> dict[str, Fact]:
     result: dict[str, Fact] = {}
     for fact_id, raw in raw_facts.items():
         row = _mapping(raw, f"fact {fact_id}")
+        FactSchema.model_validate(row)
         statements = _mapping(row.get("statement"), f"fact {fact_id}.statement")
         result[str(fact_id)] = Fact(
             id=str(fact_id),
@@ -98,4 +101,3 @@ def validate_facts(profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
         if not fact.statements:
             errors.append(f"fact has no statements: {fact.id}")
     return errors
-

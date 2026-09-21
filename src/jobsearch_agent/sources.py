@@ -8,10 +8,20 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    httpx = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    BeautifulSoup = None
+
 from .models import Job, JobState, now_iso
+from .schemas import validate_external_job
 
 
 class SourceError(RuntimeError):
@@ -33,7 +43,7 @@ def _text(value: Any) -> str:
 
 
 def _external_id(url: str, payload: dict[str, Any]) -> str:
-    for key in ("id", "job_id", "requisition_id", "external_id"):
+    for key in ("id", "job_id", "requisition_id", "external_id", "job_url"):
         if payload.get(key):
             return _text(payload[key])
     match = re.search(r"(?:jobs|positions|postings)[/.-]([A-Za-z0-9_-]+)", url)
@@ -135,10 +145,48 @@ class GenericAdapter:
         organization = payload.get("hiringOrganization")
         if isinstance(organization, dict):
             normalized.setdefault("company", organization.get("name", ""))
+        location = payload.get("jobLocation")
+        if isinstance(location, list) and location:
+            location = location[0]
+        if isinstance(location, dict):
+            address = location.get("address", {})
+            normalized.setdefault("location", address.get("addressLocality") or address.get("addressRegion") or "")
+        normalized.setdefault("employment_type", payload.get("employmentType", ""))
         return _job(self.name, normalized, url or _text(payload.get("url")))
 
 
+class JobSpyAdapter:
+    """Adapter opcional: JobSpy descobre, o domínio normaliza e deduplica."""
+
+    name = "jobspy"
+
+    def can_handle(self, url: str, payload: dict[str, Any] | None = None) -> bool:
+        return bool(payload and str(payload.get("source", "")).startswith("jobspy"))
+
+    def normalize(self, payload: dict[str, Any], url: str = "") -> Job:
+        return _job(self.name, payload, url or _text(payload.get("job_url") or payload.get("job_url_direct")))
+
+    def search(self, query: str, *, sites: list[str] | None = None, location: str = "", results_wanted: int = 20, **kwargs: Any) -> list[Job]:
+        try:
+            from jobspy import scrape_jobs
+        except ImportError as exc:
+            raise SourceError("JobSpy is optional; install the discovery dependency first") from exc
+        frame = scrape_jobs(
+            site_name=sites or ["indeed", "google"],
+            search_term=query,
+            location=location,
+            results_wanted=results_wanted,
+            **kwargs,
+        )
+        jobs: list[Job] = []
+        for row in frame.to_dict(orient="records"):
+            row["source"] = "jobspy"
+            jobs.append(self.normalize(row, _text(row.get("job_url"))))
+        return jobs
+
+
 ADAPTERS: tuple[SourceAdapter, ...] = (GreenhouseAdapter(), LeverAdapter(), AshbyAdapter(), GenericAdapter())
+JOBSPY = JobSpyAdapter()
 
 
 def choose_adapter(url: str, payload: dict[str, Any] | None = None) -> SourceAdapter:
@@ -146,11 +194,17 @@ def choose_adapter(url: str, payload: dict[str, Any] | None = None) -> SourceAda
 
 
 def fetch_payload(url: str, timeout: float = 20.0) -> dict[str, Any]:
-    request = Request(url, headers={"User-Agent": "jobsearch-agent/0.1"})
     try:
-        with urlopen(request, timeout=timeout) as response:
-            body = response.read()
+        if httpx:
+            response = httpx.get(url, headers={"User-Agent": "jobsearch-agent/0.1"}, follow_redirects=True, timeout=timeout)
+            response.raise_for_status()
+            body = response.content
             content_type = response.headers.get("content-type", "")
+        else:
+            request = Request(url, headers={"User-Agent": "jobsearch-agent/0.1"})
+            with urlopen(request, timeout=timeout) as response:
+                body = response.read()
+                content_type = response.headers.get("content-type", "")
     except Exception as exc:
         raise SourceError(f"could not fetch job URL: {exc}") from exc
     try:
@@ -159,16 +213,31 @@ def fetch_payload(url: str, timeout: float = 20.0) -> dict[str, Any]:
             return value if isinstance(value, dict) else {"description": json.dumps(value)}
     except (UnicodeDecodeError, json.JSONDecodeError):
         pass
-    parser = JsonLdParser()
-    parser.feed(body.decode("utf-8", errors="replace"))
-    job_posting = next((item for item in parser.payloads if item.get("@type") in ("JobPosting", ["JobPosting"])), None)
+    html_body = body.decode("utf-8", errors="replace")
+    payloads: list[dict[str, Any]] = []
+    if BeautifulSoup:
+        soup = BeautifulSoup(html_body, "html.parser")
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            try:
+                data = json.loads(script.string or script.get_text())
+                payloads.extend(data if isinstance(data, list) else [data])
+            except (json.JSONDecodeError, TypeError):
+                continue
+        job_posting = next((item for item in payloads if isinstance(item, dict) and (item.get("@type") == "JobPosting" or "JobPosting" in item.get("@type", []))), None)
+    else:
+        parser = JsonLdParser()
+        parser.feed(html_body)
+        job_posting = next((item for item in parser.payloads if item.get("@type") in ("JobPosting", ["JobPosting"])), None)
     if job_posting:
         return job_posting
-    title = re.search(r"<title[^>]*>(.*?)</title>", body.decode("utf-8", errors="replace"), re.I | re.S)
-    return {"title": re.sub(r"<[^>]+>", " ", title.group(1)).strip() if title else "", "description": body.decode("utf-8", errors="replace")}
+    title = soup.title.get_text(" ", strip=True) if BeautifulSoup and soup.title else re.search(r"<title[^>]*>(.*?)</title>", html_body, re.I | re.S)
+    title_text = title if isinstance(title, str) else re.sub(r"<[^>]+>", " ", title.group(1)).strip() if title else ""
+    description = soup.get_text(" ", strip=True) if BeautifulSoup else html_body
+    return {"title": title_text, "description": description}
 
 
 def normalize_payload(payload: dict[str, Any], url: str = "") -> Job:
+    payload = validate_external_job(payload)
     adapter = choose_adapter(url, payload)
     return adapter.normalize(payload, url)
 

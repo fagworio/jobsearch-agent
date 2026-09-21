@@ -3,6 +3,10 @@ from pathlib import Path
 from jobsearch_agent.models import Job, Resume, ResumeClaim
 from jobsearch_agent.profile import load_facts, load_profile, validate_facts as validate_profile_facts
 from jobsearch_agent.resume import validate_ats, validate_facts
+from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit
+from jobsearch_agent.resume import generate_resume, select_fact_ids
+from jobsearch_agent.sources import normalize_payload
+import json
 
 
 ROOT = Path(__file__).parents[1]
@@ -32,3 +36,14 @@ def test_ats_validator_requires_contact_and_experience():
     assert not result.valid
     assert len(result.errors) >= 3
 
+
+def test_dynamic_rewrite_changes_positioning_but_keeps_fact_support():
+    payload = json.loads((ROOT / "tests/fixtures/jobs/greenhouse.json").read_text())
+    job = normalize_payload(payload, payload["absolute_url"])
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    analysis = analyze_requirements(job)
+    strategy = build_strategy(job, analysis, calculate_fit(job, analysis, profile), profile)
+    resume = generate_resume(job, strategy, profile, facts, select_fact_ids(job, strategy, profile, facts))
+    assert resume.experience[0]["bullets"] == ["Developed custom WordPress plugins and REST integrations with WooCommerce."]
+    assert validate_facts(resume, facts).valid

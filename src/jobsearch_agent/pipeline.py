@@ -6,16 +6,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .analysis import analyze_requirements, build_strategy, calculate_fit
+from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from .config import Settings
 from .llm import OpenAICompatibleProvider
-from .models import JobState, LanguageResult, now_iso, to_dict
+from .models import JobState, now_iso, to_dict
 from .observability import append_event
 from .persistence import Database
 from .profile import load_facts, load_profile, validate_facts as validate_profile_facts
 from .resume import generate_resume, render_docx, render_pdf_from_docx, render_text, select_fact_ids, validate_ats, validate_facts as validate_resume_facts
+from .schemas import validate_contract
 from .serialization import canonical_json
-from .sources import canonical_job_key, fetch_payload, normalize_payload
+from .sources import JOBSPY, canonical_job_key, fetch_payload, normalize_payload
 
 
 class PipelineError(RuntimeError):
@@ -49,6 +50,21 @@ def ingest_url(settings: Settings, url: str) -> dict[str, Any]:
     return ingest(settings, fetch_payload(url, settings.request_timeout), url)
 
 
+def search(settings: Settings, query: str, *, sites: list[str] | None = None, location: str = "", results_wanted: int = 20) -> dict[str, Any]:
+    jobs = JOBSPY.search(query, sites=sites, location=location, results_wanted=results_wanted)
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        persisted = []
+        for job in jobs:
+            job = db.save_job(job, canonical_job_key(job), job.raw_payload)
+            db.record_event(job.id, "job_discovered", {"source": job.source, "title": job.title}, now_iso())
+            persisted.append(job)
+    finally:
+        db.close()
+    append_event(settings.root, "jobs_discovered", query=query, count=len(persisted), source="jobspy")
+    return {"query": query, "source": "jobspy", "count": len(persisted), "jobs": [to_dict(job) for job in persisted]}
+
+
 def _load_profile_data(settings: Settings):
     profile = load_profile(settings.resolve(settings.profile_path))
     facts = load_facts(settings.resolve(settings.facts_path))
@@ -69,12 +85,15 @@ def analyze(settings: Settings, job_id: str, language_override: str | None = Non
         profile, facts = _load_profile_data(settings)
         analysis = analyze_requirements(job, provider_for(settings))
         if language_override:
-            analysis.language = LanguageResult(language_override, language_override, "BR" if language_override == "pt-BR" else "US", 1.0, "override")
+            analysis.language = detect_language("", language_override)
         fit = calculate_fit(job, analysis, profile)
         job.language = analysis.language.locale
         job.requirements = list(analysis.required_skills)
         job.preferred_requirements = list(analysis.preferred_skills)
         job.state = JobState.SCORED
+        validate_contract("job", job)
+        validate_contract("analysis", analysis)
+        validate_contract("fit", fit)
         db.save_job(job, canonical_job_key(job), job.raw_payload)
         db.save_analysis(job.id, analysis=analysis, fit=fit, updated_at=now_iso())
         db.record_event(job.id, "job_analyzed", {"score": fit.score, "language": analysis.language.locale}, now_iso())
@@ -93,7 +112,7 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
         profile, facts = _load_profile_data(settings)
         analysis = analyze_requirements(job, provider_for(settings))
         if language_override:
-            analysis.language = LanguageResult(language_override, language_override, "BR" if language_override == "pt-BR" else "US", 1.0, "override")
+            analysis.language = detect_language("", language_override)
         fit = calculate_fit(job, analysis, profile)
         job.language = analysis.language.locale
         job.requirements = list(analysis.required_skills)
@@ -101,6 +120,11 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
         strategy = build_strategy(job, analysis, fit, profile)
         selected = select_fact_ids(job, strategy, profile, facts)
         resume = generate_resume(job, strategy, profile, facts, selected)
+        validate_contract("job", job)
+        validate_contract("analysis", analysis)
+        validate_contract("fit", fit)
+        validate_contract("strategy", strategy)
+        validate_contract("resume", resume)
         fact_validation = validate_resume_facts(resume, facts)
         ats_validation = validate_ats(resume)
         all_valid = fact_validation.valid and ats_validation.valid

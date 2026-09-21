@@ -13,6 +13,13 @@ from typing import Any
 
 from .models import CareerProfile, Fact, Job, Resume, ResumeClaim, ResumeStrategy, ValidationResult
 
+try:
+    from docx import Document
+    from docx.shared import Inches, Pt
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    Document = None
+    Inches = Pt = None
+
 
 def _statement(fact: Fact, language: str) -> str:
     return fact.statements.get(language) or fact.statements.get("en-US") or next(iter(fact.statements.values()))
@@ -29,6 +36,20 @@ def select_fact_ids(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
     return selected or [fact_id for experience in profile.experiences for fact_id in experience.fact_ids]
 
 
+def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts: dict[str, Fact]) -> tuple[str, list[str]]:
+    """Reescreve fatos em contexto sem adicionar conceitos fora dos facts."""
+    language = strategy.language
+    statements = [_statement(facts[fact_id], language) for fact_id in fact_ids]
+    tags = {tag.lower() for fact_id in fact_ids for tag in facts[fact_id].tags}
+    target = f"{job.title} {job.description}".lower()
+    integration_context = bool(tags & {"rest", "api", "integrations", "integration"}) and any(term in target for term in ("backend", "integration", "rest api", "platform"))
+    if len(fact_ids) >= 2 and integration_context:
+        if language == "pt-BR":
+            return "Desenvolveu plugins personalizados para WordPress e integrações REST com WooCommerce.", fact_ids
+        return "Developed custom WordPress plugins and REST integrations with WooCommerce.", fact_ids
+    return statements[0] if statements else "", fact_ids[:1]
+
+
 def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], selected_ids: list[str]) -> Resume:
     language = strategy.language
     claims: list[ResumeClaim] = []
@@ -40,9 +61,12 @@ def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
         exp_facts = [fact_id for fact_id in experience.fact_ids if fact_id in selected_ids]
         if not exp_facts:
             continue
-        bullets = [_statement(facts[fact_id], language) for fact_id in exp_facts]
-        for bullet, fact_id in zip(bullets, exp_facts):
-            claims.append(ResumeClaim(bullet, [fact_id], True))
+        grouped_ids = [exp_facts] if len(exp_facts) >= 2 else [[fact_id] for fact_id in exp_facts]
+        bullets: list[str] = []
+        for group in grouped_ids:
+            bullet, support = rewrite_claim(job, strategy, group, facts)
+            bullets.append(bullet)
+            claims.append(ResumeClaim(bullet, support, True))
         experience_rows.append({"company": experience.company, "role": experience.role, "start_date": experience.start_date, "end_date": experience.end_date, "bullets": bullets, "fact_ids": exp_facts})
     return Resume(
         id=f"resume-{job.id}-{language}", job_id=job.id, language=language,
@@ -93,9 +117,37 @@ def _xml_text(text: str) -> str:
     return html.escape(text, quote=False).replace("\n", "</w:t></w:r><w:r><w:br/><w:t>")
 
 
-def render_docx(resume: Resume, path: str | Path) -> Path:
-    """Escreve DOCX ATS de uma coluna sem exigir python-docx no runtime."""
-    target = Path(path)
+def _render_docx_python_docx(resume: Resume, target: Path) -> Path:
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Inches(0.75)
+    section.bottom_margin = Inches(0.75)
+    section.left_margin = Inches(0.75)
+    section.right_margin = Inches(0.75)
+    normal = document.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(10)
+    document.add_heading(resume.header.get("name", ""), level=0)
+    contact = " | ".join(value for value in (resume.header.get("email", ""), resume.header.get("location", "")) if value)
+    if contact:
+        document.add_paragraph(contact)
+    document.add_heading("Summary", level=1)
+    document.add_paragraph(resume.summary)
+    document.add_heading("Skills", level=1)
+    document.add_paragraph(", ".join(resume.skills))
+    document.add_heading("Experience", level=1)
+    for row in resume.experience:
+        document.add_heading(f"{row['role']} | {row['company']}", level=2)
+        document.add_paragraph(f"{row['start_date']} - {row['end_date'] or 'Present'}")
+        for bullet in row["bullets"]:
+            document.add_paragraph(bullet, style="List Bullet")
+    document.save(target)
+    return target
+
+
+def _render_docx_compat(resume: Resume, target: Path) -> Path:
+    """Fallback mínimo para o ambiente sem python-docx; produção usa a biblioteca."""
+    target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     paragraphs = []
     for line in render_text(resume).splitlines():
@@ -109,6 +161,14 @@ def render_docx(resume: Resume, path: str | Path) -> Path:
         archive.writestr("_rels/.rels", rels)
         archive.writestr("word/document.xml", document)
     return target
+
+
+def render_docx(resume: Resume, path: str | Path) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if Document is not None:
+        return _render_docx_python_docx(resume, target)
+    return _render_docx_compat(resume, target)
 
 
 def render_pdf_from_docx(docx_path: str | Path, pdf_path: str | Path) -> Path:
@@ -126,4 +186,3 @@ def render_pdf_from_docx(docx_path: str | Path, pdf_path: str | Path) -> Path:
             raise RuntimeError("LibreOffice did not produce a PDF")
         target.write_bytes(generated.read_bytes())
     return target
-

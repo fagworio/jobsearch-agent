@@ -6,6 +6,28 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    BaseSettings = None
+    SettingsConfigDict = None
+
+
+if BaseSettings:
+    class EnvironmentSettings(BaseSettings):
+        model_config = SettingsConfigDict(env_prefix="JOBSEARCH_", extra="ignore")
+        llm_base_url: str = ""
+        llm_api_key: str = ""
+        llm_model: str = ""
+        http_timeout: float = 20.0
+else:
+    class EnvironmentSettings:  # type: ignore[no-redef]
+        def __init__(self) -> None:
+            self.llm_base_url = os.getenv("JOBSEARCH_LLM_BASE_URL", "")
+            self.llm_api_key = os.getenv("JOBSEARCH_LLM_API_KEY", "")
+            self.llm_model = os.getenv("JOBSEARCH_LLM_MODEL", "")
+            self.http_timeout = float(os.getenv("JOBSEARCH_HTTP_TIMEOUT", "20"))
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -23,6 +45,7 @@ class Settings:
     @classmethod
     def from_args(cls, root: Path | None = None, **values: object) -> "Settings":
         project_root = (root or Path.cwd()).resolve()
+        environment = EnvironmentSettings()
         def path_arg(name: str, default: str) -> Path:
             raw = values.get(name) or os.getenv(name.upper()) or default
             return Path(str(raw)).expanduser()
@@ -32,13 +55,12 @@ class Settings:
             artifacts_dir=path_arg("artifacts", "data/applications"),
             profile_path=path_arg("profile", "profile/career_profile.yaml"),
             facts_path=path_arg("facts", "profile/locked_facts.yaml"),
-            llm_base_url=os.getenv("JOBSEARCH_LLM_BASE_URL", "").rstrip("/"),
-            llm_api_key=os.getenv("JOBSEARCH_LLM_API_KEY", ""),
-            llm_model=os.getenv("JOBSEARCH_LLM_MODEL", ""),
-            request_timeout=float(os.getenv("JOBSEARCH_HTTP_TIMEOUT", "20")),
+            llm_base_url=environment.llm_base_url.rstrip("/"),
+            llm_api_key=environment.llm_api_key,
+            llm_model=environment.llm_model,
+            request_timeout=environment.http_timeout,
             real_profile=bool(values.get("real_profile", False)),
         )
 
     def resolve(self, path: Path) -> Path:
         return path if path.is_absolute() else self.root / path
-

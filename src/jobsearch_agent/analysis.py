@@ -3,20 +3,56 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Iterable
 
 from .llm import LLMError, LLMProvider, LLMRequest
 from .models import CareerProfile, FitResult, Job, JobAnalysis, LanguageResult, ResumeStrategy
+from .skills import SkillRegistry
 
 
 PT_WORDS = {"com", "para", "você", "experiência", "desenvolvimento", "conhecimento", "vaga", "trabalho", "anos", "responsabilidades"}
 EN_WORDS = {"with", "for", "you", "experience", "development", "knowledge", "job", "work", "years", "responsibilities"}
 
+try:
+    from lingua import Language as LinguaLanguage
+    from lingua import LanguageDetectorBuilder
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    LinguaLanguage = None
+    LanguageDetectorBuilder = None
+
+
+@lru_cache(maxsize=1)
+def skill_registry() -> SkillRegistry:
+    return SkillRegistry.load()
+
+
+def _normalized_language(value: str) -> tuple[str, str, str]:
+    lowered = value.lower().replace("_", "-")
+    if lowered.startswith("pt"):
+        return "pt", "pt-BR", "BR"
+    if lowered.startswith("en"):
+        return "en", "en-US", "US"
+    return value, value, ""
+
 
 def detect_language(text: str, override: str | None = None) -> LanguageResult:
     if override:
-        locale = "pt-BR" if override.lower().startswith("pt") else "en-US" if override.lower().startswith("en") else override
-        return LanguageResult(override, locale, "BR" if locale == "pt-BR" else "US", 1.0, "override")
+        language, locale, country = _normalized_language(override)
+        return LanguageResult(language, locale, country, 1.0, "override")
+    if LanguageDetectorBuilder and LinguaLanguage:
+        try:
+            detector = LanguageDetectorBuilder.from_languages(LinguaLanguage.PORTUGUESE, LinguaLanguage.ENGLISH).build()
+            detected = detector.detect_language_of(text)
+            if detected is not None:
+                language, locale, country = _normalized_language(detected.iso_code_639_1.name.lower())
+                confidence = 0.75
+                values = detector.compute_language_confidence_values(text)
+                if values:
+                    confidence = round(float(values[0].value), 3)
+                return LanguageResult(language, locale, country, confidence, "lingua")
+        except Exception:
+            pass
     tokens = set(re.findall(r"[a-záéíóúãõç]+", text.lower()))
     pt = len(tokens & PT_WORDS)
     en = len(tokens & EN_WORDS)
@@ -29,12 +65,7 @@ def detect_language(text: str, override: str | None = None) -> LanguageResult:
 
 
 def _terms(text: str) -> list[str]:
-    known = [
-        "WordPress", "WooCommerce", "PHP", "Python", "JavaScript", "TypeScript", "React", "Gutenberg",
-        "Docker", "REST API", "GraphQL", "Git", "SQL", "Shopify", "AWS", "Laravel", "Node.js",
-    ]
-    lowered = text.lower()
-    return [term for term in known if term.lower() in lowered]
+    return skill_registry().extract(text)
 
 
 def _sentences(text: str) -> list[str]:
@@ -105,6 +136,18 @@ def _normalize_term(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
+def _profile_skill_values(profile: CareerProfile) -> list[str]:
+    values = list(profile.skills)
+    for value in profile.skills.values():
+        if isinstance(value, dict):
+            values.extend(str(tag) for tag in value.get("tags", []))
+    return values
+
+
+def _skill_matches(skill: str, profile_values: Iterable[str]) -> bool:
+    return any(skill_registry().matches(skill, value) for value in profile_values)
+
+
 def _ratio(found: Iterable[str], wanted: Iterable[str]) -> float:
     wanted_set = {item.lower() for item in wanted}
     return 1.0 if not wanted_set else len({item.lower() for item in found} & wanted_set) / len(wanted_set)
@@ -114,7 +157,7 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     profile_skills = _skill_keys(profile)
     required = analysis.required_skills
     preferred = analysis.preferred_skills
-    matched = [skill for skill in required + preferred if _normalize_term(skill) in {_normalize_term(item) for item in profile_skills} or any(_normalize_term(skill) in _normalize_term(tag) for tag in profile_skills)]
+    matched = [skill for skill in required + preferred if _skill_matches(skill, profile_skills)]
     missing_required = [skill for skill in required if skill not in matched]
     missing_preferred = [skill for skill in preferred if skill not in matched]
     required_match = _ratio(matched, required)
@@ -133,9 +176,9 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
 
 
 def build_strategy(job: Job, analysis: JobAnalysis, fit: FitResult, profile: CareerProfile) -> ResumeStrategy:
-    skills = analysis.required_skills + [skill for skill in analysis.preferred_skills if skill in fit.matched_skills]
-    profile_keys = {key.lower() for key in profile.skills}
-    focus = [skill for skill in skills if _normalize_term(skill) in {_normalize_term(item) for item in profile_keys} or any(_normalize_term(skill) in _normalize_term(tag) for tag in profile_keys)]
-    deprioritize = [key for key in profile.skills if key.lower() not in {item.lower() for item in focus}]
+    profile_values = _profile_skill_values(profile)
+    focus = [skill for skill in analysis.required_skills if _skill_matches(skill, profile_values)]
+    secondary = [skill for skill in analysis.preferred_skills if _skill_matches(skill, profile_values)]
+    deprioritize = [key for key in profile.skills if not _skill_matches(key, focus + secondary)]
     language = analysis.language.locale if analysis.language.locale in {"pt-BR", "en-US"} else "en-US"
-    return ResumeStrategy(job.title or "Target role", language, f"Position candidate around {job.title} expertise.", focus, deprioritize[:3], deprioritize[3:], focus[:12])
+    return ResumeStrategy(job.title or "Target role", language, f"Position candidate around {job.title} expertise.", focus, secondary, deprioritize, (focus + secondary)[:12])

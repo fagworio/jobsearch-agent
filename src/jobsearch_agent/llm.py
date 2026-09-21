@@ -6,6 +6,11 @@ import json
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover - fallback do ambiente mínimo
+    httpx = None
+
 
 class LLMError(RuntimeError):
     pass
@@ -39,15 +44,20 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": [{"role": "system", "content": request.system}, {"role": "user", "content": request.user}],
             "response_format": {"type": "json_object"},
         }
-        http_request = Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urlopen(http_request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            if httpx:
+                response = httpx.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}"}, timeout=self.timeout)
+                response.raise_for_status()
+                body = response.json()
+            else:
+                http_request = Request(
+                    f"{self.base_url}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(http_request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
             content = body["choices"][0]["message"]["content"]
             value = json.loads(content) if isinstance(content, str) else content
             if not isinstance(value, dict):
@@ -62,4 +72,3 @@ class FakeProvider(LLMProvider):
 
     def complete(self, request: LLMRequest) -> dict:
         return {}
-

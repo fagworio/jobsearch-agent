@@ -11,6 +11,11 @@ Playwright ou envio de dados para ATS.
 Instale o pacote com Poetry (`poetry install`) e use o script `jobsearch-agent`. Durante o
 desenvolvimento sem instalação, prefixe os comandos com `PYTHONPATH=src`.
 
+As dependências principais incluem Pydantic, httpx, BeautifulSoup, Lingua, RapidFuzz e
+python-docx. A integração JobSpy é opcional e pode ser instalada com o grupo de discovery
+(`poetry install --with discovery`). Playwright permanece reservado para a futura camada de
+aplicação ATS.
+
 ```bash
 PYTHONPATH=src python3 -m jobsearch_agent.cli --help
 PYTHONPATH=src python3 -m jobsearch_agent.cli profile validate --profile profile/career_profile.yaml --facts profile/locked_facts.yaml
@@ -23,9 +28,19 @@ Para uma vaga pública:
 jobsearch-agent run --url https://boards.greenhouse.io/example/jobs/123
 ```
 
+Com o grupo opcional de discovery instalado:
+
+```bash
+jobsearch-agent search --query "Senior WordPress Developer" --sites indeed,google --location Brazil
+```
+
 O provider sem configuração usa análise determinística e geração segura. Para interpretação LLM,
 configure `JOBSEARCH_LLM_BASE_URL`, `JOBSEARCH_LLM_API_KEY` e `JOBSEARCH_LLM_MODEL`. O perfil
 demonstrativo contém fatos fictícios e é bloqueado quando `--real-profile` é usado.
+
+O registry de skills vive em [knowledge/skills.yaml](knowledge/skills.yaml), com uma cópia
+empacotável em `src/jobsearch_agent/knowledge/skills.yaml`. Matching segue aliases exatos,
+matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 
 ## Princípios
 

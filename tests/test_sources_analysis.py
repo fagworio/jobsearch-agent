@@ -4,7 +4,8 @@ from pathlib import Path
 from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from jobsearch_agent.models import Job
 from jobsearch_agent.profile import load_profile
-from jobsearch_agent.sources import canonical_job_key, normalize_payload
+from jobsearch_agent.skills import SkillRegistry
+from jobsearch_agent.sources import JOBSPY, canonical_job_key, normalize_payload
 
 
 ROOT = Path(__file__).parents[1]
@@ -33,6 +34,8 @@ def test_generic_json_ld_and_language_override():
     assert job.company == "Co"
     assert detect_language("Experiência com desenvolvimento e responsabilidades").locale == "pt-BR"
     assert detect_language("We need experience with development and responsibilities").locale == "en-US"
+    assert SkillRegistry.load().matches("RESTful APIs", "REST API")
+    assert JOBSPY.can_handle("", {"source": "jobspy"})
 
 
 def test_requirements_fit_and_strategy_do_not_promote_missing_preferred_skills():
@@ -47,6 +50,14 @@ def test_requirements_fit_and_strategy_do_not_promote_missing_preferred_skills()
     assert "WordPress" in fit.matched_skills
     assert "Docker" in fit.missing_preferred
     assert "Docker" not in strategy.keywords
+    assert strategy.secondary == ["REST API"]
+    assert strategy.deprioritize == []
+
+
+def test_language_override_normalizes_language_and_locale():
+    assert detect_language("", "en-US").language == "en"
+    assert detect_language("", "en-US").locale == "en-US"
+    assert detect_language("", "pt-BR").language == "pt"
 
 
 def test_configured_provider_can_enrich_structured_requirements_without_free_text_claims():

@@ -11,7 +11,7 @@ from .config import Settings
 from .llm import LLMError
 from .models import to_dict
 from .persistence import Database
-from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, run
+from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, run, search
 from .profile import ProfileError, load_facts, load_profile, validate_facts
 from .sources import SourceError
 
@@ -50,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_group.add_argument("--url")
     ingest_group.add_argument("--json-file", type=Path)
     ingest_parser.set_defaults(handler="ingest")
+
+    search_parser = sub.add_parser("search", help="descobre vagas via JobSpy opcional")
+    runtime_options(search_parser)
+    search_parser.add_argument("--query", required=True)
+    search_parser.add_argument("--sites", default="indeed,google")
+    search_parser.add_argument("--location", default="")
+    search_parser.add_argument("--results-wanted", type=int, default=20)
+    search_parser.set_defaults(handler="search")
 
     analyze_parser = sub.add_parser("analyze", help="analisa uma vaga persistida")
     runtime_options(analyze_parser)
@@ -101,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "ingest":
             result = ingest_url(settings, args.url) if args.url else ingest(settings, json.loads(args.json_file.read_text(encoding="utf-8")), "")
             _print(result)
+            return 0
+        if args.handler == "search":
+            _print(search(settings, args.query, sites=[item.strip() for item in args.sites.split(",") if item.strip()], location=args.location, results_wanted=args.results_wanted))
             return 0
         if args.handler == "analyze":
             _print(analyze(settings, args.job_id, args.language))
