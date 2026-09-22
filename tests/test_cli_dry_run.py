@@ -30,9 +30,9 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
     db.save_job(job, "linkedin:dry-run", {})
     service = ApplicationService(db)
     application = service.create_for_job(job.id)
-    service.transition(application.id, ApplicationState.PREPARING, "prepare")
-    service.transition(application.id, ApplicationState.MATERIALS_READY, "materials")
-    service.transition(application.id, ApplicationState.READY_TO_APPLY, "ready")
+    application = service.transition(application.id, ApplicationState.PREPARING, "prepare")
+    application = service.transition(application.id, ApplicationState.MATERIALS_READY, "materials")
+    application = service.transition(application.id, ApplicationState.READY_TO_APPLY, "ready")
     context = ApplicationContext(
         application_id=application.id,
         job_id=job.id,
@@ -64,3 +64,25 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
     assert result["execution"]["stopped_before_submit"] is True
     assert result["execution"]["submission_attempted"] is False
     assert result["network_access"] == "none"
+
+
+def test_dry_run_refuses_application_outside_ready_states(tmp_path: Path):
+    db_path = tmp_path / "jobs.db"
+    db = Database(db_path)
+    job = Job(id="job-blocked-dry-run", source="linkedin", external_id="blocked", company="Acme", title="Engineer", description="Build")
+    db.save_job(job, "linkedin:blocked", {})
+    application = ApplicationService(db).create_for_job(job.id)
+    db.close()
+    settings = Settings.from_args(ROOT, db=str(db_path), artifacts=str(tmp_path / "artifacts"))
+    result = dry_run_application(
+        settings,
+        application.id,
+        ROOT / "tests/fixtures/linkedin/easy-apply-single.html",
+        provider="linkedin",
+    )
+    assert result == {
+        "status": "APPLICATION_STATE_BLOCKED",
+        "application_id": application.id,
+        "application_state": "DRAFT",
+        "network_access": "none",
+    }

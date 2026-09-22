@@ -67,7 +67,9 @@ jobsearch-agent precheck <job-id>
 geração, mas a política bloqueia seu uso em public dry-run fill. `precheck <job-id>` mantém Fit,
 Profile e Policy separados; dados opcionais só viram necessários quando o anúncio os exigir
 explicitamente. `BLOCKED_FIT`, `NEEDS_PROFILE_DATA` ou `DEMO_PROFILE_BLOCKED` impede iniciar o dry-run;
-`READY` indica que os gates passaram.
+`dry-run <application-id>` só inicia quando a Application está em `READY_TO_APPLY` ou `REVIEW_REACHED`;
+Applications em `DRAFT`, `SUBMITTED`, `SUBMIT_FAILED` ou `SUBMIT_UNKNOWN` são bloqueadas antes da
+inspeção do snapshot.
 País, nome preferido e fuso horário precisam ser informados explicitamente: não são derivados de
 localização ou nome.
 

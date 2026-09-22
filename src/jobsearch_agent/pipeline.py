@@ -316,6 +316,13 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
         application = db.get_application(application_id)
         if not application:
             raise PipelineError(f"application not found: {application_id}")
+        if application.state not in {ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REACHED}:
+            return {
+                "status": "APPLICATION_STATE_BLOCKED",
+                "application_id": application_id,
+                "application_state": application.state.value,
+                "network_access": "none",
+            }
         profile = load_profile(settings.resolve(settings.profile_path))
         if profile.demo:
             return {"status": "DEMO_PROFILE_BLOCKED", "application_id": application_id, "network_access": "none"}
