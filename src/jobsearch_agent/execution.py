@@ -8,6 +8,7 @@ impossible at this layer.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from typing import Any
 
 from .forms import effective_attachment_path, validate_application_form
@@ -27,6 +28,7 @@ class ExecutionAction:
     attachment_path: str = ""
     step: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    sha256: str = ""
 
 
 @dataclass
@@ -43,6 +45,14 @@ def _field_value(field: ApplicationField) -> Any:
     if field.value not in (None, ""):
         return field.value
     return field.answer.answer if field.answer else ""
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_plan_against_context(context: ApplicationContext, plan: ExecutionPlan) -> ValidationResult:
@@ -71,6 +81,12 @@ def _validate_plan_against_context(context: ApplicationContext, plan: ExecutionP
                 errors.append(f"upload action targets non-file field: {field.key}")
             if action.attachment_path != effective_attachment_path(field):
                 errors.append(f"upload path does not match field artifact: {field.key}")
+            else:
+                try:
+                    if not action.sha256 or action.sha256 != _sha256(action.attachment_path):
+                        errors.append(f"upload hash does not match field artifact: {field.key}")
+                except OSError:
+                    errors.append(f"upload artifact is not readable: {field.key}")
         elif action.action_type == "fill":
             if field_type == "file":
                 errors.append(f"fill action targets file field: {field.key}")
@@ -107,7 +123,7 @@ def build_execution_plan(context: ApplicationContext) -> ExecutionPlan:
         if field_type == "file":
             attachment_path = effective_attachment_path(field)
             if attachment_path:
-                actions.append(ExecutionAction("upload", field.key, attachment_path=attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}))
+                actions.append(ExecutionAction("upload", field.key, attachment_path=attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}, sha256=_sha256(attachment_path)))
         elif value not in (None, "", []):
             actions.append(ExecutionAction("fill", field.key, value=value, step=field.step, metadata={"semantic_type": field.semantic_type}))
     plan = ExecutionPlan(context.application_id, context.form.provider, actions)

@@ -16,14 +16,24 @@ class BrowserSessionError(RuntimeError):
     pass
 
 
-def validate_navigation_url(url: str) -> ValidationResult:
+def validate_navigation_url(url: str, allowed_hosts: set[str] | None = None, *, resource: bool = False) -> ValidationResult:
     """Reject local, private and non-web URLs before Playwright sees them."""
     parsed = urlparse(url)
+    if resource and parsed.scheme.casefold() in {"data", "blob"}:
+        return ValidationResult(True, "OK")
     if parsed.scheme.casefold() not in {"http", "https"}:
         return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["only http and https URLs are allowed"])
     if not parsed.hostname or parsed.username or parsed.password:
         return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["URL must contain a public hostname without credentials"])
     hostname = parsed.hostname.rstrip(".").casefold()
+    if allowed_hosts and hostname not in {item.casefold().rstrip(".") for item in allowed_hosts} and not any(hostname.endswith("." + item.casefold().rstrip(".")) for item in allowed_hosts):
+        return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["hostname is not in the approved navigation policy"])
+    try:
+        port = parsed.port
+    except ValueError:
+        return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["invalid URL port"])
+    if port is not None and port not in {80, 443}:
+        return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["only ports 80 and 443 are allowed"])
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost") or hostname.endswith(".local"):
         return ValidationResult(False, "UNSAFE_NAVIGATION_URL", ["local hostnames are not allowed"])
     try:
@@ -72,16 +82,26 @@ class DryRunBrowserExecutor(BrowserExecutor):
 class PlaywrightSessionManager:
     """Small optional session wrapper; intentionally has no submit operation."""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, allowed_hosts: set[str] | None = None):
         self.headless = headless
+        self.allowed_hosts = allowed_hosts
         self._playwright = None
         self.browser = None
         self.context = None
         self.page = None
 
-    @staticmethod
-    def _guard_route(route: Any) -> None:  # pragma: no cover - exercised with Playwright installed
-        validation = validate_navigation_url(route.request.url)
+    def _guard_route(self, route: Any) -> None:  # pragma: no cover - exercised with Playwright installed
+        request_url = route.request.url
+        parsed = urlparse(request_url)
+        if parsed.scheme.casefold() in {"data", "blob"}:
+            frame_url = getattr(route.request.frame, "url", "")
+            frame_validation = validate_navigation_url(frame_url, self.allowed_hosts, resource=False)
+            if frame_validation.valid:
+                route.continue_()
+            else:
+                route.abort("blockedbyclient")
+            return
+        validation = validate_navigation_url(request_url, self.allowed_hosts, resource=True)
         if validation.valid:
             route.continue_()
         else:
@@ -101,11 +121,11 @@ class PlaywrightSessionManager:
     def open(self, url: str) -> None:
         if self.page is None:
             raise BrowserSessionError("Playwright session is not started")
-        validation = validate_navigation_url(url)
+        validation = validate_navigation_url(url, self.allowed_hosts)
         if not validation.valid:
             raise BrowserSessionError("refusing unsafe navigation: " + "; ".join(validation.errors))
         self.page.goto(url, wait_until="domcontentloaded")
-        final_validation = validate_navigation_url(self.page.url)
+        final_validation = validate_navigation_url(self.page.url, self.allowed_hosts)
         if not final_validation.valid:
             raise BrowserSessionError("navigation redirected to an unsafe URL")
 

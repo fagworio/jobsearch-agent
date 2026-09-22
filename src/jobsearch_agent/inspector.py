@@ -21,6 +21,7 @@ class DOMFieldBinding:
     locator: str
     control: str
     option_locators: dict[str, str] = field(default_factory=dict)
+    option_values: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -84,6 +85,14 @@ def _base_locator(element: Tag) -> str:
         tag = element.name
         return f'{tag}[name="{_css_escape(str(element["name"]))}"]'
     return f"{element.name}"
+
+
+def _option_locator(element: Tag, index: int, group_locator: str) -> str:
+    if element.get("id"):
+        return f'#{_css_escape(str(element["id"]))}'
+    if element.get("name") and element.get("value") is not None:
+        return f'{element.name}[name="{_css_escape(str(element["name"]))}"][value="{_css_escape(str(element["value"]))}"]'
+    return f"{group_locator}:nth-of-type({index + 1})"
 
 
 class ATSInspector:
@@ -166,12 +175,16 @@ class ATSInspector:
         first = group[0]
         locator = _base_locator(first)
         option_locators: dict[str, str] = {}
+        option_values: dict[str, str] = {}
         if first.name == "select":
             for option in first.find_all("option"):
                 label = option.get_text(" ", strip=True) or str(option.get("value", ""))
                 value = _css_escape(str(option.get("value", "")))
                 option_locators[label] = f'{locator} option[value="{value}"]'
+                option_values[label] = str(option.get("value", ""))
         else:
-            for option, element in zip(options, group):
-                option_locators[option] = _base_locator(element)
-        return DOMFieldBinding(field_key, locator, field_type, option_locators)
+            for index, (option, element) in enumerate(zip(options, group)):
+                option_value = str(element.get("value", ""))
+                option_values[option] = option_value
+                option_locators[option] = _option_locator(element, index, locator)
+        return DOMFieldBinding(field_key, locator, field_type, option_locators, option_values)

@@ -71,7 +71,10 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O ATS Inspector atual é somente leitura: produz `ApplicationForm` e `FormBindings` separados,
   sem seletores DOM no domínio e sem preencher controles.
 - Uploads exigem `ApplicationForm.artifact_root`, permanecem dentro desse diretório e têm o
-  conteúdo verificado antes de entrar no plano de execução.
+  conteúdo parseável verificado antes de entrar no plano de execução; o plano registra SHA-256
+  e revalida o hash no limite do executor.
+- Campos desabilitados são tratados como inativos até uma nova inspeção; falhas de resposta,
+  opção, campo e artefato são reportadas com blockers distintos no Safety Gate.
 - A sessão Playwright usa contexto isolado e bloqueia URLs não HTTP(S), locais, privadas,
   link-local ou reservadas, inclusive em redirecionamentos.
 - A milestone Prepare Application não abre browser nem envia candidaturas.

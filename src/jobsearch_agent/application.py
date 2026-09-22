@@ -146,24 +146,42 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
     form_analyzed = context.form is not None
     form_validation = validate_application_form(context.form) if context.form else None
     unsupported_fields = list((form_validation.details if form_validation else {}).get("unsupported_fields", []))
-    invalid_fields = list((form_validation.details if form_validation else {}).get("field_errors", {}).keys())
-    unknown_fields = [field for field in invalid_fields if field not in unsupported_fields]
+    field_results = (form_validation.details if form_validation else {}).get("field_results", {})
+    missing_fields = [key for key, result in field_results.items() if result.get("code") == "MISSING_VALUE"]
+    option_fields = [key for key, result in field_results.items() if result.get("code") == "INVALID_OPTION"]
+    artifact_fields = [key for key, result in field_results.items() if result.get("code") in {"MISSING_ARTIFACT", "INVALID_ARTIFACT"}]
+    invalid_fields = [key for key, result in field_results.items() if not result.get("valid") and key not in unsupported_fields and key not in missing_fields and key not in option_fields and key not in artifact_fields]
+    unknown_fields = missing_fields + option_fields
     if form_validation and not form_validation.valid:
         checks.append({"gate": "form_validation", "result": "blocker", "evidence": form_validation.details, "errors": form_validation.errors})
     if unsupported_fields:
         checks.append({"gate": "form", "result": "blocker", "evidence": unsupported_fields})
         blockers.append("unsupported_form")
-    elif unknown_fields:
-        checks.append({"gate": "required_answers", "result": "unknown", "evidence": unknown_fields})
-        blockers.extend(f"unknown_answer:{item}" for item in unknown_fields)
-    elif form_analyzed:
-        checks.append({"gate": "required_answers", "result": "pass", "evidence": []})
+    else:
+        if missing_fields:
+            blockers.extend(f"unknown_answer:{item}" for item in missing_fields)
+        if option_fields:
+            blockers.extend(f"invalid_option:{item}" for item in option_fields)
+        if artifact_fields:
+            blockers.extend(f"invalid_artifact:{item}" for item in artifact_fields)
+            checks.append({"gate": "artifacts", "result": "blocker", "evidence": artifact_fields})
+        if invalid_fields:
+            blockers.extend(f"invalid_field:{item}" for item in invalid_fields)
+            checks.append({"gate": "form_fields", "result": "blocker", "evidence": invalid_fields})
+        if unknown_fields:
+            checks.append({"gate": "required_answers", "result": "unknown", "evidence": unknown_fields})
+        elif not artifact_fields and not invalid_fields and form_analyzed:
+            checks.append({"gate": "required_answers", "result": "pass", "evidence": []})
 
     if not form_analyzed:
         checks.append({"gate": "form", "result": "not_analyzed", "evidence": "No ApplicationForm has been inspected yet."})
     if "unsupported_form" in blockers:
         decision = ApplicationState.UNSUPPORTED_FORM
+    elif artifact_fields:
+        decision = ApplicationState.POLICY_BLOCKED
     elif unknown_fields or unknown_fit:
+        decision = ApplicationState.NEEDS_ANSWER
+    elif invalid_fields:
         decision = ApplicationState.NEEDS_ANSWER
     elif not form_analyzed:
         decision = ApplicationState.READY_FOR_REVIEW

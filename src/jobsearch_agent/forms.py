@@ -19,6 +19,7 @@ SUPPORTED_FIELD_TYPES = {
 }
 TRUE_VALUES = {"true", "yes", "1", "on", "checked"}
 FALSE_VALUES = {"false", "no", "0", "off", "unchecked"}
+MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
 
 
 def _normalized(value: Any) -> str:
@@ -105,19 +106,21 @@ def detect_file_mime(path: Path) -> str:
 def _validate_file(field: ApplicationField, artifact_root: str) -> list[str]:
     path_value = effective_attachment_path(field)
     if field.required and not path_value:
-        return ["required file artifact is missing"]
+        return ["MISSING_ARTIFACT: required file artifact is missing"]
     if not path_value:
         return []
     if not artifact_root:
-        return ["controlled artifact root is not configured"]
+        return ["INVALID_ARTIFACT: controlled artifact root is not configured"]
     root = Path(artifact_root).expanduser().resolve()
     path = Path(path_value).expanduser().resolve()
     try:
         path.relative_to(root)
     except ValueError:
-        return ["file artifact is outside the controlled artifact root"]
+        return ["INVALID_ARTIFACT: file artifact is outside the controlled artifact root"]
     if not path.is_file():
-        return ["file artifact does not exist"]
+        return ["MISSING_ARTIFACT: file artifact does not exist"]
+    if path.stat().st_size > MAX_ARTIFACT_BYTES:
+        return [f"INVALID_ARTIFACT: file exceeds {MAX_ARTIFACT_BYTES} bytes"]
     actual_mime = detect_file_mime(path)
     expected_by_suffix = {
         ".pdf": "application/pdf",
@@ -126,21 +129,51 @@ def _validate_file(field: ApplicationField, artifact_root: str) -> list[str]:
     }
     expected_mime = expected_by_suffix.get(path.suffix.casefold())
     if expected_mime and actual_mime != expected_mime:
-        return [f"file content does not match {path.suffix.casefold() or 'unknown'}"]
+        return [f"INVALID_ARTIFACT: file content does not match {path.suffix.casefold() or 'unknown'}"]
+    content_error = _validate_file_content(path, actual_mime)
+    if content_error:
+        return [f"INVALID_ARTIFACT: {content_error}"]
     if field.accepted_types:
         suffix = path.suffix.casefold()
         accepted = {_normalized(item).lstrip(".") for item in field.accepted_types}
         accepted_suffixes = {"." + item for item in accepted if "/" not in item}
         accepted_mimes = {item for item in accepted if "/" in item}
         if suffix not in accepted_suffixes and _normalized(suffix).lstrip(".") not in accepted and actual_mime not in accepted_mimes:
-            return [f"file type {suffix or 'unknown'} is not accepted"]
+            return [f"INVALID_ARTIFACT: file type {suffix or 'unknown'} is not accepted"]
     return []
+
+
+def _validate_file_content(path: Path, mime: str) -> str:
+    try:
+        if mime == "application/pdf":
+            from pypdf import PdfReader
+            if len(PdfReader(str(path), strict=False).pages) < 1:
+                return "PDF has no pages"
+        elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            from docx import Document
+            Document(str(path))
+        elif mime == "text/plain":
+            text = path.read_text(encoding="utf-8")
+            if "\x00" in text:
+                return "text file contains NUL bytes"
+    except ImportError as exc:
+        if mime == "application/pdf":
+            raw = path.read_bytes()
+            if raw.startswith(b"%PDF-") and b"/Type /Page" in raw and b"%%EOF" in raw:
+                return ""
+        return f"document validator dependency is unavailable: {exc.name}"
+    except Exception as exc:
+        return f"document is not parseable: {exc}"
+    return ""
 
 
 def validate_application_field(field: ApplicationField, artifact_root: str = "") -> ValidationResult:
     field_type = field.field_type.casefold().strip()
     if field_type not in SUPPORTED_FIELD_TYPES:
         return ValidationResult(False, "UNSUPPORTED_FORM_FIELD", [f"unsupported field type: {field.field_type}"], details={"field_key": field.key})
+
+    if field.disabled:
+        return ValidationResult(True, "INACTIVE_FIELD", warnings=["field is disabled and was not evaluated"], details={"field_key": field.key, "inactive": True})
 
     value = _effective_value(field)
     errors: list[str] = []
@@ -150,7 +183,7 @@ def validate_application_field(field: ApplicationField, artifact_root: str = "")
         errors.extend(_validate_file(field, artifact_root))
     elif field_type == "checkbox":
         if field.required and _is_blank(value):
-            errors.append("required checkbox has no value")
+            errors.append("MISSING_VALUE: required checkbox has no value")
         else:
             errors.extend(_validate_checkbox(field, value))
             option_error = _validate_options(field, value)
@@ -158,14 +191,14 @@ def validate_application_field(field: ApplicationField, artifact_root: str = "")
                 errors.append(option_error)
     else:
         if field.required and _is_blank(value):
-            errors.append("required field has no value")
+            errors.append("MISSING_VALUE: required field has no value")
         option_error = _validate_options(field, value)
         if option_error:
             errors.append(option_error)
 
     return ValidationResult(
         not errors,
-        "OK" if not errors else "INVALID_FORM_FIELD",
+        "OK" if not errors else ("MISSING_VALUE" if any(error.startswith("MISSING_VALUE:") for error in errors) else ("MISSING_ARTIFACT" if any(error.startswith("MISSING_ARTIFACT:") for error in errors) else ("INVALID_ARTIFACT" if any(error.startswith("INVALID_ARTIFACT:") for error in errors) else ("INVALID_OPTION" if any("value is not among options" in error for error in errors) else ("INVALID_VALUE" if any("checkbox" in error for error in errors) else "INVALID_FORM_FIELD"))))),
         errors,
         details={"field_key": field.key, "field_type": field_type},
     )
@@ -173,9 +206,11 @@ def validate_application_field(field: ApplicationField, artifact_root: str = "")
 
 def validate_application_form(form: ApplicationForm) -> ValidationResult:
     field_errors: dict[str, list[str]] = {}
+    field_results: dict[str, dict[str, Any]] = {}
     unsupported: list[str] = []
     for field in form.fields:
         result = validate_application_field(field, form.artifact_root)
+        field_results[field.key] = {"valid": result.valid, "code": result.code, "errors": result.errors, "warnings": result.warnings}
         if not result.valid:
             field_errors[field.key] = result.errors
             if result.code == "UNSUPPORTED_FORM_FIELD":
@@ -190,5 +225,5 @@ def validate_application_form(form: ApplicationForm) -> ValidationResult:
         not field_errors,
         code,
         [f"{key}: {error}" for key, errors in field_errors.items() for error in errors],
-        details={"field_errors": field_errors, "unsupported_fields": unsupported},
+        details={"field_errors": field_errors, "field_results": field_results, "unsupported_fields": unsupported},
     )
