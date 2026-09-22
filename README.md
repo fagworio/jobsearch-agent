@@ -32,6 +32,9 @@ Para uma vaga pública:
 
 ```bash
 jobsearch-agent run --url https://boards.greenhouse.io/example/jobs/123
+
+# preflight público somente leitura: não preenche e não submete
+jobsearch-agent preflight --url https://boards.greenhouse.io/example/jobs/123
 ```
 
 Com o grupo opcional de discovery instalado:
@@ -70,6 +73,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `submit: manual` continua exigindo revisão antes do envio.
 - O Browser Dry Run valida opções, checkboxes e artefatos de upload antes de gerar um
   `ExecutionPlan`; o plano contém somente `fill`/`upload` e termina em `STOP_BEFORE_SUBMIT`.
+- O comando `preflight` abre uma URL pública apenas para validar navegação, provider, root,
+  bindings, capability issues e política de rede; ele nunca gera `ExecutionPlan` nem preenche
+  controles.
 - O ATS Inspector atual é somente leitura: produz `ApplicationForm` e `FormBindings` separados,
   sem seletores DOM no domínio e sem preencher controles.
 - Cada plano registra o fingerprint do formulário e dos bindings; o executor pode revalidar o

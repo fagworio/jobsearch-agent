@@ -6,8 +6,8 @@ __pycache__/
 .env
 data/*.db
 data/applications/*/
+data/public-preflight/
 data/browser_profiles/
 work/
 dist/
 *.egg-info/
-

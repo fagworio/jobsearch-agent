@@ -169,10 +169,12 @@ class GreenhouseAdapter:
         soup = BeautifulSoup(html, "html.parser")
         if soup.find(attrs={"data-provider": "greenhouse"}) or soup.find(attrs={"data-ats": "greenhouse"}):
             return True
-        return bool(
-            soup.find("form", id="application_form")
-            and soup.select('form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]')
+        legacy_form = soup.find("form", id="application_form")
+        modern_form = soup.find("form", id="application-form")
+        namespaced_controls = soup.select(
+            'form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]'
         )
+        return bool((legacy_form and namespaced_controls) or (modern_form and modern_form.select("input, select, textarea")))
 
     def confidence(self, url: str = "", html: str = "") -> float:
         hostname = (urlparse(url).hostname or "").casefold()
@@ -185,6 +187,9 @@ class GreenhouseAdapter:
             'form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]'
         ):
             return 1.0
+        modern_form = soup.find("form", id="application-form")
+        if modern_form and modern_form.select("input, select, textarea"):
+            return 1.0
         if soup.select(
             'input[name^="job_application["], select[name^="job_application["], textarea[name^="job_application["]'
         ):
@@ -195,7 +200,13 @@ class GreenhouseAdapter:
         hostname = (urlparse(url).hostname or "").casefold()
         if not hostname:
             return set()
-        return {hostname}
+        hosts = {hostname}
+        suffix = ".greenhouse.io"
+        if hostname.endswith(suffix) and hostname != "greenhouse.io":
+            prefix = hostname[: -len(suffix)]
+            hosts.add(f"{prefix}.cdn.greenhouse.io")
+            hosts.update({"boards.greenhouse.io", "boards.cdn.greenhouse.io"})
+        return hosts
 
     def locate_application_root(self, html: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
@@ -205,7 +216,7 @@ class GreenhouseAdapter:
         candidates: list[tuple[int, Tag]] = []
         for form in forms:
             score = 0
-            if form.get("id") == "application_form":
+            if form.get("id") in {"application_form", "application-form"}:
                 score += 100
             if form.get("data-provider") == "greenhouse":
                 score += 90

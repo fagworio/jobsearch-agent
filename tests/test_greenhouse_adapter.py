@@ -31,7 +31,10 @@ def test_greenhouse_adapter_uses_deterministic_signature_and_root():
     assert result.form.source == "greenhouse_adapter"
     assert result.bindings.root_locator == "#application_form"
     assert validate_bindings_against_html(result.form, result.bindings, html, "https://boards.greenhouse.io/acme/jobs/1").valid
-    assert adapter.allowed_hosts("https://boards.greenhouse.io/acme/jobs/1") == {"boards.greenhouse.io"}
+    assert adapter.allowed_hosts("https://boards.greenhouse.io/acme/jobs/1") == {
+        "boards.greenhouse.io",
+        "boards.cdn.greenhouse.io",
+    }
 
 
 def test_greenhouse_adapter_excludes_hidden_and_submit_controls():
@@ -43,6 +46,14 @@ def test_greenhouse_adapter_excludes_hidden_and_submit_controls():
     assert by_type["first_name"].confidence == 1.0
     assert by_type["last_name"].confidence == 1.0
     assert by_type["email"].confidence == 1.0
+
+
+def test_greenhouse_adapter_recognizes_modern_application_form_signature():
+    result = inspect_with_adapter(_html("modern.html"), "https://job-boards.greenhouse.io/acme/jobs/1")
+    assert result.form.provider == "greenhouse"
+    assert result.bindings.root_locator == "#application-form"
+    assert {field.semantic_type for field in result.form.fields} >= {"first_name", "last_name", "email"}
+    assert result.form.fields[-1].semantic_type == "resume"
 
 
 def test_greenhouse_identity_fields_use_explicit_profile_attributes():

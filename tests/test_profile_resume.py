@@ -28,6 +28,14 @@ def test_identity_fact_reference_must_exist():
     assert "identity references unknown fact: missing_identity_fact" in errors
 
 
+def test_identity_fact_reference_requires_identity_type():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    profile.identity_fact_ids["first_name"] = "fact_demo_001"
+    errors = validate_profile_facts(profile, facts)
+    assert "identity fact must have type identity: fact_demo_001" in errors
+
+
 def test_unsupported_claim_is_blocked():
     facts = load_facts(ROOT / "profile/locked_facts.yaml")
     resume = Resume(

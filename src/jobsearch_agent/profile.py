@@ -145,8 +145,10 @@ def validate_facts(profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
     for identity_key, fact_id in profile.identity_fact_ids.items():
         if identity_key not in profile.identity:
             errors.append(f"identity fact references missing identity field: {identity_key}")
-        if fact_id not in facts:
+        elif fact_id not in facts:
             errors.append(f"identity references unknown fact: {fact_id}")
+        elif facts[fact_id].type != "identity":
+            errors.append(f"identity fact must have type identity: {fact_id}")
     referenced = {fact_id for exp in profile.experiences for fact_id in exp.fact_ids}
     missing = sorted(referenced - facts.keys())
     if missing:

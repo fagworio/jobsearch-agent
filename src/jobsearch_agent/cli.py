@@ -13,6 +13,7 @@ from .llm import LLMError
 from .models import to_dict
 from .persistence import ApplicationConflict, Database
 from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, prepare_application, resume_application, run, search
+from .preflight import run_preflight
 from .profile import ProfileError, load_facts, load_profile, validate_facts
 from .sources import SourceError
 
@@ -98,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_group.add_argument("--json-file", type=Path)
     run_parser.set_defaults(handler="run")
 
+    preflight_parser = sub.add_parser("preflight", help="inspeciona uma vaga pública sem preencher ou submeter")
+    runtime_options(preflight_parser)
+    preflight_parser.add_argument("--url", required=True)
+    preflight_parser.set_defaults(handler="preflight")
+
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
     status.set_defaults(handler="status")
@@ -151,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = None if args.url else json.loads(args.json_file.read_text(encoding="utf-8"))
             _print(run(settings, payload, args.url or "", args.language))
             return 0
+        if args.handler == "preflight":
+            result = run_preflight(args.url, settings.resolve(settings.artifacts_dir))
+            _print(result)
+            return 0 if result.status in {"READY", "DOM_UNSTABLE", "UNSUPPORTED_FORM", "UNSUPPORTED_PROVIDER"} else 2
         if args.handler == "status":
             db = Database(settings.resolve(settings.db_path))
             try:
