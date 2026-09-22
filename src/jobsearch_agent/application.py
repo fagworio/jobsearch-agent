@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState
+from .forms import validate_application_form
 from .persistence import Database
 
 
@@ -71,7 +72,7 @@ def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
                 continue
             answer_data = raw_field.get("answer")
             answer = ApplicationAnswer(**answer_data) if isinstance(answer_data, dict) else None
-            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step"}}, answer=answer))
+            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple"}}, answer=answer))
         form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])])
     answers = [ApplicationAnswer(**item) for item in data.get("answers", []) if isinstance(item, dict)]
     return ApplicationContext(
@@ -142,19 +143,22 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
     if not resume_ok:
         blockers.append("resume_invalid")
 
-    fields = context.form.fields if context.form else []
-    unknown_fields = [field.key for field in fields if field.required and not (field.value or (field.answer and field.answer.answer))]
-    unsupported_fields = [field.key for field in fields if field.field_type not in {"text", "textarea", "email", "tel", "url", "select", "radio", "checkbox", "date"}]
+    form_analyzed = context.form is not None
+    form_validation = validate_application_form(context.form) if context.form else None
+    unsupported_fields = list((form_validation.details if form_validation else {}).get("unsupported_fields", []))
+    invalid_fields = list((form_validation.details if form_validation else {}).get("field_errors", {}).keys())
+    unknown_fields = [field for field in invalid_fields if field not in unsupported_fields]
+    if form_validation and not form_validation.valid:
+        checks.append({"gate": "form_validation", "result": "blocker", "evidence": form_validation.details, "errors": form_validation.errors})
     if unsupported_fields:
         checks.append({"gate": "form", "result": "blocker", "evidence": unsupported_fields})
         blockers.append("unsupported_form")
     elif unknown_fields:
         checks.append({"gate": "required_answers", "result": "unknown", "evidence": unknown_fields})
         blockers.extend(f"unknown_answer:{item}" for item in unknown_fields)
-    else:
+    elif form_analyzed:
         checks.append({"gate": "required_answers", "result": "pass", "evidence": []})
 
-    form_analyzed = context.form is not None
     if not form_analyzed:
         checks.append({"gate": "form", "result": "not_analyzed", "evidence": "No ApplicationForm has been inspected yet."})
     if "unsupported_form" in blockers:

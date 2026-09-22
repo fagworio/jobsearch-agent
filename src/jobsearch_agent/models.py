@@ -323,11 +323,14 @@ class ApplicationField:
     semantic_type: str = "unknown"
     required: bool = False
     options: list[str] = field(default_factory=list)
-    value: str = ""
+    value: Any = ""
     answer: ApplicationAnswer | None = None
     confidence: float = 0.0
     source: str = "unknown"
     step: str = ""
+    attachment_path: str = ""
+    accepted_types: list[str] = field(default_factory=list)
+    multiple: bool = False
 
 
 @domain_dataclass

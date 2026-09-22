@@ -109,6 +109,7 @@ class AnswerKnowledgeBase:
                 return self._field_answer(field, value, ["CandidatePreferences.work_authorization"], "CandidatePreferences", 1.0, semantic_type)
         if semantic_type == "requires_sponsorship" and preferences and preferences.requires_sponsorship in {"yes", "no"}:
             value = "Yes" if preferences.requires_sponsorship == "yes" else "No"
+            value = self._map_boolean_option(value, field.options)
             return self._field_answer(field, value, ["CandidatePreferences.requires_sponsorship"], "CandidatePreferences", 1.0, semantic_type)
         answer = self.resolve(field.label, profile, preferences)
         if answer and semantic_type != "unknown":
@@ -120,6 +121,21 @@ class AnswerKnowledgeBase:
     @staticmethod
     def _yes_no_options(options: list[str]) -> bool:
         return {_normalize(option) for option in options} == {"yes", "no"}
+
+    @staticmethod
+    def _map_boolean_option(value: str, options: list[str]) -> str:
+        """Map an abstract Yes/No answer to the exact ATS option label."""
+        if not options or AnswerKnowledgeBase._yes_no_options(options):
+            return value
+        wanted = value == "Yes"
+        for option in options:
+            normalized = _normalize(option)
+            is_negative = normalized.startswith("no ") or normalized == "no" or " do not " in f" {normalized} " or " not require " in f" {normalized} "
+            if wanted and not is_negative and ("yes" in normalized or "require sponsorship" in normalized or "sponsor" in normalized):
+                return option
+            if not wanted and (is_negative or normalized.startswith("no ")):
+                return option
+        return value
 
     @staticmethod
     def _option_matches(value: str, options: list[str]) -> bool:

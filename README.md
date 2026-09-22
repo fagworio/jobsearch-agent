@@ -13,8 +13,8 @@ desenvolvimento sem instalação, prefixe os comandos com `PYTHONPATH=src`.
 
 As dependências principais incluem Pydantic, httpx, BeautifulSoup, Lingua, RapidFuzz e
 python-docx. A integração JobSpy é opcional e pode ser instalada com o grupo de discovery
-(`poetry install --with discovery`). Playwright permanece reservado para a futura camada de
-aplicação ATS. O código mantém um modo mínimo para executar fixtures em ambientes sem as
+(`poetry install --with discovery`). Playwright permanece opcional e, nesta fase, só pode ser
+usado para inspeção/dry-run; nenhuma API de submissão existe no executor. O código mantém um modo mínimo para executar fixtures em ambientes sem as
 dependências opcionais instaladas; a instalação de produção deve usar o ambiente Poetry.
 
 ```bash
@@ -66,5 +66,7 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - `ApplicationPolicy` controla autonomia e segurança separadamente de `CandidatePreferences`.
 - `READY_TO_APPLY` só é emitido com `ApplicationForm` conhecido e campos obrigatórios resolvidos;
   `submit: manual` continua exigindo revisão antes do envio.
+- O Browser Dry Run valida opções, checkboxes e artefatos de upload antes de gerar um
+  `ExecutionPlan`; o plano contém somente `fill`/`upload` e termina em `STOP_BEFORE_SUBMIT`.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.
