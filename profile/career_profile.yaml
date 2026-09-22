@@ -5,11 +5,12 @@ identity:
   email: "demo@example.invalid"
   location: "São Paulo, BR"
 professional_summary:
-  pt-BR: "Desenvolvedor WordPress com experiência em plugins personalizados, WooCommerce e integrações REST."
-  en-US: "WordPress developer with experience in custom plugins, WooCommerce and REST integrations."
-professional_summary_fact_ids:
-  pt-BR: [fact_demo_001, fact_demo_002]
-  en-US: [fact_demo_001, fact_demo_002]
+  pt-BR:
+    text: "Desenvolvedor WordPress com experiência em plugins personalizados, WooCommerce e integrações REST."
+    fact_ids: [fact_demo_001, fact_demo_002]
+  en-US:
+    text: "WordPress developer with experience in custom plugins, WooCommerce and REST integrations."
+    fact_ids: [fact_demo_001, fact_demo_002]
 experience:
   - id: experience_demo_001
     company: "Example Studio"
