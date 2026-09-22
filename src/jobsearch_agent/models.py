@@ -136,7 +136,6 @@ class ProfileReadiness:
     ready: bool
     blockers: list[str] = field(default_factory=list)
     missing_optional: list[str] = field(default_factory=list)
-    blockers: list[str] = field(default_factory=list)
 
 
 @domain_dataclass
