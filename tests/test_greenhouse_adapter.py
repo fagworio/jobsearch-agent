@@ -45,6 +45,23 @@ def test_greenhouse_adapter_excludes_hidden_and_submit_controls():
     assert by_type["email"].confidence == 1.0
 
 
+def test_greenhouse_identity_fields_use_explicit_profile_attributes():
+    result = inspect_with_adapter(_html("simple.html"), "https://boards.greenhouse.io/acme/jobs/1")
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = load_preferences(ROOT / "profile/preferences.yaml")
+    kb = AnswerKnowledgeBase([])
+
+    first_name = next(field for field in result.form.fields if field.semantic_type == "first_name")
+    last_name = next(field for field in result.form.fields if field.semantic_type == "last_name")
+    assert kb.resolve_field(first_name, profile, preferences).answer == "Demo"
+    assert kb.resolve_field(last_name, profile, preferences).answer == "Candidate"
+
+    profile.identity.pop("first_name")
+    profile.identity.pop("last_name")
+    assert kb.resolve_field(first_name, profile, preferences) is None
+    assert kb.resolve_field(last_name, profile, preferences) is None
+
+
 def test_greenhouse_semantic_mapping_covers_files_and_sensitive_questions():
     resume = inspect_with_adapter(_html("resume-upload.html"), "https://boards.greenhouse.io/acme/jobs/1")
     assert {field.semantic_type for field in resume.form.fields} == {"resume", "cover_letter"}
@@ -157,7 +174,11 @@ def test_greenhouse_checkbox_and_conditional_fields_keep_explicit_semantics():
 
     conditional = inspect_with_adapter(_html("conditional.html"), "https://boards.greenhouse.io/acme/jobs/1")
     assert next(field for field in conditional.form.fields if field.semantic_type == "relocation").key == "job_application[relocation]"
-    assert next(field for field in conditional.form.fields if field.key == "job_application[relocation_location]").semantic_type == "location"
+    preferred = next(field for field in conditional.form.fields if field.key == "job_application[relocation_location]")
+    assert preferred.semantic_type == "preferred_relocation_location"
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = load_preferences(ROOT / "profile/preferences.yaml")
+    assert AnswerKnowledgeBase([]).resolve_field(preferred, profile, preferences) is None
 
 
 def test_greenhouse_adapter_rejects_ambiguous_or_non_greenhouse_roots():

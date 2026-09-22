@@ -97,6 +97,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `unknown` e podem bloquear no Safety Gate. Controles não representados pelo domínio viram
   `FormCapabilityIssue` e levam a `UNSUPPORTED_FORM`, enquanto autorização de trabalho exige
   jurisdição explícita e confiança mínima antes de ser respondida automaticamente.
+- `first_name` e `last_name` só são preenchidos quando existem como atributos explícitos no perfil;
+  o agente não divide automaticamente um nome composto. Campos de localização atual e localização
+  preferida para relocação também possuem semânticas distintas.
 - O `DryRunApplicationOrchestrator` executa o ciclo bounded `inspect → resolve → Safety Gate →
   plan → fill`. Quando o DOM muda, ele re-inspeciona o formulário, resolve novamente as respostas
   e gera um novo plano; fingerprints repetidos e excesso de ciclos interrompem com status explícito.

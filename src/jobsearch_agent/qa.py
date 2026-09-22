@@ -126,6 +126,17 @@ class AnswerKnowledgeBase:
                 semantic_type = "work_authorization"
             elif "sponsorship" in normalized_label or "patrocinio" in normalized_label:
                 semantic_type = "requires_sponsorship"
+        if semantic_type in {"first_name", "last_name"}:
+            value = profile.identity.get(semantic_type, "")
+            if value:
+                return self._field_answer(
+                    field,
+                    value,
+                    [f"CareerProfile.identity.{semantic_type}"],
+                    "CareerProfile",
+                    1.0,
+                    semantic_type,
+                )
         if semantic_type == "work_authorization" and preferences and preferences.work_authorization:
             country = _field_country(field)
             if not country:

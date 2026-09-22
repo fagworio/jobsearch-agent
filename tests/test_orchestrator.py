@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from jobsearch_agent.ats import GreenhouseAdapter
 from jobsearch_agent.browser import BrowserExecutionResult
-from jobsearch_agent.models import ApplicationContext, ApplicationPolicy, CandidatePreferences
+from jobsearch_agent.models import ApplicationAnswer, ApplicationContext, ApplicationPolicy, CandidatePreferences
 from jobsearch_agent.orchestrator import DryRunApplicationOrchestrator
 from jobsearch_agent.profile import load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
@@ -29,6 +29,23 @@ CHANGED_HTML = """
   </select>
 </form>
 """
+
+MANUAL_INITIAL_HTML = """
+<form id="application_form">
+  <label for="email">Email</label>
+  <input id="email" name="job_application[email]" required>
+  <label for="custom">Why are you interested?</label>
+  <input id="custom" name="job_application[question_123]" required>
+</form>
+"""
+
+MANUAL_CHANGED_HTML = MANUAL_INITIAL_HTML.replace(
+    "</form>",
+    '<label for="relocation">Are you willing to relocate?</label>'
+    '<select id="relocation" name="job_application[relocation]" required>'
+    '<option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option>'
+    "</select></form>",
+)
 
 
 @dataclass
@@ -61,6 +78,19 @@ class ChangingFiller:
 class AlwaysChangedFiller:
     def fill(self, session, context, plan, bindings, audit_dir=None):
         return BrowserExecutionResult(context.application_id, [], status="FORM_CHANGED")
+
+
+class ManualAnswerChangingFiller:
+    def __init__(self, page: FakePage):
+        self.page = page
+        self.calls = 0
+
+    def fill(self, session, context, plan, bindings, audit_dir=None):
+        self.calls += 1
+        if self.calls == 1:
+            self.page.html = MANUAL_CHANGED_HTML
+            return BrowserExecutionResult(context.application_id, [], status="FORM_CHANGED")
+        return BrowserExecutionResult(context.application_id, [{"field_key": action.field_key} for action in plan.actions])
 
 
 def _context():
@@ -111,3 +141,47 @@ def test_orchestrator_stops_at_max_cycles():
 
     assert result.status == "MAX_CYCLES_EXCEEDED"
     assert len(result.cycles) == 1
+
+
+def test_orchestrator_carries_only_approved_answer_across_reinspection():
+    page = FakePage(MANUAL_INITIAL_HTML)
+    context = _context()
+    context.answers = [
+        ApplicationAnswer(
+            "manual-interest",
+            "Why are you interested?",
+            "The role matches my documented experience.",
+            source="manual_review",
+            approved=True,
+            semantic_type="unknown",
+        )
+    ]
+    filler = ManualAnswerChangingFiller(page)
+    result = DryRunApplicationOrchestrator(
+        GreenhouseAdapter(), PROFILE, PREFERENCES, AnswerKnowledgeBase([]), filler=filler, max_cycles=3
+    ).run(FakeSession(page), context)
+
+    assert result.status == "COMPLETED"
+    assert result.plan is not None
+    manual_action = next(action for action in result.plan.actions if action.field_key == "job_application[question_123]")
+    assert manual_action.value == "The role matches my documented experience."
+
+
+def test_orchestrator_does_not_carry_unapproved_answer():
+    page = FakePage(MANUAL_INITIAL_HTML)
+    context = _context()
+    context.answers = [
+        ApplicationAnswer(
+            "manual-interest",
+            "Why are you interested?",
+            "Unapproved answer",
+            source="manual_review",
+            approved=False,
+            semantic_type="unknown",
+        )
+    ]
+    result = DryRunApplicationOrchestrator(
+        GreenhouseAdapter(), PROFILE, PREFERENCES, AnswerKnowledgeBase([]), filler=AlwaysChangedFiller(), max_cycles=3
+    ).run(FakeSession(page), context)
+
+    assert result.status == "NEEDS_ANSWER"

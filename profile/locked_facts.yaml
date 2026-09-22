@@ -1,4 +1,20 @@
 facts:
+  fact_demo_identity_001:
+    type: identity
+    statement:
+      pt-BR: "O primeiro nome do candidato demonstrativo é Demo."
+      en-US: "The demo candidate's first name is Demo."
+    tags: [identity, first-name]
+    source: demo-fixture
+    verified: true
+  fact_demo_identity_002:
+    type: identity
+    statement:
+      pt-BR: "O sobrenome do candidato demonstrativo é Candidate."
+      en-US: "The demo candidate's last name is Candidate."
+    tags: [identity, last-name]
+    source: demo-fixture
+    verified: true
   fact_demo_001:
     type: experience
     statement:
@@ -15,4 +31,3 @@ facts:
     tags: [woocommerce, rest, api, integrations]
     source: demo-fixture
     verified: true
-
