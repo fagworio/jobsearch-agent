@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
-from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, validate_navigation_url
+from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, PlaywrightFormFiller, PlaywrightSessionManager, validate_navigation_url
 from jobsearch_agent.execution import ExecutionAction, ExecutionPlan, ExecutionPlanError, build_execution_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
-from jobsearch_agent.inspector import ATSInspector
+from jobsearch_agent.inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectionError, validate_bindings_against_html
 from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationState
 from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
@@ -45,6 +45,12 @@ def _ready_context(form: ApplicationForm) -> ApplicationContext:
     )
 
 
+def _bindings_for(form: ApplicationForm) -> FormBindings:
+    controls = {"textarea": "textarea", "select": "select", "radio": "radio", "checkbox": "checkbox", "file": "file"}
+    fields = [DOMFieldBinding(field.key, f"#{field.key}", controls.get(field.field_type.casefold(), "text"), option_values={option: option for option in field.options}) for field in form.fields]
+    return FormBindings(form.form_id, fields)
+
+
 def test_file_field_requires_existing_artifact_and_accepted_extension(tmp_path: Path):
     missing = ApplicationField("resume", "Resume", field_type="file", semantic_type="resume", required=True, accepted_types=["pdf"])
     assert validate_application_field(missing).valid is False
@@ -62,6 +68,13 @@ def test_file_field_requires_existing_artifact_and_accepted_extension(tmp_path: 
     outside.write_bytes(_valid_pdf())
     external = ApplicationField("resume", "Resume", field_type="file", required=True, attachment_path=str(outside), accepted_types=["pdf"])
     assert validate_application_field(external, str(tmp_path)).valid is False
+
+
+def test_safety_gate_uses_needs_artifact_for_missing_upload(tmp_path: Path):
+    form = ApplicationForm("form-1", artifact_root=str(tmp_path), fields=[ApplicationField("resume", "Resume", field_type="file", required=True, accepted_types=["pdf"])])
+    readiness = evaluate_safety_gate(_ready_context(form))
+    assert readiness.decision == ApplicationState.NEEDS_ARTIFACT
+    assert "invalid_artifact:resume" in readiness.blockers
 
 
 def test_form_validation_rejects_unknown_option_and_required_checkbox():
@@ -115,7 +128,7 @@ def test_safety_gate_rejects_invalid_option_before_execution():
     assert readiness.decision == ApplicationState.NEEDS_ANSWER
     assert "invalid_option:auth" in readiness.blockers
     with pytest.raises(ExecutionPlanError):
-        build_execution_plan(context)
+        build_execution_plan(context, _bindings_for(context.form))
 
 
 def test_execution_plan_and_dry_run_have_no_submit_path(tmp_path: Path):
@@ -131,11 +144,12 @@ def test_execution_plan_and_dry_run_have_no_submit_path(tmp_path: Path):
         artifact_root=str(tmp_path),
     )
     context = _ready_context(form)
-    plan = build_execution_plan(context)
+    bindings = _bindings_for(form)
+    plan = build_execution_plan(context, bindings)
     assert plan.final_action == "STOP_BEFORE_SUBMIT"
     assert [action.action_type for action in plan.actions] == ["fill", "upload"]
     executor = DryRunBrowserExecutor()
-    result = executor.execute(context, plan)
+    result = executor.execute(context, plan, bindings)
     assert result.stopped_before_submit is True
     assert [item["operation"] for item in result.operations] == ["fill", "upload"]
     assert not hasattr(executor, "submit")
@@ -146,20 +160,21 @@ def test_execution_plan_detects_changed_upload(tmp_path: Path):
     artifact.write_bytes(_valid_pdf())
     form = ApplicationForm("form-1", provider="greenhouse", artifact_root=str(tmp_path), fields=[ApplicationField("resume", "Resume", field_type="file", required=True, attachment_path=str(artifact), accepted_types=["pdf"])])
     context = _ready_context(form)
-    plan = build_execution_plan(context)
+    bindings = _bindings_for(form)
+    plan = build_execution_plan(context, bindings)
     artifact.write_bytes(artifact.read_bytes() + b"changed")
     with pytest.raises(BrowserSessionError, match="hash"):
-        DryRunBrowserExecutor().execute(context, plan)
+        DryRunBrowserExecutor().execute(context, plan, bindings)
 
 
 def test_executor_rechecks_safety_gate_and_current_form():
     context = _ready_context(ApplicationForm("form-1", provider="greenhouse", fields=[ApplicationField("name", "Name", required=True, value="Candidate")]))
     bypassed = ExecutionPlan("application-1", "greenhouse", [ExecutionAction("fill", "name", "invented")])
     with pytest.raises(BrowserSessionError, match="refusing invalid execution plan"):
-        DryRunBrowserExecutor().execute(context, bypassed)
+        DryRunBrowserExecutor().execute(context, bypassed, _bindings_for(context.form))
     unknown = ExecutionPlan("application-1", "greenhouse", [ExecutionAction("fill", "other", "Candidate")])
     with pytest.raises(BrowserSessionError, match="refusing invalid execution plan"):
-        DryRunBrowserExecutor().execute(context, unknown)
+        DryRunBrowserExecutor().execute(context, unknown, _bindings_for(context.form))
 
 
 def test_navigation_policy_rejects_local_and_non_web_urls():
@@ -169,6 +184,8 @@ def test_navigation_policy_rejects_local_and_non_web_urls():
     assert validate_navigation_url("https://example.com:8443").valid is False
     assert validate_navigation_url("https://8.8.8.8", {"example.com"}).valid is False
     assert validate_navigation_url("https://8.8.8.8").valid is True
+    with pytest.raises(BrowserSessionError, match="allowed_hosts"):
+        PlaywrightSessionManager().start()
 
 
 def test_inspector_separates_domain_form_from_dom_bindings():
@@ -203,3 +220,63 @@ def test_radio_option_bindings_are_unique_without_ids():
     binding = inspected.bindings.for_field("authorization")
     assert binding.option_locators["Yes"] != binding.option_locators["No"]
     assert binding.option_values == {"Yes": "yes", "No": "no"}
+
+
+def test_inspector_rejects_ambiguous_forms_and_validates_current_dom():
+    html = """
+      <form id="search"><input name="q"></form>
+      <form id="application"><label for="email">Email</label><input id="email" name="email" type="email"></form>
+    """
+    with pytest.raises(InspectionError, match="AMBIGUOUS_FORM"):
+        ATSInspector().inspect_html(html)
+    inspected = ATSInspector().inspect_html(html, form_selector="#application")
+    assert validate_bindings_against_html(inspected.form, inspected.bindings, html).valid is True
+    changed = html.replace('id="email"', 'id="email-changed"')
+    assert validate_bindings_against_html(inspected.form, inspected.bindings, changed).valid is False
+
+
+class _FakeLocator:
+    def __init__(self, calls: list[tuple[str, str]], selector: str):
+        self.calls = calls
+        self.selector = selector
+
+    def count(self):
+        return 1
+
+    def fill(self, value):
+        self.calls.append(("fill", f"{self.selector}:{value}"))
+
+    def set_input_files(self, path):
+        self.calls.append(("upload", path))
+
+
+class _FakePage:
+    def __init__(self, html: str):
+        self.html = html
+        self.calls: list[tuple[str, str]] = []
+
+    def content(self):
+        return self.html
+
+    def locator(self, selector):
+        return _FakeLocator(self.calls, selector)
+
+
+def test_playwright_filler_only_fills_and_uploads(tmp_path: Path):
+    artifact = tmp_path / "resume.pdf"
+    artifact.write_bytes(_valid_pdf())
+    html = '<form id="application"><label for="name">Name</label><input id="name" required><label for="resume">Resume</label><input id="resume" type="file" accept="application/pdf" required></form>'
+    inspected = ATSInspector().inspect_html(html, form_selector="#application")
+    inspected.form.artifact_root = str(tmp_path)
+    for field in inspected.form.fields:
+        if field.key == "name":
+            field.value = "Candidate"
+        if field.key == "resume":
+            field.attachment_path = str(artifact)
+    context = _ready_context(inspected.form)
+    plan = build_execution_plan(context, inspected.bindings)
+    page = _FakePage(html)
+    result = PlaywrightFormFiller().fill(page, context, plan, inspected.bindings)
+    assert [call[0] for call in page.calls] == ["fill", "upload"]
+    assert result.stopped_before_submit is True
+    assert not hasattr(PlaywrightFormFiller(), "submit")

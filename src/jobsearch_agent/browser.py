@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .execution import ExecutionPlan, validate_execution_context
+from .inspector import FormBindings
 from .models import ApplicationContext, ValidationResult
 
 
@@ -59,15 +60,15 @@ class BrowserExecutionResult:
 class BrowserExecutor:
     """Minimal executor contract; intentionally exposes no submit operation."""
 
-    def execute(self, context: ApplicationContext, plan: ExecutionPlan) -> BrowserExecutionResult:
+    def execute(self, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> BrowserExecutionResult:
         raise NotImplementedError
 
 
 class DryRunBrowserExecutor(BrowserExecutor):
     """Record browser operations without opening a browser or sending data."""
 
-    def execute(self, context: ApplicationContext, plan: ExecutionPlan) -> BrowserExecutionResult:
-        validation = validate_execution_context(context, plan)
+    def execute(self, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> BrowserExecutionResult:
+        validation = validate_execution_context(context, plan, bindings, current_html)
         if not validation.valid:
             raise BrowserSessionError("refusing invalid execution plan: " + "; ".join(validation.errors))
         operations = []
@@ -77,6 +78,67 @@ class DryRunBrowserExecutor(BrowserExecutor):
             elif action.action_type == "upload":
                 operations.append({"operation": "upload", "field_key": action.field_key, "attachment_path": action.attachment_path, "step": action.step})
         return BrowserExecutionResult(plan.application_id, operations, stopped_before_submit=True)
+
+
+class PlaywrightFormFiller:
+    """Fill only validated controls; this class intentionally has no submit method."""
+
+    def fill(self, page: Any, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings) -> BrowserExecutionResult:
+        current_html = page.content()
+        validation = validate_execution_context(context, plan, bindings, current_html)
+        if not validation.valid:
+            raise BrowserSessionError("refusing stale or invalid form: " + "; ".join(validation.errors))
+        fields = {field.key: field for field in context.form.fields}
+        operations: list[dict[str, Any]] = []
+        for action in plan.actions:
+            field = fields[action.field_key]
+            binding = bindings.for_field(action.field_key)
+            if binding is None:
+                raise BrowserSessionError(f"missing binding: {action.field_key}")
+            locator = page.locator(binding.locator)
+            if locator.count() != 1:
+                raise BrowserSessionError(f"locator is not unique: {action.field_key}")
+            field_type = field.field_type.casefold().strip()
+            if action.action_type == "upload":
+                locator.set_input_files(action.attachment_path)
+                operations.append({"operation": "upload", "field_key": action.field_key})
+            elif action.action_type == "fill":
+                self._fill_value(page, locator, binding, field, action.value)
+                operations.append({"operation": "fill", "field_key": action.field_key})
+            else:  # defensive; validate_execution_context already rejects it
+                raise BrowserSessionError(f"unsupported dry-run action: {action.action_type}")
+        return BrowserExecutionResult(plan.application_id, operations, stopped_before_submit=True)
+
+    @staticmethod
+    def _fill_value(page: Any, locator: Any, binding: FormBindings | Any, field: Any, value: Any) -> None:
+        field_type = field.field_type.casefold().strip()
+        if field_type == "select":
+            option_value = binding.option_values.get(str(value))
+            if option_value is None:
+                raise BrowserSessionError(f"select option is not bound: {field.key}")
+            locator.select_option(option_value)
+        elif field_type == "radio":
+            option_locator = binding.option_locators.get(str(value))
+            if not option_locator:
+                raise BrowserSessionError(f"radio option is not bound: {field.key}")
+            page.locator(option_locator).check()
+        elif field_type == "checkbox":
+            if field.semantic_type == "checkbox_boolean":
+                normalized = str(value).casefold()
+                if normalized in {"true", "yes", "1", "on", "checked"}:
+                    locator.check()
+                else:
+                    locator.uncheck()
+            else:
+                selected = value if isinstance(value, list) else str(value).split(",")
+                for label, option_locator in binding.option_locators.items():
+                    option = page.locator(option_locator)
+                    if label in selected:
+                        option.check()
+                    else:
+                        option.uncheck()
+        else:
+            locator.fill(str(value))
 
 
 class PlaywrightSessionManager:
@@ -108,6 +170,8 @@ class PlaywrightSessionManager:
             route.abort("blockedbyclient")
 
     def start(self) -> None:
+        if not self.allowed_hosts:
+            raise BrowserSessionError("Playwright session requires an explicit allowed_hosts policy")
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:  # pragma: no cover - optional dependency

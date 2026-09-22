@@ -13,6 +13,7 @@ from typing import Any
 
 from .forms import effective_attachment_path, validate_application_form
 from .application import evaluate_safety_gate
+from .inspector import FormBindings, compute_form_fingerprint, validate_bindings_against_html, validate_form_bindings
 from .models import ApplicationContext, ApplicationField, ValidationResult, now_iso
 
 
@@ -39,6 +40,7 @@ class ExecutionPlan:
     final_action: str = "STOP_BEFORE_SUBMIT"
     version: str = "1"
     created_at: str = field(default_factory=now_iso)
+    form_fingerprint: str = ""
 
 
 def _field_value(field: ApplicationField) -> Any:
@@ -55,13 +57,20 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def _validate_plan_against_context(context: ApplicationContext, plan: ExecutionPlan) -> ValidationResult:
+def _validate_plan_against_context(context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings | None = None) -> ValidationResult:
     errors: list[str] = []
     if plan.application_id != context.application_id:
         errors.append("execution plan application does not match context")
     if context.form is None:
         errors.append("application form is missing")
         return ValidationResult(False, "INVALID_EXECUTION_CONTEXT", errors)
+    if bindings is None:
+        errors.append("form bindings are required at the execution boundary")
+    else:
+        binding_result = validate_form_bindings(context.form, bindings)
+        errors.extend(binding_result.errors)
+        if plan.form_fingerprint != compute_form_fingerprint(context.form, bindings):
+            errors.append("execution plan form fingerprint is stale")
     if plan.provider != context.form.provider:
         errors.append("execution plan provider does not match form")
     fields = {field.key: field for field in context.form.fields}
@@ -107,9 +116,12 @@ def validate_execution_plan(plan: ExecutionPlan) -> ValidationResult:
     return ValidationResult(not errors, "OK" if not errors else "INVALID_EXECUTION_PLAN", errors)
 
 
-def build_execution_plan(context: ApplicationContext) -> ExecutionPlan:
+def build_execution_plan(context: ApplicationContext, bindings: FormBindings) -> ExecutionPlan:
     if context.form is None:
         raise ExecutionPlanError("cannot build execution plan before form inspection")
+    binding_result = validate_form_bindings(context.form, bindings)
+    if not binding_result.valid:
+        raise ExecutionPlanError("cannot build execution plan with invalid bindings: " + "; ".join(binding_result.errors))
     readiness = evaluate_safety_gate(context)
     if not readiness.ready_to_apply:
         raise ExecutionPlanError("cannot build execution plan before Safety Gate approval: " + "; ".join(readiness.blockers or [readiness.decision.value]))
@@ -126,17 +138,17 @@ def build_execution_plan(context: ApplicationContext) -> ExecutionPlan:
                 actions.append(ExecutionAction("upload", field.key, attachment_path=attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}, sha256=_sha256(attachment_path)))
         elif value not in (None, "", []):
             actions.append(ExecutionAction("fill", field.key, value=value, step=field.step, metadata={"semantic_type": field.semantic_type}))
-    plan = ExecutionPlan(context.application_id, context.form.provider, actions)
+    plan = ExecutionPlan(context.application_id, context.form.provider, actions, form_fingerprint=compute_form_fingerprint(context.form, bindings))
     result = validate_execution_plan(plan)
     if not result.valid:
         raise ExecutionPlanError("invalid execution plan: " + "; ".join(result.errors))
-    context_result = _validate_plan_against_context(context, plan)
+    context_result = _validate_plan_against_context(context, plan, bindings)
     if not context_result.valid:
         raise ExecutionPlanError("execution plan does not match context: " + "; ".join(context_result.errors))
     return plan
 
 
-def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan) -> ValidationResult:
+def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> ValidationResult:
     """Public defense-in-depth check used at the browser boundary."""
     readiness = evaluate_safety_gate(context)
     if not readiness.ready_to_apply:
@@ -144,4 +156,11 @@ def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan)
     structural = validate_execution_plan(plan)
     if not structural.valid:
         return structural
-    return _validate_plan_against_context(context, plan)
+    result = _validate_plan_against_context(context, plan, bindings)
+    if not result.valid:
+        return result
+    if current_html is not None:
+        dom_result = validate_bindings_against_html(context.form, bindings, current_html)
+        if not dom_result.valid:
+            return dom_result
+    return result

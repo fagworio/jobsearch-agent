@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import hashlib
+import json
 from typing import Any
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Tag
 
-from .models import ApplicationField, ApplicationForm
+from .models import ApplicationField, ApplicationForm, ValidationResult
 
 
 @dataclass
@@ -28,9 +31,14 @@ class DOMFieldBinding:
 class FormBindings:
     form_id: str
     fields: list[DOMFieldBinding] = field(default_factory=list)
+    root_locator: str = ""
 
     def for_field(self, field_key: str) -> DOMFieldBinding | None:
         return next((binding for binding in self.fields if binding.field_key == field_key), None)
+
+
+class InspectionError(ValueError):
+    pass
 
 
 @dataclass
@@ -40,14 +48,86 @@ class InspectedForm:
 
 
 def detect_provider(url: str = "", html: str = "") -> str:
-    haystack = f"{url} {html}".casefold()
-    if "greenhouse" in haystack:
+    hostname = (urlparse(url).hostname or "").casefold()
+    if hostname == "greenhouse.io" or hostname.endswith(".greenhouse.io"):
         return "greenhouse"
-    if "lever.co" in haystack or "jobs.lever" in haystack:
+    if hostname == "lever.co" or hostname.endswith(".lever.co"):
         return "lever"
-    if "ashby" in haystack:
+    if hostname == "ashbyhq.com" or hostname.endswith(".ashbyhq.com"):
         return "ashby"
+    soup = BeautifulSoup(html, "html.parser")
+    provider = soup.find(attrs={"data-provider": True})
+    if provider and str(provider.get("data-provider")).casefold() in {"greenhouse", "lever", "ashby"}:
+        return str(provider["data-provider"]).casefold()
     return "generic"
+
+
+def compute_form_fingerprint(form: ApplicationForm, bindings: FormBindings) -> str:
+    payload = {
+        "form_id": form.form_id,
+        "provider": form.provider,
+        "fields": [{"key": item.key, "label": item.label, "field_type": item.field_type.casefold().strip(), "semantic_type": item.semantic_type, "required": item.required, "options": item.options, "disabled": item.disabled} for item in sorted(form.fields, key=lambda item: item.key)],
+        "bindings": [{"field_key": item.field_key, "locator": item.locator, "control": item.control, "option_values": item.option_values} for item in sorted(bindings.fields, key=lambda item: item.field_key)],
+        "root_locator": bindings.root_locator,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def validate_form_bindings(form: ApplicationForm, bindings: FormBindings):
+    from .models import ValidationResult
+
+    errors: list[str] = []
+    field_map = {field.key: field for field in form.fields}
+    keys = [binding.field_key for binding in bindings.fields]
+    if bindings.form_id != form.form_id:
+        errors.append("binding form_id does not match form")
+    if len(keys) != len(set(keys)):
+        errors.append("binding field_key is duplicated")
+    if set(keys) != set(field_map):
+        errors.append("bindings and form fields do not have the same keys")
+    compatible = {"text": {"text"}, "textarea": {"textarea"}, "email": {"email", "text"}, "tel": {"tel", "text"}, "url": {"url", "text"}, "date": {"date", "text"}, "select": {"select"}, "radio": {"radio"}, "checkbox": {"checkbox"}, "file": {"file"}}
+    for binding in bindings.fields:
+        field = field_map.get(binding.field_key)
+        if field is None:
+            continue
+        if not binding.locator.strip() or not binding.control.strip():
+            errors.append(f"binding is empty: {binding.field_key}")
+        if any(token in f"{binding.control} {binding.locator}".casefold() for token in ("submit", "button")):
+            errors.append(f"binding targets submit/button: {binding.field_key}")
+        field_type = field.field_type.casefold().strip()
+        if binding.control.casefold() not in compatible.get(field_type, set()):
+            errors.append(f"binding control does not match field type: {binding.field_key}")
+        if set(binding.option_values) != set(field.options):
+            errors.append(f"binding options do not match field options: {binding.field_key}")
+    return ValidationResult(not errors, "OK" if not errors else "INVALID_FORM_BINDINGS", errors)
+
+
+def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings, html: str):
+    from .models import ValidationResult
+
+    static = validate_form_bindings(form, bindings)
+    errors = list(static.errors)
+    soup = BeautifulSoup(html, "html.parser")
+    try:
+        current = ATSInspector().inspect_html(html, form_id=form.form_id, form_selector=bindings.root_locator or None)
+        if compute_form_fingerprint(current.form, current.bindings) != compute_form_fingerprint(form, bindings):
+            errors.append("current DOM fingerprint does not match inspected form")
+    except InspectionError as exc:
+        errors.append(str(exc))
+    for binding in bindings.fields:
+        try:
+            if len(soup.select(binding.locator)) != 1:
+                errors.append(f"locator must match exactly one element: {binding.field_key}")
+        except Exception as exc:
+            errors.append(f"invalid locator for {binding.field_key}: {exc}")
+        for label, locator in binding.option_locators.items():
+            try:
+                if len(soup.select(locator)) != 1:
+                    errors.append(f"option locator must match exactly one element: {binding.field_key}:{label}")
+            except Exception as exc:
+                errors.append(f"invalid option locator for {binding.field_key}:{label}: {exc}")
+    return ValidationResult(not errors, "OK" if not errors else "STALE_FORM_BINDINGS", errors)
 
 
 def _css_escape(value: str) -> str:
@@ -78,13 +158,24 @@ def _disabled(element: Tag) -> bool:
     return element.has_attr("disabled") or str(element.get("aria-disabled", "")).casefold() == "true"
 
 
+def _ancestor_locator(element: Tag) -> str:
+    parts: list[str] = []
+    current: Tag | None = element
+    while current is not None and current.name not in {"[document]", "html"}:
+        if current.get("id"):
+            parts.append(f'#{_css_escape(str(current["id"]))}')
+            break
+        siblings = [item for item in current.parent.find_all(current.name, recursive=False)] if current.parent else [current]
+        position = next((index + 1 for index, item in enumerate(siblings) if item is current), 1)
+        parts.append(f"{current.name}:nth-of-type({position})")
+        current = current.parent
+    return " > ".join(reversed(parts))
+
+
 def _base_locator(element: Tag) -> str:
     if element.get("id"):
         return f'#{_css_escape(str(element["id"]))}'
-    if element.get("name"):
-        tag = element.name
-        return f'{tag}[name="{_css_escape(str(element["name"]))}"]'
-    return f"{element.name}"
+    return _ancestor_locator(element)
 
 
 def _option_locator(element: Tag, index: int, group_locator: str) -> str:
@@ -92,15 +183,16 @@ def _option_locator(element: Tag, index: int, group_locator: str) -> str:
         return f'#{_css_escape(str(element["id"]))}'
     if element.get("name") and element.get("value") is not None:
         return f'{element.name}[name="{_css_escape(str(element["name"]))}"][value="{_css_escape(str(element["value"]))}"]'
-    return f"{group_locator}:nth-of-type({index + 1})"
+    return _ancestor_locator(element)
 
 
 class ATSInspector:
     """Build a read-only form snapshot from HTML or a Playwright page."""
 
-    def inspect_html(self, html: str, url: str = "", form_id: str = "inspected-form") -> InspectedForm:
+    def inspect_html(self, html: str, url: str = "", form_id: str = "inspected-form", form_selector: str | None = None) -> InspectedForm:
         soup = BeautifulSoup(html, "html.parser")
-        controls = [element for element in soup.find_all(["input", "textarea", "select"]) if self._is_data_control(element)]
+        root = self._select_root(soup, form_selector)
+        controls = [element for element in root.find_all(["input", "textarea", "select"]) if self._is_data_control(element)]
         grouped: dict[str, list[Tag]] = defaultdict(list)
         for index, element in enumerate(controls):
             grouped[self._group_key(element, index)].append(element)
@@ -114,8 +206,8 @@ class ATSInspector:
             used_keys[field_key] += 1
             if used_keys[field_key] > 1:
                 field_key = f"{field_key}-{used_keys[field_key]}"
-            field_type, semantic_type, options, multiple, accepted_types = self._describe_group(soup, group)
-            label = _label_for(soup, first)
+            field_type, semantic_type, options, multiple, accepted_types = self._describe_group(root, group)
+            label = _label_for(root, first)
             field = ApplicationField(
                 key=field_key,
                 label=label,
@@ -133,11 +225,24 @@ class ATSInspector:
 
         provider = detect_provider(url, html)
         form = ApplicationForm(form_id=form_id, provider=provider, fields=fields, source="dom_inspector")
-        return InspectedForm(form, FormBindings(form_id, bindings))
+        root_locator = _base_locator(root) if root.name == "form" else ""
+        return InspectedForm(form, FormBindings(form_id, bindings, root_locator))
 
-    def inspect_page(self, page: Any, url: str = "", form_id: str = "inspected-form") -> InspectedForm:
+    def inspect_page(self, page: Any, url: str = "", form_id: str = "inspected-form", form_selector: str | None = None) -> InspectedForm:
         """Read page HTML only; the page is never mutated."""
-        return self.inspect_html(page.content(), url or str(getattr(page, "url", "")), form_id)
+        return self.inspect_html(page.content(), url or str(getattr(page, "url", "")), form_id, form_selector)
+
+    @staticmethod
+    def _select_root(soup: BeautifulSoup, form_selector: str | None) -> Tag:
+        if form_selector:
+            matches = soup.select(form_selector)
+            if len(matches) != 1:
+                raise InspectionError("AMBIGUOUS_FORM: form_selector must match exactly one root")
+            return matches[0]
+        forms = soup.find_all("form")
+        if len(forms) > 1:
+            raise InspectionError("AMBIGUOUS_FORM: multiple form roots require form_selector")
+        return forms[0] if forms else soup
 
     @staticmethod
     def _is_data_control(element: Tag) -> bool:

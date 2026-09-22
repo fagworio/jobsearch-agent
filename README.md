@@ -63,6 +63,8 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - `Job` e `Application` possuem ciclos de vida independentes; interrupções como
   `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA` e `UNSUPPORTED_FORM`
   são estados de domínio, não erros técnicos.
+- `NEEDS_ARTIFACT` representa um upload ausente ou inválido e pode ser retomado depois da
+  correção do artefato.
 - `ApplicationPolicy` controla autonomia e segurança separadamente de `CandidatePreferences`.
 - `READY_TO_APPLY` só é emitido com `ApplicationForm` conhecido e campos obrigatórios resolvidos;
   `submit: manual` continua exigindo revisão antes do envio.
@@ -70,6 +72,8 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `ExecutionPlan`; o plano contém somente `fill`/`upload` e termina em `STOP_BEFORE_SUBMIT`.
 - O ATS Inspector atual é somente leitura: produz `ApplicationForm` e `FormBindings` separados,
   sem seletores DOM no domínio e sem preencher controles.
+- Cada plano registra o fingerprint do formulário e dos bindings; o executor pode revalidar o
+  HTML atual antes de qualquer preenchimento e recusa snapshots obsoletos ou ambíguos.
 - Uploads exigem `ApplicationForm.artifact_root`, permanecem dentro desse diretório e têm o
   conteúdo parseável verificado antes de entrar no plano de execução; o plano registra SHA-256
   e revalida o hash no limite do executor.
@@ -77,5 +81,7 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   opção, campo e artefato são reportadas com blockers distintos no Safety Gate.
 - A sessão Playwright usa contexto isolado e bloqueia URLs não HTTP(S), locais, privadas,
   link-local ou reservadas, inclusive em redirecionamentos.
+- O job opcional `browser-runtime` executa um fixture local em Chromium para provar inspeção,
+  preenchimento, upload e screenshot sem qualquer submit.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

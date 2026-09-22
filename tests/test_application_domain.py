@@ -61,6 +61,20 @@ def test_captcha_resume_requires_manual_resolution():
     db.close()
 
 
+def test_ready_to_apply_is_reversible_and_artifact_state_is_resumable():
+    db = Database(":memory:")
+    job = Job(id="job-reversible", source="fixture", external_id="reversible", company="Acme", title="Engineer", description="Build software")
+    db.save_job(job, "source:fixture:reversible", {})
+    service = ApplicationService(db)
+    application = service.create_for_job(job.id)
+    service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
+    service.transition(application.id, ApplicationState.MATERIALS_READY, "materials_ready")
+    service.transition(application.id, ApplicationState.READY_TO_APPLY, "safety_gate_evaluated")
+    service.transition(application.id, ApplicationState.NEEDS_ARTIFACT, "artifact_missing")
+    assert service.resume(application.id).state == ApplicationState.PREPARING
+    db.close()
+
+
 def test_qa_precedence_and_legal_questions_never_infer(tmp_path: Path):
     path = tmp_path / "answers.yaml"
     path.write_text(yaml.safe_dump({"answers": [{"question": "Are you authorized to work in Brazil?", "answer": "Yes", "approved": True, "supported_by": ["preferences.work_authorization"]}]}), encoding="utf-8")

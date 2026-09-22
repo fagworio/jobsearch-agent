@@ -20,6 +20,8 @@ SUPPORTED_FIELD_TYPES = {
 TRUE_VALUES = {"true", "yes", "1", "on", "checked"}
 FALSE_VALUES = {"false", "no", "0", "off", "unchecked"}
 MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 100
+MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 
 
 def _normalized(value: Any) -> str:
@@ -150,6 +152,12 @@ def _validate_file_content(path: Path, mime: str) -> str:
             if len(PdfReader(str(path), strict=False).pages) < 1:
                 return "PDF has no pages"
         elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            with zipfile.ZipFile(path) as archive:
+                entries = archive.infolist()
+                uncompressed = sum(item.file_size for item in entries)
+                compressed = max(sum(item.compress_size for item in entries), 1)
+                if len(entries) > MAX_ARCHIVE_ENTRIES or uncompressed > MAX_ARCHIVE_BYTES or uncompressed / compressed > 100:
+                    return "DOCX archive expansion exceeds safety limits"
             from docx import Document
             Document(str(path))
         elif mime == "text/plain":

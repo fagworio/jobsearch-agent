@@ -24,11 +24,12 @@ class ApplicationDomainError(ValueError):
 
 TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.DRAFT: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.MATERIALS_READY: {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.READY_TO_APPLY: set(),
-    ApplicationState.NEEDS_ANSWER: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.MATERIALS_READY: {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.READY_TO_APPLY: {ApplicationState.PREPARING, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.NEEDS_ANSWER: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.NEEDS_ARTIFACT: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ANSWER, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.NEEDS_LOGIN: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
     ApplicationState.NEEDS_MFA: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
     ApplicationState.NEEDS_CAPTCHA: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
@@ -118,7 +119,7 @@ class ApplicationService:
         application = self.database.get_application(application_id)
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
-        resumable = {ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA}
+        resumable = {ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA}
         if application.state not in resumable:
             raise ApplicationDomainError(f"application state cannot be resumed: {application.state.value}")
         return self.transition(application_id, ApplicationState.PREPARING, "application_resumed", {"previous_state": application.state.value})
@@ -178,7 +179,7 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
     if "unsupported_form" in blockers:
         decision = ApplicationState.UNSUPPORTED_FORM
     elif artifact_fields:
-        decision = ApplicationState.POLICY_BLOCKED
+        decision = ApplicationState.NEEDS_ARTIFACT
     elif unknown_fields or unknown_fit:
         decision = ApplicationState.NEEDS_ANSWER
     elif invalid_fields:
