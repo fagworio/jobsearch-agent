@@ -21,6 +21,10 @@ dependências opcionais instaladas; a instalação de produção deve usar o amb
 PYTHONPATH=src python3 -m jobsearch_agent.cli --help
 PYTHONPATH=src python3 -m jobsearch_agent.cli profile validate --profile profile/career_profile.yaml --facts profile/locked_facts.yaml
 PYTHONPATH=src python3 -m jobsearch_agent.cli run --json-file tests/fixtures/jobs/greenhouse.json --profile profile/career_profile.yaml --facts profile/locked_facts.yaml --db data/jobsearch.db --artifacts data/applications
+
+# cria/retoma a candidatura persistida, sem browser e sem submit
+PYTHONPATH=src python3 -m jobsearch_agent.cli application prepare <job-id> --db data/jobsearch.db
+PYTHONPATH=src python3 -m jobsearch_agent.cli application status <application-id> --db data/jobsearch.db
 ```
 
 Para uma vaga pública:
@@ -55,4 +59,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - Todo claim gerado mantém `fact_id` rastreável.
 - Falta de suporte factual bloqueia o artefato.
 - O fit é separado da prontidão para candidatura.
+- `Job` e `Application` possuem ciclos de vida independentes; interrupções como
+  `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA` e `UNSUPPORTED_FORM`
+  são estados de domínio, não erros técnicos.
+- `ApplicationPolicy` controla autonomia e segurança separadamente de `CandidatePreferences`.
+- A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

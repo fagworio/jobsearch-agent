@@ -18,7 +18,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest
       - name: Run offline core tests
-        run: pytest -q tests/test_persistence.py tests/test_profile_resume.py tests/test_sources_analysis.py tests/test_hermes_assets.py
+        run: pytest -q tests/test_persistence.py tests/test_profile_resume.py tests/test_sources_analysis.py tests/test_application_domain.py tests/test_hermes_assets.py
       - name: Validate CLI contract
         run: python -m jobsearch_agent.cli --help
 

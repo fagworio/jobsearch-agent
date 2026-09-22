@@ -1,0 +1,16 @@
+autonomy:
+  search: auto
+  analyze: auto
+  generate_resume: auto
+  answer_known_questions: auto
+  fill_forms: review
+  submit: manual
+
+limits:
+  applications_per_day: 20
+
+safety:
+  unknown_answer: stop
+  captcha: stop
+  mfa: stop
+  legal_question: stop
