@@ -4,9 +4,7 @@ import pytest
 
 pytest.importorskip("playwright")
 from pypdf import PdfWriter
-from playwright.sync_api import sync_playwright
-
-from jobsearch_agent.browser import PlaywrightFormFiller
+from jobsearch_agent.browser import PlaywrightFormFiller, PlaywrightSessionManager
 from jobsearch_agent.execution import build_execution_plan
 from jobsearch_agent.inspector import ATSInspector
 from jobsearch_agent.models import ApplicationContext, ApplicationPolicy
@@ -25,10 +23,10 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
       <label for="resume">Resume</label><input id="resume" name="resume" type="file" accept="application/pdf" required>
     </form>
     """
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    manager = PlaywrightSessionManager(allowed_hosts={"example.com"})
+    manager.start()
+    try:
+        page = manager.page
         page.set_content(html)
         inspected = ATSInspector().inspect_page(page, form_selector="#application")
         inspected.form.artifact_root = str(tmp_path)
@@ -46,13 +44,22 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
             policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
         )
         plan = build_execution_plan(application_context, inspected.bindings)
-        result = PlaywrightFormFiller().fill(page, application_context, plan, inspected.bindings)
-        screenshot = tmp_path / "dry-run.png"
-        page.screenshot(path=str(screenshot))
+        audit_dir = tmp_path / "browser"
+        result = PlaywrightFormFiller().fill(page, application_context, plan, inspected.bindings, audit_dir=audit_dir)
+        post_result = page.evaluate("""async () => {
+            try { await fetch('https://example.com/write', {method: 'POST', body: 'blocked'}); return 'sent'; }
+            catch (error) { return 'blocked'; }
+        }""")
         assert page.locator("#name").input_value() == "Candidate"
         assert page.locator("#resume").evaluate("element => element.files.length") == 1
         assert result.stopped_before_submit is True
-        assert screenshot.is_file()
+        assert post_result == "blocked"
+        assert (audit_dir / "screenshot-before.png").is_file()
+        assert (audit_dir / "screenshot-after.png").is_file()
+        assert (audit_dir / "dry-run-report.json").is_file()
         assert not hasattr(PlaywrightFormFiller(), "submit")
-        context.close()
-        browser.close()
+        assert manager.network_guard is not None
+        assert manager.context is not None
+        assert any(event.method == "POST" and not event.allowed for event in manager.network_guard.events)
+    finally:
+        manager.close()

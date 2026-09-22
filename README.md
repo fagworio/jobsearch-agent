@@ -83,5 +83,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   link-local ou reservadas, inclusive em redirecionamentos.
 - O job opcional `browser-runtime` executa um fixture local em Chromium para provar inspeção,
   preenchimento, upload e screenshot sem qualquer submit.
+- O contexto dry-run bloqueia POST/PUT/PATCH/DELETE, WebSocket, `sendBeacon` e submissões de
+  formulário; cada mutação revalida o DOM e interrompe com `FORM_CHANGED` quando necessário.
+- O filler pode persistir um relatório redigido em `browser/`, com fingerprints, operações,
+  screenshots e indicação explícita de que nenhuma escrita de rede foi permitida.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

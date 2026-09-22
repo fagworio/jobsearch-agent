@@ -258,6 +258,12 @@ class _FakePage:
     def content(self):
         return self.html
 
+    def evaluate(self, script):
+        return True
+
+    def wait_for_timeout(self, milliseconds):
+        return None
+
     def locator(self, selector):
         return _FakeLocator(self.calls, selector)
 
@@ -280,3 +286,21 @@ def test_playwright_filler_only_fills_and_uploads(tmp_path: Path):
     assert [call[0] for call in page.calls] == ["fill", "upload"]
     assert result.stopped_before_submit is True
     assert not hasattr(PlaywrightFormFiller(), "submit")
+
+
+def test_playwright_filler_stops_when_dom_changes_after_action():
+    html = '<form id="application"><input id="first" name="first" required><input id="second" name="second" required></form>'
+    inspected = ATSInspector().inspect_html(html, form_selector="#application")
+    for field in inspected.form.fields:
+        field.value = "Candidate"
+    context = _ready_context(inspected.form)
+    plan = build_execution_plan(context, inspected.bindings)
+
+    class ChangingPage(_FakePage):
+        def wait_for_timeout(self, milliseconds):
+            self.html = self.html.replace("</form>", '<input id="conditional" name="conditional" required></form>')
+
+    page = ChangingPage(html)
+    result = PlaywrightFormFiller().fill(page, context, plan, inspected.bindings)
+    assert result.status == "FORM_CHANGED"
+    assert len(result.operations) == 1

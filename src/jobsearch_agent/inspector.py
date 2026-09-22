@@ -130,6 +130,11 @@ def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings
     return ValidationResult(not errors, "OK" if not errors else "STALE_FORM_BINDINGS", errors)
 
 
+def fingerprint_html(form: ApplicationForm, bindings: FormBindings, html: str, url: str = "") -> str:
+    current = ATSInspector().inspect_html(html, url=url, form_id=form.form_id, form_selector=bindings.root_locator or None)
+    return compute_form_fingerprint(current.form, current.bindings)
+
+
 def _css_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
