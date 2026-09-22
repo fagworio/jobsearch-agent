@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core-minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install minimal runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps -e . PyYAML pytest
+      - name: Run offline core tests
+        run: pytest -q tests/test_persistence.py tests/test_profile_resume.py tests/test_sources_analysis.py tests/test_hermes_assets.py
+      - name: Validate CLI contract
+        run: python -m jobsearch_agent.cli --help
+
+  full-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install LibreOffice
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice
+      - name: Install full runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+      - name: Run tests
+        run: pytest -q
+      - name: Run PT-BR fixture smoke test
+        run: |
+          rm -rf data/ci-applications data/ci.db
+          python -m jobsearch_agent.cli run \
+            --json-file tests/fixtures/jobs/greenhouse.json \
+            --db data/ci.db \
+            --artifacts data/ci-applications
+          test -s data/ci-applications/*/resume.txt
+          test -s data/ci-applications/*/resume.docx
+          test -s data/ci-applications/*/resume.pdf
+          grep -R 'RESUME_READY' data/ci-applications/*/validation.json
+      - name: Validate EN-US generation path
+        run: |
+          python -m jobsearch_agent.cli run \
+            --json-file tests/fixtures/jobs/greenhouse.json \
+            --language en-US \
+            --db data/ci-en.db \
+            --artifacts data/ci-en-applications
+          test -s data/ci-en-applications/*/resume.txt
+          grep -R '"language": "en-US"' data/ci-en-applications/*/resume.json

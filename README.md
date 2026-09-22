@@ -39,6 +39,12 @@ O provider sem configuração usa análise determinística e geração segura. P
 configure `JOBSEARCH_LLM_BASE_URL`, `JOBSEARCH_LLM_API_KEY` e `JOBSEARCH_LLM_MODEL`. O perfil
 demonstrativo contém fatos fictícios e é bloqueado quando `--real-profile` é usado.
 
+Preferências mutáveis são carregadas de `profile/preferences.yaml` (opção `--preferences`) e
+vencem preferências legadas dentro de `career_profile.yaml`. Identidades fortes de vaga são
+namespaced por fonte/ATS e podem consolidar registros; identidades fracas apenas criam entradas
+auditáveis em `duplicate_candidates` para revisão. O SQLite aplica migrations versionadas e
+transacionais automaticamente.
+
 O registry de skills vive em [knowledge/skills.yaml](knowledge/skills.yaml), com uma cópia
 empacotável em `src/jobsearch_agent/knowledge/skills.yaml`. Matching segue aliases exatos,
 matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
