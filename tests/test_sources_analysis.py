@@ -3,7 +3,7 @@ from pathlib import Path
 
 from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from jobsearch_agent.models import Job
-from jobsearch_agent.profile import load_profile
+from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.skills import SkillRegistry
 from jobsearch_agent.sources import JOBSPY, canonical_job_key, normalize_payload
 
@@ -84,3 +84,27 @@ def test_configured_provider_can_enrich_structured_requirements_without_free_tex
     assert analysis.required_skills == ["WordPress"]
     assert analysis.preferred_skills == ["Docker"]
     assert "Semantic fields" in analysis.explanation[-1]
+
+
+def test_explicit_secondary_language_is_structured_and_explained():
+    job = Job(id="j", source="fixture", external_id="1", company="Co", title="Desenvolvedor", description="Experiência com WordPress. Inglês avançado obrigatório para comunicação.", location="Remote")
+    analysis = analyze_requirements(job)
+    assert len(analysis.language_requirements) == 1
+    assert analysis.language_requirements[0].language == "en"
+    assert analysis.language_requirements[0].minimum_level == "advanced"
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    profile.languages["english"] = {"level": "basic"}
+    fit = calculate_fit(job, analysis, profile)
+    assert "language_mismatch" in fit.blockers
+    assert any(item.criterion == "language:en" and item.blocker for item in fit.criteria)
+
+
+def test_preferences_file_overrides_legacy_profile_preferences():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = load_preferences(ROOT / "profile/preferences.yaml", {"remote": False, "allowed_locations": ["Canada"]})
+    assert preferences.remote is True
+    assert preferences.allowed_locations == ["Canada"]
+    profile.candidate_preferences = preferences
+    job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Build software", location="Remote", remote_type="remote")
+    analysis = analyze_requirements(job)
+    assert calculate_fit(job, analysis, profile).location_match == 1.0

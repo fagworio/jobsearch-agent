@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Iterable
 
 from .llm import LLMError, LLMProvider, LLMRequest
-from .models import CareerProfile, FitResult, Job, JobAnalysis, LanguageResult, ResumeStrategy
+from .models import CareerProfile, FitCriterionResult, FitCriterionStatus, FitResult, Job, JobAnalysis, LanguageRequirement, LanguageResult, ResumeStrategy
 from .skills import SkillRegistry
 
 
@@ -79,6 +79,37 @@ def _sentences(text: str) -> list[str]:
     return [part.strip(" -*•\t") for part in re.split(r"[\n.!?]+", text) if part.strip()]
 
 
+def _language_name(value: str) -> str:
+    lowered = value.lower()
+    if lowered in {"english", "inglês", "ingles", "en"}:
+        return "en"
+    if lowered in {"portuguese", "português", "portugues", "pt"}:
+        return "pt"
+    return lowered
+
+
+def _extract_language_requirements(sentences: list[str]) -> list[LanguageRequirement]:
+    requirements: list[LanguageRequirement] = []
+    language_terms = ("english", "inglês", "ingles", "portuguese", "português", "portugues")
+    levels = {
+        "native": "native", "nativo": "native", "nativa": "native",
+        "fluent": "fluent", "fluente": "fluent",
+        "advanced": "advanced", "avançado": "advanced", "avancado": "advanced",
+        "intermediate": "intermediate", "intermediário": "intermediate", "intermediario": "intermediate",
+        "basic": "basic", "básico": "basic", "basico": "basic",
+        "beginner": "beginner", "iniciante": "beginner",
+    }
+    for sentence in sentences:
+        lowered = sentence.lower()
+        term = next((item for item in language_terms if item in lowered), None)
+        if not term:
+            continue
+        level = next((normalized for label, normalized in levels.items() if re.search(rf"\b{re.escape(label)}\b", lowered)), "intermediate")
+        required = bool(re.search(r"\b(required|must|mandatory|obrig\w*|necess\w*|fluency|proficien\w*)\b", lowered))
+        requirements.append(LanguageRequirement(_language_name(term), level, required, sentence, "deterministic"))
+    return requirements
+
+
 def analyze_requirements(job: Job, provider: LLMProvider | None = None) -> JobAnalysis:
     description = job.description or ""
     language = detect_language(f"{job.title} {description}")
@@ -98,7 +129,7 @@ def analyze_requirements(job: Job, provider: LLMProvider | None = None) -> JobAn
         preferred_skills=preferred,
         years_of_experience=years,
         education=[sentence for sentence in sentences if "degree" in sentence.lower() or "formação" in sentence.lower()],
-        language_requirements=[sentence for sentence in sentences if any(word in sentence.lower() for word in ("english", "inglês", "portuguese", "português"))],
+        language_requirements=_extract_language_requirements(sentences),
         location_requirements=[job.location] if job.location else [],
         work_authorization="unknown",
         employment_type=job.employment_type,
@@ -176,7 +207,7 @@ def _profile_language_level(profile: CareerProfile, language: str) -> float:
 
 
 def _required_language_level(analysis: JobAnalysis, language: str) -> float:
-    text = " ".join(analysis.language_requirements).lower()
+    text = " ".join(requirement.evidence for requirement in analysis.language_requirements if requirement.language == language).lower()
     if language == "en" and not text:
         # A vaga predominantemente em inglês exige capacidade operacional, mas
         # não presume fluência nativa sem declarar isso.
@@ -187,19 +218,35 @@ def _required_language_level(analysis: JobAnalysis, language: str) -> float:
     return 0.6 if text else 0.5
 
 
-def _language_fit(analysis: JobAnalysis, profile: CareerProfile) -> tuple[float, bool]:
+def _language_fit(analysis: JobAnalysis, profile: CareerProfile) -> tuple[float, bool, list[FitCriterionResult]]:
     language = analysis.language.language
+    criteria: list[FitCriterionResult] = []
     if language not in {"en", "pt"}:
-        return 0.5, False
-    candidate = _profile_language_level(profile, language)
-    required = _required_language_level(analysis, language)
-    if candidate <= 0:
-        return 0.0, True
-    return round(min(1.0, candidate / required), 3), candidate < required * 0.75
+        return 0.5, False, [FitCriterionResult("primary_language", "unknown", "unknown", FitCriterionStatus.UNKNOWN, 0.5, False, "Language detection was inconclusive.", "language_detector")]
+
+    checks: list[tuple[str, float, float, bool, str]] = [(language, _profile_language_level(profile, language), _required_language_level(analysis, language), True, f"Primary job language: {analysis.language.locale}")]
+    checks.extend((requirement.language, _profile_language_level(profile, requirement.language), LANGUAGE_LEVELS.get(requirement.minimum_level.lower(), 0.6), requirement.required, requirement.evidence) for requirement in analysis.language_requirements)
+    values: list[float] = []
+    blockers = False
+    for required_language, candidate, required, required_flag, evidence in checks:
+        value = 0.0 if candidate <= 0 else round(min(1.0, candidate / max(required, 0.01)), 3)
+        values.append(value)
+        is_blocker = required_flag and candidate < required
+        blockers = blockers or is_blocker
+        status = FitCriterionStatus.BLOCKER if is_blocker else FitCriterionStatus.MATCH if value >= 1.0 else FitCriterionStatus.PARTIAL
+        criteria.append(FitCriterionResult(f"language:{required_language}", candidate, required, status, value, is_blocker, evidence, "profile + job_analysis"))
+    return round(min(values) if values else 0.5, 3), blockers, criteria
 
 
 def _location_fit(job: Job, profile: CareerProfile) -> tuple[float, bool]:
-    preferences = profile.preferences
+    preferences = profile.candidate_preferences or profile.preferences
+    if hasattr(preferences, "remote"):
+        preferences = {
+            "remote": preferences.remote,
+            "allowed_locations": preferences.allowed_locations,
+            "allowed_countries": preferences.allowed_countries,
+            "relocation": preferences.relocation,
+        }
     location = f"{job.remote_type} {job.location}".lower()
     is_remote = any(term in location for term in ("remote", "remoto", "distributed", "work from home"))
     if is_remote:
@@ -235,7 +282,7 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     required_match = _ratio(matched, required)
     preferred_match = _ratio(matched, preferred)
     experience_match = 1.0 if profile.experiences else 0.0
-    language_match, language_blocker = _language_fit(analysis, profile)
+    language_match, language_blocker, language_criteria = _language_fit(analysis, profile)
     location_match, location_blocker = _location_fit(job, profile)
     blockers = []
     if analysis.work_authorization == "unknown":
@@ -244,11 +291,44 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
         blockers.append("language_mismatch")
     if location_blocker:
         blockers.append("location_mismatch")
+    blockers.extend(f"missing_required:{skill}" for skill in missing_required)
+    criteria: list[FitCriterionResult] = []
+    criteria.extend(
+        FitCriterionResult(
+            f"required_skill:{skill}",
+            "matched" if skill in matched else "missing",
+            skill,
+            FitCriterionStatus.MATCH if skill in matched else FitCriterionStatus.BLOCKER,
+            1.0 if skill in matched else 0.0,
+            skill in missing_required,
+            "Candidate skill registry and job requirements",
+            "skill_registry",
+        )
+        for skill in required
+    )
+    criteria.extend(
+        FitCriterionResult(
+            f"preferred_skill:{skill}",
+            "matched" if skill in matched else "missing",
+            skill,
+            FitCriterionStatus.MATCH if skill in matched else FitCriterionStatus.PARTIAL,
+            1.0 if skill in matched else 0.0,
+            False,
+            "Candidate skill registry and job preferences",
+            "skill_registry",
+        )
+        for skill in preferred
+    )
+    criteria.extend(language_criteria)
+    location_result = FitCriterionStatus.BLOCKER if location_blocker else FitCriterionStatus.MATCH if location_match >= 1 else FitCriterionStatus.PARTIAL
+    preferences = profile.candidate_preferences or profile.preferences
+    criteria.append(FitCriterionResult("location", preferences, job.location or job.remote_type, location_result, location_match, location_blocker, f"Job location: {job.location or job.remote_type}", "job + candidate_preferences"))
+    criteria.append(FitCriterionResult("experience", len(profile.experiences), analysis.years_of_experience or "experience", FitCriterionStatus.MATCH if experience_match else FitCriterionStatus.MISSING, experience_match, False, "Profile experience records", "career_profile"))
     score = round(100 * (0.45 * required_match + 0.15 * preferred_match + 0.15 * experience_match + 0.15 * language_match + 0.10 * location_match), 2)
     explanation = [f"Required coverage: {required_match:.0%}.", f"Preferred coverage: {preferred_match:.0%}.", f"Language match: {language_match:.0%}.", f"Location match: {location_match:.0%}."]
     if missing_required:
         explanation.append("Missing required skills: " + ", ".join(missing_required))
-    return FitResult(score, required_match, preferred_match, experience_match, language_match, location_match, matched, missing_required, missing_preferred, blockers, explanation)
+    return FitResult(score, required_match, preferred_match, experience_match, language_match, location_match, matched, missing_required, missing_preferred, blockers, explanation, criteria)
 
 
 def build_strategy(job: Job, analysis: JobAnalysis, fit: FitResult, profile: CareerProfile) -> ResumeStrategy:
