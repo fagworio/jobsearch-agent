@@ -47,15 +47,15 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         )
         plan = build_execution_plan(application_context, inspected.bindings)
         audit_dir = tmp_path / "browser"
-        result = PlaywrightFormFiller().fill(manager, application_context, plan, inspected.bindings, audit_dir=audit_dir)
-        post_result = page.evaluate("""async () => {
+        preflight_result = page.evaluate("""async () => {
             try { await fetch('https://example.com/write', {method: 'POST', body: 'blocked'}); return 'sent'; }
             catch (error) { return 'blocked'; }
         }""")
+        result = PlaywrightFormFiller().fill(manager, application_context, plan, inspected.bindings, audit_dir=audit_dir)
         assert page.locator("#name").input_value() == "Candidate"
         assert page.locator("#resume").evaluate("element => element.files.length") == 1
         assert result.stopped_before_submit is True
-        assert post_result == "blocked"
+        assert preflight_result == "blocked"
         assert (audit_dir / "screenshot-before.png").is_file()
         assert (audit_dir / "screenshot-after.png").is_file()
         assert (audit_dir / "dry-run-report.json").is_file()
