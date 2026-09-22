@@ -68,5 +68,11 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `submit: manual` continua exigindo revisão antes do envio.
 - O Browser Dry Run valida opções, checkboxes e artefatos de upload antes de gerar um
   `ExecutionPlan`; o plano contém somente `fill`/`upload` e termina em `STOP_BEFORE_SUBMIT`.
+- O ATS Inspector atual é somente leitura: produz `ApplicationForm` e `FormBindings` separados,
+  sem seletores DOM no domínio e sem preencher controles.
+- Uploads exigem `ApplicationForm.artifact_root`, permanecem dentro desse diretório e têm o
+  conteúdo verificado antes de entrar no plano de execução.
+- A sessão Playwright usa contexto isolado e bloqueia URLs não HTTP(S), locais, privadas,
+  link-local ou reservadas, inclusive em redirecionamentos.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

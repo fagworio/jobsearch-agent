@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .forms import validate_application_form
+from .forms import effective_attachment_path, validate_application_form
 from .application import evaluate_safety_gate
 from .models import ApplicationContext, ApplicationField, ValidationResult, now_iso
 
@@ -45,6 +45,40 @@ def _field_value(field: ApplicationField) -> Any:
     return field.answer.answer if field.answer else ""
 
 
+def _validate_plan_against_context(context: ApplicationContext, plan: ExecutionPlan) -> ValidationResult:
+    errors: list[str] = []
+    if plan.application_id != context.application_id:
+        errors.append("execution plan application does not match context")
+    if context.form is None:
+        errors.append("application form is missing")
+        return ValidationResult(False, "INVALID_EXECUTION_CONTEXT", errors)
+    if plan.provider != context.form.provider:
+        errors.append("execution plan provider does not match form")
+    fields = {field.key: field for field in context.form.fields}
+    seen: set[str] = set()
+    for action in plan.actions:
+        if action.field_key in seen:
+            errors.append(f"duplicate action for field: {action.field_key}")
+        seen.add(action.field_key)
+        field = fields.get(action.field_key)
+        if field is None:
+            errors.append(f"action references unknown field: {action.field_key}")
+            continue
+        field_type = field.field_type.casefold().strip()
+        current_value = _field_value(field)
+        if action.action_type == "upload":
+            if field_type != "file":
+                errors.append(f"upload action targets non-file field: {field.key}")
+            if action.attachment_path != effective_attachment_path(field):
+                errors.append(f"upload path does not match field artifact: {field.key}")
+        elif action.action_type == "fill":
+            if field_type == "file":
+                errors.append(f"fill action targets file field: {field.key}")
+            if action.value != current_value:
+                errors.append(f"fill value does not match current field value: {field.key}")
+    return ValidationResult(not errors, "OK" if not errors else "INVALID_EXECUTION_CONTEXT", errors)
+
+
 def validate_execution_plan(plan: ExecutionPlan) -> ValidationResult:
     errors: list[str] = []
     if plan.final_action != "STOP_BEFORE_SUBMIT":
@@ -69,13 +103,29 @@ def build_execution_plan(context: ApplicationContext) -> ExecutionPlan:
     actions: list[ExecutionAction] = []
     for field in context.form.fields:
         value = _field_value(field)
-        if field.field_type == "file":
-            if field.attachment_path:
-                actions.append(ExecutionAction("upload", field.key, attachment_path=field.attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}))
+        field_type = field.field_type.casefold().strip()
+        if field_type == "file":
+            attachment_path = effective_attachment_path(field)
+            if attachment_path:
+                actions.append(ExecutionAction("upload", field.key, attachment_path=attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}))
         elif value not in (None, "", []):
             actions.append(ExecutionAction("fill", field.key, value=value, step=field.step, metadata={"semantic_type": field.semantic_type}))
     plan = ExecutionPlan(context.application_id, context.form.provider, actions)
     result = validate_execution_plan(plan)
     if not result.valid:
         raise ExecutionPlanError("invalid execution plan: " + "; ".join(result.errors))
+    context_result = _validate_plan_against_context(context, plan)
+    if not context_result.valid:
+        raise ExecutionPlanError("execution plan does not match context: " + "; ".join(context_result.errors))
     return plan
+
+
+def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan) -> ValidationResult:
+    """Public defense-in-depth check used at the browser boundary."""
+    readiness = evaluate_safety_gate(context)
+    if not readiness.ready_to_apply:
+        return ValidationResult(False, "SAFETY_GATE_BLOCKED", readiness.blockers or [readiness.decision.value])
+    structural = validate_execution_plan(plan)
+    if not structural.valid:
+        return structural
+    return _validate_plan_against_context(context, plan)

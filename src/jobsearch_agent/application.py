@@ -72,8 +72,8 @@ def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
                 continue
             answer_data = raw_field.get("answer")
             answer = ApplicationAnswer(**answer_data) if isinstance(answer_data, dict) else None
-            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple"}}, answer=answer))
-        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])])
+            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple", "disabled"}}, answer=answer))
+        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])], str(form_data.get("artifact_root", "")))
     answers = [ApplicationAnswer(**item) for item in data.get("answers", []) if isinstance(item, dict)]
     return ApplicationContext(
         application_id=str(data.get("application_id", "")),

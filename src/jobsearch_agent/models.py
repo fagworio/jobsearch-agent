@@ -331,6 +331,7 @@ class ApplicationField:
     attachment_path: str = ""
     accepted_types: list[str] = field(default_factory=list)
     multiple: bool = False
+    disabled: bool = False
 
 
 @domain_dataclass
@@ -340,6 +341,7 @@ class ApplicationForm:
     fields: list[ApplicationField] = field(default_factory=list)
     source: str = "fixture"
     steps: list[str] = field(default_factory=list)
+    artifact_root: str = ""
 
 
 @domain_dataclass

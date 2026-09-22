@@ -3,9 +3,10 @@ from pathlib import Path
 import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
-from jobsearch_agent.browser import DryRunBrowserExecutor
-from jobsearch_agent.execution import ExecutionPlanError, build_execution_plan
+from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, validate_navigation_url
+from jobsearch_agent.execution import ExecutionAction, ExecutionPlan, ExecutionPlanError, build_execution_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
+from jobsearch_agent.inspector import ATSInspector
 from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationState
 from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
@@ -29,13 +30,19 @@ def test_file_field_requires_existing_artifact_and_accepted_extension(tmp_path: 
     missing = ApplicationField("resume", "Resume", field_type="file", semantic_type="resume", required=True, accepted_types=["pdf"])
     assert validate_application_field(missing).valid is False
     artifact = tmp_path / "resume.pdf"
-    artifact.write_bytes(b"fixture")
+    artifact.write_bytes(b"%PDF-1.7\nfixture")
     valid = ApplicationField("resume", "Resume", field_type="file", semantic_type="resume", required=True, attachment_path=str(artifact), accepted_types=["pdf"])
-    assert validate_application_field(valid).valid is True
+    assert validate_application_field(valid, str(tmp_path)).valid is True
+    value_only = ApplicationField("resume", "Resume", field_type="file", required=True, value=str(artifact), accepted_types=["pdf"])
+    assert validate_application_field(value_only, str(tmp_path)).valid is False
     wrong = tmp_path / "resume.txt"
     wrong.write_text("fixture", encoding="utf-8")
     invalid_type = ApplicationField("resume", "Resume", field_type="file", required=True, attachment_path=str(wrong), accepted_types=["pdf"])
-    assert validate_application_field(invalid_type).valid is False
+    assert validate_application_field(invalid_type, str(tmp_path)).valid is False
+    outside = tmp_path.parent / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.7\nfixture")
+    external = ApplicationField("resume", "Resume", field_type="file", required=True, attachment_path=str(outside), accepted_types=["pdf"])
+    assert validate_application_field(external, str(tmp_path)).valid is False
 
 
 def test_form_validation_rejects_unknown_option_and_required_checkbox():
@@ -86,20 +93,63 @@ def test_safety_gate_rejects_invalid_option_before_execution():
 
 def test_execution_plan_and_dry_run_have_no_submit_path(tmp_path: Path):
     artifact = tmp_path / "resume.pdf"
-    artifact.write_bytes(b"fixture")
+    artifact.write_bytes(b"%PDF-1.7\nfixture")
     form = ApplicationForm(
         "greenhouse-1",
         provider="greenhouse",
         fields=[
             ApplicationField("name", "Name", required=True, value="Candidate"),
-            ApplicationField("resume", "Resume", field_type="file", semantic_type="resume", required=True, attachment_path=str(artifact), accepted_types=["pdf"]),
+            ApplicationField("resume", "Resume", field_type="File", semantic_type="resume", required=True, attachment_path=str(artifact), accepted_types=["pdf"]),
         ],
+        artifact_root=str(tmp_path),
     )
-    plan = build_execution_plan(_ready_context(form))
+    context = _ready_context(form)
+    plan = build_execution_plan(context)
     assert plan.final_action == "STOP_BEFORE_SUBMIT"
     assert [action.action_type for action in plan.actions] == ["fill", "upload"]
     executor = DryRunBrowserExecutor()
-    result = executor.execute(plan)
+    result = executor.execute(context, plan)
     assert result.stopped_before_submit is True
     assert [item["operation"] for item in result.operations] == ["fill", "upload"]
     assert not hasattr(executor, "submit")
+
+
+def test_executor_rechecks_safety_gate_and_current_form():
+    context = _ready_context(ApplicationForm("form-1", provider="greenhouse", fields=[ApplicationField("name", "Name", required=True, value="Candidate")]))
+    bypassed = ExecutionPlan("application-1", "greenhouse", [ExecutionAction("fill", "name", "invented")])
+    with pytest.raises(BrowserSessionError, match="refusing invalid execution plan"):
+        DryRunBrowserExecutor().execute(context, bypassed)
+    unknown = ExecutionPlan("application-1", "greenhouse", [ExecutionAction("fill", "other", "Candidate")])
+    with pytest.raises(BrowserSessionError, match="refusing invalid execution plan"):
+        DryRunBrowserExecutor().execute(context, unknown)
+
+
+def test_navigation_policy_rejects_local_and_non_web_urls():
+    assert validate_navigation_url("file:///etc/passwd").valid is False
+    assert validate_navigation_url("http://127.0.0.1:8080").valid is False
+    assert validate_navigation_url("http://169.254.169.254/latest/meta-data").valid is False
+    assert validate_navigation_url("https://8.8.8.8").valid is True
+
+
+def test_inspector_separates_domain_form_from_dom_bindings():
+    html = """
+    <form data-provider="greenhouse">
+      <label for="name">Full name</label><input id="name" name="name" required>
+      <label>Consent <input id="consent" type="checkbox" required></label>
+      <label><input name="skills" type="checkbox" value="Python">Python</label>
+      <label><input name="skills" type="checkbox" value="SQL">SQL</label>
+      <label for="resume">Resume</label><input id="resume" type="file" accept="application/pdf">
+      <label for="country">Country</label><select id="country" name="country"><option value="br">Brazil</option><option value="us">United States</option></select>
+    </form>
+    """
+    inspected = ATSInspector().inspect_html(html, "https://boards.greenhouse.io/example")
+    assert inspected.form.provider == "greenhouse"
+    by_key = {field.key: field for field in inspected.form.fields}
+    assert by_key["consent"].semantic_type == "checkbox_boolean"
+    assert by_key["skills"].semantic_type == "checkbox_multi"
+    assert by_key["skills"].options == ["Python", "SQL"]
+    assert by_key["resume"].field_type == "file"
+    assert by_key["resume"].accepted_types == ["application/pdf"]
+    assert inspected.bindings.for_field("country").locator == "#country"
+    assert inspected.bindings.for_field("country").option_locators["Brazil"] == '#country option[value="br"]'
+    assert not hasattr(inspected.form.fields[0], "locator")
