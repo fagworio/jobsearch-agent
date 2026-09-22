@@ -116,6 +116,7 @@ def test_sponsorship_answer_uses_exact_available_option():
         field_type="radio",
         semantic_type="requires_sponsorship",
         options=["Yes, I will require sponsorship", "No, I will not require sponsorship"],
+        confidence=1.0,
     )
     answer = AnswerKnowledgeBase([]).resolve_field(field, profile, preferences)
     assert answer is not None

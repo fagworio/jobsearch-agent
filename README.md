@@ -94,6 +94,8 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O `GreenhouseAdapter` permanece separado do `ATSInspector`: identifica a assinatura estrutural,
   encontra o root da aplicação e enriquece `ApplicationField` com semantic type, confiança e
   origem. Ele não responde perguntas nem executa ações de browser; campos customizados continuam
-  `unknown` e podem bloquear no Safety Gate.
+  `unknown` e podem bloquear no Safety Gate. Controles não representados pelo domínio viram
+  `FormCapabilityIssue` e levam a `UNSUPPORTED_FORM`, enquanto autorização de trabalho exige
+  jurisdição explícita e confiança mínima antes de ser respondida automaticamente.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

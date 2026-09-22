@@ -103,8 +103,8 @@ def test_field_aware_qa_respects_semantic_type_and_options():
     profile = load_profile(ROOT / "profile/career_profile.yaml")
     preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["Brazil"]})
     kb = AnswerKnowledgeBase([])
-    yes_no = ApplicationField("auth", "Authorized to work in Brazil?", field_type="radio", semantic_type="work_authorization", options=["Yes", "No"], required=True)
-    countries = ApplicationField("countries", "Countries where you are authorized to work", field_type="text", semantic_type="work_authorization", required=True)
+    yes_no = ApplicationField("auth", "Authorized to work in Brazil?", field_type="radio", semantic_type="work_authorization", options=["Yes", "No"], required=True, confidence=1.0)
+    countries = ApplicationField("countries", "Countries where you are authorized to work in Brazil", field_type="text", semantic_type="work_authorization", required=True, confidence=1.0)
     company = ApplicationField("company", "Current company name", field_type="text", required=True)
     assert kb.resolve_field(yes_no, profile, preferences).answer == "Yes"
     assert kb.resolve_field(countries, profile, preferences).answer == "Brazil"

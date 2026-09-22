@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup, Tag
 
 from .inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectedForm, InspectionError
-from .models import ApplicationField, ApplicationForm
+from .models import ApplicationField, ApplicationForm, FormCapabilityIssue
 
 
 @dataclass
@@ -58,7 +58,7 @@ _SEMANTIC_ALIASES: dict[str, set[str]] = {
     "portfolio": {"portfolio", "portfolio_url", "website", "personal_website"},
     "resume": {"resume", "resume_file", "cv", "cv_file"},
     "cover_letter": {"cover_letter", "coverletter"},
-    "work_authorization": {"authorized_to_work", "work_authorization", "right_to_work", "work_permit"},
+    "work_authorization": {"authorized_to_work", "authorized_to_work_in_brazil", "work_authorization", "right_to_work", "work_permit"},
     "requires_sponsorship": {"sponsorship", "requires_sponsorship", "visa_sponsorship", "need_sponsorship"},
     "salary_expectation": {"salary", "salary_expectation", "desired_salary", "compensation"},
     "notice_period": {"notice_period", "availability", "start_date"},
@@ -119,6 +119,27 @@ def _semantic_match(field: ApplicationField) -> tuple[str, float, str]:
         if label in {_normalize(alias) for alias in aliases}:
             return semantic_type, 0.85, "greenhouse_label"
     return "unknown", 0.0, "unknown"
+
+
+_COUNTRY_ALIASES = {
+    "brazil": "Brazil",
+    "brasil": "Brazil",
+    "united states": "United States",
+    "usa": "United States",
+    "u s": "United States",
+    "canada": "Canada",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "portugal": "Portugal",
+}
+
+
+def _country_context(field: ApplicationField) -> dict[str, str]:
+    text = f"{field.key} {field.label}".casefold()
+    for alias, country in sorted(_COUNTRY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", text):
+            return {"country": country}
+    return {}
 
 
 def _selector_for_form(form: Tag, soup: BeautifulSoup) -> str:
@@ -207,15 +228,20 @@ class GreenhouseAdapter:
                 field.semantic_type = semantic_type
                 field.confidence = confidence
                 field.source = source
+                field.semantic_context = _country_context(field) if semantic_type == "work_authorization" else {}
             else:
                 field.confidence = 0.0
                 field.source = "greenhouse_unknown"
         soup = BeautifulSoup(html, "html.parser")
         unsupported: list[str] = []
+        capability_issues: list[FormCapabilityIssue] = []
         if soup.select('[role="combobox"]'):
             unsupported.append("custom_combobox")
+            capability_issues.append(FormCapabilityIssue("custom_combobox", "blocker", evidence="role=combobox"))
         if soup.select('[contenteditable="true"]'):
             unsupported.append("contenteditable_control")
+            capability_issues.append(FormCapabilityIssue("contenteditable_control", "blocker", evidence="contenteditable=true"))
+        inspected.form.capability_issues = capability_issues
         warnings: list[str] = []
         if any(field.confidence < 0.70 and field.required for field in inspected.form.fields):
             warnings.append("required field has no high-confidence semantic mapping")

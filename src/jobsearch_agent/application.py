@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState
+from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, FormCapabilityIssue
 from .forms import validate_application_form
 from .persistence import Database
 
@@ -73,8 +73,9 @@ def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
                 continue
             answer_data = raw_field.get("answer")
             answer = ApplicationAnswer(**answer_data) if isinstance(answer_data, dict) else None
-            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple", "disabled"}}, answer=answer))
-        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])], str(form_data.get("artifact_root", "")))
+            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple", "disabled", "semantic_context"}}, answer=answer))
+        issues = [FormCapabilityIssue(**item) for item in form_data.get("capability_issues", []) if isinstance(item, dict)]
+        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])], str(form_data.get("artifact_root", "")), issues)
     answers = [ApplicationAnswer(**item) for item in data.get("answers", []) if isinstance(item, dict)]
     return ApplicationContext(
         application_id=str(data.get("application_id", "")),
@@ -145,6 +146,13 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
         blockers.append("resume_invalid")
 
     form_analyzed = context.form is not None
+    capability_issues = list(context.form.capability_issues) if context.form else []
+    capability_blockers = [issue for issue in capability_issues if issue.severity == "blocker"]
+    if capability_blockers:
+        checks.append({"gate": "capabilities", "result": "blocker", "evidence": capability_blockers})
+        blockers.append("unsupported_form")
+    elif capability_issues:
+        checks.append({"gate": "capabilities", "result": "warning", "evidence": capability_issues})
     form_validation = validate_application_form(context.form) if context.form else None
     unsupported_fields = list((form_validation.details if form_validation else {}).get("unsupported_fields", []))
     field_results = (form_validation.details if form_validation else {}).get("field_results", {})

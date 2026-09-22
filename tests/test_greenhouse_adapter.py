@@ -4,8 +4,8 @@ import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
 from jobsearch_agent.ats import GreenhouseAdapter, adapter_for, inspect_with_adapter
-from jobsearch_agent.inspector import InspectionError
-from jobsearch_agent.models import ApplicationContext, ApplicationPolicy, ApplicationState
+from jobsearch_agent.inspector import InspectionError, validate_bindings_against_html
+from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationPolicy, ApplicationState, ApplicationForm, FormCapabilityIssue
 from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
 
@@ -30,6 +30,7 @@ def test_greenhouse_adapter_uses_deterministic_signature_and_root():
     assert result.form.provider == "greenhouse"
     assert result.form.source == "greenhouse_adapter"
     assert result.bindings.root_locator == "#application_form"
+    assert validate_bindings_against_html(result.form, result.bindings, html, "https://boards.greenhouse.io/acme/jobs/1").valid
     assert adapter.allowed_hosts("https://boards.greenhouse.io/acme/jobs/1") == {"boards.greenhouse.io"}
 
 
@@ -70,7 +71,6 @@ def test_greenhouse_unknown_custom_question_stays_unknown_and_blocks_safety_gate
     custom = next(field for field in result.form.fields if field.key == "job_application[question_12345]")
     assert custom.semantic_type == "unknown"
     assert custom.confidence == 0.0
-    assert "custom_combobox" in result.unsupported_features
     assert result.warnings == ["required field has no high-confidence semantic mapping"]
 
     profile = load_profile(ROOT / "profile/career_profile.yaml")
@@ -87,6 +87,66 @@ def test_greenhouse_unknown_custom_question_stays_unknown_and_blocks_safety_gate
     readiness = evaluate_safety_gate(context)
     assert readiness.decision == ApplicationState.NEEDS_ANSWER
     assert "unknown_answer:job_application[question_12345]" in readiness.blockers
+
+    unsupported_html = _html("custom-question.html").replace("</form>", '<div role="combobox"></div></form>')
+    unsupported = inspect_with_adapter(unsupported_html, "https://boards.greenhouse.io/acme/jobs/1")
+    assert "custom_combobox" in unsupported.unsupported_features
+    assert unsupported.form.capability_issues[0].severity == "blocker"
+
+
+def test_unsupported_capability_issue_is_a_safety_gate_blocker():
+    form = ApplicationForm(
+        "form-unsupported",
+        provider="greenhouse",
+        fields=[ApplicationField("name", "Name", required=True, value="Candidate", confidence=1.0)],
+        capability_issues=[FormCapabilityIssue("custom_combobox", "blocker", evidence="role=combobox")],
+    )
+    context = ApplicationContext(
+        application_id="application-unsupported",
+        job_id="job-unsupported",
+        fit={"blockers": []},
+        validation={"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
+        form=form,
+        policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
+    )
+    readiness = evaluate_safety_gate(context)
+    assert readiness.decision == ApplicationState.UNSUPPORTED_FORM
+    assert "unsupported_form" in readiness.blockers
+    assert any(check["gate"] == "capabilities" for check in readiness.checks)
+
+
+def test_work_authorization_requires_jurisdiction_and_confidence():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["Brazil"]})
+    kb = AnswerKnowledgeBase([])
+    us = ApplicationField(
+        "job_application[authorized_to_work]",
+        "Are you authorized to work in the United States?",
+        field_type="radio",
+        semantic_type="work_authorization",
+        options=["Yes", "No"],
+        confidence=1.0,
+        semantic_context={"country": "United States"},
+    )
+    assert kb.resolve_field(us, profile, preferences).answer == "No"
+    unknown_country = ApplicationField(
+        "job_application[authorized_to_work]",
+        "Are you authorized to work?",
+        field_type="radio",
+        semantic_type="work_authorization",
+        options=["Yes", "No"],
+        confidence=1.0,
+    )
+    assert kb.resolve_field(unknown_country, profile, preferences) is None
+    low_confidence = ApplicationField(
+        "job_application[authorized_to_work]",
+        "Are you authorized to work in Brazil?",
+        field_type="radio",
+        semantic_type="work_authorization",
+        options=["Yes", "No"],
+        confidence=0.70,
+    )
+    assert kb.resolve_field(low_confidence, profile, preferences) is None
 
 
 def test_greenhouse_checkbox_and_conditional_fields_remain_generic():

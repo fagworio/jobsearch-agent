@@ -333,6 +333,15 @@ class ApplicationField:
     accepted_types: list[str] = field(default_factory=list)
     multiple: bool = False
     disabled: bool = False
+    semantic_context: dict[str, Any] = field(default_factory=dict)
+
+
+@domain_dataclass
+class FormCapabilityIssue:
+    code: str
+    severity: str = "blocker"
+    field_key: str = ""
+    evidence: str = ""
 
 
 @domain_dataclass
@@ -343,6 +352,7 @@ class ApplicationForm:
     source: str = "fixture"
     steps: list[str] = field(default_factory=list)
     artifact_root: str = ""
+    capability_issues: list[FormCapabilityIssue] = field(default_factory=list)
 
 
 @domain_dataclass

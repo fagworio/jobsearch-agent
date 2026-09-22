@@ -66,9 +66,10 @@ def compute_form_fingerprint(form: ApplicationForm, bindings: FormBindings) -> s
     payload = {
         "form_id": form.form_id,
         "provider": form.provider,
-        "fields": [{"key": item.key, "label": item.label, "field_type": item.field_type.casefold().strip(), "semantic_type": item.semantic_type, "required": item.required, "options": item.options, "disabled": item.disabled} for item in sorted(form.fields, key=lambda item: item.key)],
+        "fields": [{"key": item.key, "label": item.label, "field_type": item.field_type.casefold().strip(), "semantic_type": item.semantic_type, "semantic_context": item.semantic_context, "confidence": item.confidence, "source": item.source, "required": item.required, "options": item.options, "disabled": item.disabled} for item in sorted(form.fields, key=lambda item: item.key)],
         "bindings": [{"field_key": item.field_key, "locator": item.locator, "control": item.control, "option_values": item.option_values} for item in sorted(bindings.fields, key=lambda item: item.field_key)],
         "root_locator": bindings.root_locator,
+        "capability_issues": [issue.__dict__ for issue in form.capability_issues],
     }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -110,7 +111,7 @@ def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings
     errors = list(static.errors)
     soup = BeautifulSoup(html, "html.parser")
     try:
-        current = ATSInspector().inspect_html(html, url=url, form_id=form.form_id, form_selector=bindings.root_locator or None)
+        current = _reinspect_form(form, html, url, bindings.root_locator or None)
         if compute_form_fingerprint(current.form, current.bindings) != compute_form_fingerprint(form, bindings):
             errors.append("current DOM fingerprint does not match inspected form")
     except InspectionError as exc:
@@ -131,8 +132,19 @@ def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings
 
 
 def fingerprint_html(form: ApplicationForm, bindings: FormBindings, html: str, url: str = "") -> str:
-    current = ATSInspector().inspect_html(html, url=url, form_id=form.form_id, form_selector=bindings.root_locator or None)
+    current = _reinspect_form(form, html, url, bindings.root_locator or None)
     return compute_form_fingerprint(current.form, current.bindings)
+
+
+def _reinspect_form(form: ApplicationForm, html: str, url: str, form_selector: str | None) -> InspectedForm:
+    """Reapply provider enrichment so semantic fingerprints remain comparable."""
+    if form.provider and form.provider != "generic":
+        from .ats import ADAPTERS
+
+        adapter = next((item for item in ADAPTERS if item.provider == form.provider), None)
+        if adapter:
+            return adapter.inspect(html, url=url, form_id=form.form_id)
+    return ATSInspector().inspect_html(html, url=url, form_id=form.form_id, form_selector=form_selector)
 
 
 def _css_escape(value: str) -> str:

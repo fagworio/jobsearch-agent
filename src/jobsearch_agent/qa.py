@@ -14,6 +14,22 @@ import yaml
 from .models import ApplicationAnswer, ApplicationField, CandidatePreferences, CareerProfile
 
 
+AUTO_FILL_CONFIDENCE = 0.85
+
+
+_COUNTRY_ALIASES = {
+    "brazil": "Brazil",
+    "brasil": "Brazil",
+    "united states": "United States",
+    "usa": "United States",
+    "u s": "United States",
+    "canada": "Canada",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "portugal": "Portugal",
+}
+
+
 LEGAL_TERMS = ("legal", "law", "declaration", "declare", "conviction", "criminal", "accommod", "disability", "ethnicity", "race", "visto", "autorização de trabalho", "autorizacao de trabalho")
 
 
@@ -26,6 +42,17 @@ def _normalize(value: str) -> str:
 def question_key(question: str) -> str:
     normalized = _normalize(question)
     return "q-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _field_country(field: ApplicationField) -> str:
+    explicit = field.semantic_context.get("country", "") if field.semantic_context else ""
+    if explicit:
+        return str(explicit)
+    text = _normalize(f"{field.key} {field.label}")
+    for alias, country in sorted(_COUNTRY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(_normalize(alias))}(?![a-z])", text):
+            return country
+    return ""
 
 
 def is_legal_question(question: str) -> bool:
@@ -86,6 +113,8 @@ class AnswerKnowledgeBase:
 
     def resolve_field(self, field: ApplicationField, profile: CareerProfile, preferences: CandidatePreferences | None = None) -> ApplicationAnswer | None:
         """Resolve a field using semantic type and options before text matching."""
+        if field.confidence < AUTO_FILL_CONFIDENCE:
+            return None
         semantic_type = field.semantic_type
         normalized_label = _normalize(field.label)
         if semantic_type == "unknown":
@@ -98,13 +127,18 @@ class AnswerKnowledgeBase:
             elif "sponsorship" in normalized_label or "patrocinio" in normalized_label:
                 semantic_type = "requires_sponsorship"
         if semantic_type == "work_authorization" and preferences and preferences.work_authorization:
+            country = _field_country(field)
+            if not country:
+                return None
+            authorized_countries = {_normalize(item) for item in preferences.work_authorization}
+            country_is_authorized = _normalize(country) in authorized_countries
             if self._yes_no_options(field.options):
-                value = "Yes"
+                value = "Yes" if country_is_authorized else "No"
             elif field.field_type in {"select", "radio"} and field.options:
                 values = {_normalize(option): option for option in field.options}
-                value = next((values[_normalize(country)] for country in preferences.work_authorization if _normalize(country) in values), "")
+                value = next((values[_normalize(country)] for country in preferences.work_authorization if _normalize(country) in values), "") if country_is_authorized else ""
             else:
-                value = ", ".join(preferences.work_authorization)
+                value = country if country_is_authorized else ""
             if value:
                 return self._field_answer(field, value, ["CandidatePreferences.work_authorization"], "CandidatePreferences", 1.0, semantic_type)
         if semantic_type == "requires_sponsorship" and preferences and preferences.requires_sponsorship in {"yes", "no"}:
