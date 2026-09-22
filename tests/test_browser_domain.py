@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
-from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, PlaywrightFormFiller, PlaywrightSessionManager, validate_navigation_url
+from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, NetworkWriteGuard, PlaywrightFormFiller, PlaywrightSessionManager, validate_navigation_url
 from jobsearch_agent.execution import ExecutionAction, ExecutionPlan, ExecutionPlanError, build_execution_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
 from jobsearch_agent.inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectionError, validate_bindings_against_html
@@ -188,6 +188,18 @@ def test_navigation_policy_rejects_local_and_non_web_urls():
         PlaywrightSessionManager().start()
 
 
+def test_network_guard_records_aggregate_evidence_without_query_strings():
+    class Request:
+        method = "POST"
+        resource_type = "fetch"
+        url = "https://example.com/apply?email=candidate@example.com"
+
+    guard = NetworkWriteGuard({"example.com"})
+    assert guard.inspect(Request()) is False
+    assert guard.blocked_writes[0].url == "https://example.com/apply"
+    assert "candidate@example.com" not in guard.blocked_writes[0].url
+
+
 def test_inspector_separates_domain_form_from_dom_bindings():
     html = """
     <form data-provider="greenhouse">
@@ -258,7 +270,7 @@ class _FakePage:
     def content(self):
         return self.html
 
-    def evaluate(self, script):
+    def evaluate(self, script, arg=None):
         return True
 
     def wait_for_timeout(self, milliseconds):
@@ -266,6 +278,15 @@ class _FakePage:
 
     def locator(self, selector):
         return _FakeLocator(self.calls, selector)
+
+
+class _FakeGuardedSession(PlaywrightSessionManager):
+    def __init__(self, page):
+        self.headless = True
+        self.page = page
+        self.context = object()
+        self.network_guard = NetworkWriteGuard({"example.com"})
+        self.guarded = True
 
 
 def test_playwright_filler_only_fills_and_uploads(tmp_path: Path):
@@ -282,10 +303,21 @@ def test_playwright_filler_only_fills_and_uploads(tmp_path: Path):
     context = _ready_context(inspected.form)
     plan = build_execution_plan(context, inspected.bindings)
     page = _FakePage(html)
-    result = PlaywrightFormFiller().fill(page, context, plan, inspected.bindings)
+    session = _FakeGuardedSession(page)
+    result = PlaywrightFormFiller().fill(session, context, plan, inspected.bindings)
     assert [call[0] for call in page.calls] == ["fill", "upload"]
     assert result.stopped_before_submit is True
     assert not hasattr(PlaywrightFormFiller(), "submit")
+
+
+def test_playwright_filler_rejects_raw_page_without_guarded_session():
+    html = '<form id="application"><input id="name" name="name" required></form>'
+    inspected = ATSInspector().inspect_html(html, form_selector="#application")
+    inspected.form.fields[0].value = "Candidate"
+    context = _ready_context(inspected.form)
+    plan = build_execution_plan(context, inspected.bindings)
+    with pytest.raises(BrowserSessionError, match="GuardedBrowserSession"):
+        PlaywrightFormFiller().fill(_FakePage(html), context, plan, inspected.bindings)
 
 
 def test_playwright_filler_stops_when_dom_changes_after_action():
@@ -297,10 +329,13 @@ def test_playwright_filler_stops_when_dom_changes_after_action():
     plan = build_execution_plan(context, inspected.bindings)
 
     class ChangingPage(_FakePage):
-        def wait_for_timeout(self, milliseconds):
-            self.html = self.html.replace("</form>", '<input id="conditional" name="conditional" required></form>')
+        def evaluate(self, script, arg=None):
+            if "MutationObserver" in script:
+                self.html = self.html.replace("</form>", '<input id="conditional" name="conditional" required></form>')
+                return True
+            return super().evaluate(script, arg)
 
     page = ChangingPage(html)
-    result = PlaywrightFormFiller().fill(page, context, plan, inspected.bindings)
+    result = PlaywrightFormFiller().fill(_FakeGuardedSession(page), context, plan, inspected.bindings)
     assert result.status == "FORM_CHANGED"
     assert len(result.operations) == 1

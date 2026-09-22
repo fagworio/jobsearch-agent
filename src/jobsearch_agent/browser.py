@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import ipaddress
 import json
+import os
 from pathlib import Path
 import socket
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .execution import ExecutionPlan, validate_execution_context
@@ -44,7 +45,7 @@ class NetworkWriteGuard:
     def inspect(self, request: Any) -> bool:
         method = str(getattr(request, "method", "GET")).upper()
         resource_type = str(getattr(request, "resource_type", ""))
-        url = str(getattr(request, "url", ""))
+        url = _audit_request_url(str(getattr(request, "url", "")))
         if resource_type == "websocket":
             self.events.append(NetworkRequestEvent(url, method, resource_type, False, "websocket blocked in dry-run"))
             return False
@@ -53,6 +54,47 @@ class NetworkWriteGuard:
             return False
         self.events.append(NetworkRequestEvent(url, method, resource_type, True))
         return True
+
+
+def _audit_request_url(url: str) -> str:
+    """Keep network evidence free of query strings and fragments."""
+    parsed = urlparse(url)
+    return parsed._replace(query="", fragment="").geturl()
+
+
+class GuardedBrowserSession(Protocol):
+    page: Any
+    context: Any
+    network_guard: NetworkWriteGuard
+    guarded: bool
+
+
+class DOMStabilityGuard:
+    """Wait until the page has no mutations for a quiet interval."""
+
+    def __init__(self, quiet_ms: int = 250, max_ms: int = 3000):
+        self.quiet_ms = quiet_ms
+        self.max_ms = max_ms
+
+    def wait(self, page: Any) -> None:
+        script = """
+            ({quiet, maxWait}) => new Promise((resolve, reject) => {
+                const root = document.documentElement || document;
+                let quietTimer;
+                let maxTimer = setTimeout(() => { observer.disconnect(); reject(new Error('DOM did not stabilize')); }, maxWait);
+                const finish = () => { clearTimeout(maxTimer); observer.disconnect(); resolve(true); };
+                const observer = new MutationObserver(() => {
+                    clearTimeout(quietTimer);
+                    quietTimer = setTimeout(finish, quiet);
+                });
+                observer.observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
+                quietTimer = setTimeout(finish, quiet);
+            })
+        """
+        try:
+            page.evaluate(script, {"quiet": self.quiet_ms, "maxWait": self.max_ms})
+        except Exception as exc:
+            raise BrowserSessionError("DOM_UNSTABLE: form did not stabilize") from exc
 
 
 def validate_navigation_url(url: str, allowed_hosts: set[str] | None = None, *, resource: bool = False) -> ValidationResult:
@@ -101,6 +143,9 @@ class BrowserExecutionResult:
     current_fingerprint: str = ""
     submission_attempted: bool = False
     network_writes_allowed: bool = False
+    network_guard_active: bool = False
+    blocked_write_count: int = 0
+    blocked_websocket_count: int = 0
 
 
 @dataclass
@@ -114,11 +159,15 @@ class DryRunAuditReport:
     operations: list[dict[str, Any]] = field(default_factory=list)
     submission_attempted: bool = False
     network_writes_allowed: bool = False
+    network_guard_active: bool = False
+    blocked_write_count: int = 0
+    blocked_websocket_count: int = 0
 
 
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
 
 
 def write_dry_run_report(path: str | Path, report: DryRunAuditReport) -> None:
@@ -151,7 +200,10 @@ class DryRunBrowserExecutor(BrowserExecutor):
 class PlaywrightFormFiller:
     """Fill only validated controls; this class intentionally has no submit method."""
 
-    def fill(self, page: Any, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, audit_dir: str | Path | None = None) -> BrowserExecutionResult:
+    def fill(self, session: GuardedBrowserSession, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, audit_dir: str | Path | None = None) -> BrowserExecutionResult:
+        if not isinstance(session, PlaywrightSessionManager) or not session.guarded or not isinstance(session.network_guard, NetworkWriteGuard):
+            raise BrowserSessionError("Playwright filler requires a GuardedBrowserSession")
+        page = session.page
         if not page.evaluate("() => window.__jobsearchDryRun === true"):
             raise BrowserSessionError("Playwright page is not attached to a dry-run guarded session")
         current_html = page.content()
@@ -162,8 +214,18 @@ class PlaywrightFormFiller:
         operations: list[dict[str, Any]] = []
         audit_path = Path(audit_dir) if audit_dir else None
         if audit_path:
+            if not context.form.artifact_root:
+                raise BrowserSessionError("audit directory requires an application artifact root")
+            artifact_root = Path(context.form.artifact_root).expanduser().resolve()
+            audit_path = audit_path.expanduser().resolve()
+            try:
+                audit_path.relative_to(artifact_root)
+            except ValueError as exc:
+                raise BrowserSessionError("audit directory must be inside the application artifact root") from exc
             audit_path.mkdir(parents=True, exist_ok=True)
+            os.chmod(audit_path, 0o700)
             page.screenshot(path=str(audit_path / "screenshot-before.png"))
+            os.chmod(audit_path / "screenshot-before.png", 0o600)
             _write_json(audit_path / "form.json", {"application_id": context.application_id, "fingerprint": plan.form_fingerprint, "fields": [{"key": field.key, "label": field.label, "field_type": field.field_type, "required": field.required, "options": field.options} for field in context.form.fields]})
             _write_json(audit_path / "bindings.json", {"form_id": bindings.form_id, "root_locator": bindings.root_locator, "fields": [binding.__dict__ for binding in bindings.fields]})
             _write_json(audit_path / "execution-plan.json", {"application_id": plan.application_id, "provider": plan.provider, "form_fingerprint": plan.form_fingerprint, "actions": [{"action_type": action.action_type, "field_key": action.field_key, "sha256": action.sha256} for action in plan.actions]})
@@ -185,7 +247,13 @@ class PlaywrightFormFiller:
                 operations.append({"operation": "fill", "field_key": action.field_key})
             else:  # defensive; validate_execution_context already rejects it
                 raise BrowserSessionError(f"unsupported dry-run action: {action.action_type}")
-            page.wait_for_timeout(0)
+            try:
+                DOMStabilityGuard().wait(page)
+            except BrowserSessionError:
+                report = self._report(session, plan, operations, "DOM_UNSTABLE", index, initial_fingerprint, "")
+                if audit_path:
+                    self._persist_audit(page, audit_path, operations, report)
+                return BrowserExecutionResult(plan.application_id, operations, True, "DOM_UNSTABLE", initial_fingerprint, "", False, False, True, report.blocked_write_count, report.blocked_websocket_count)
             current_html = page.content()
             current_validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")))
             if not current_validation.valid:
@@ -193,18 +261,27 @@ class PlaywrightFormFiller:
                     current_fingerprint = fingerprint_html(context.form, bindings, current_html, str(getattr(page, "url", "")))
                 except Exception:
                     current_fingerprint = ""
-                report = DryRunAuditReport(plan.application_id, "FORM_CHANGED", len(operations), len(plan.actions) - index - 1, initial_fingerprint, current_fingerprint, operations)
+                report = self._report(session, plan, operations, "FORM_CHANGED", index, initial_fingerprint, current_fingerprint)
                 if audit_path:
-                    page.screenshot(path=str(audit_path / "screenshot-after.png"))
-                    _write_json(audit_path / "operations.json", operations)
-                    write_dry_run_report(audit_path / "dry-run-report.json", report)
-                return BrowserExecutionResult(plan.application_id, operations, True, "FORM_CHANGED", initial_fingerprint, current_fingerprint, False, False)
-        result = BrowserExecutionResult(plan.application_id, operations, True, "COMPLETED", initial_fingerprint, initial_fingerprint, False, False)
+                    self._persist_audit(page, audit_path, operations, report)
+                return BrowserExecutionResult(plan.application_id, operations, True, "FORM_CHANGED", initial_fingerprint, current_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count)
+        report = self._report(session, plan, operations, "COMPLETED", len(plan.actions) - 1, initial_fingerprint, initial_fingerprint)
+        result = BrowserExecutionResult(plan.application_id, operations, True, "COMPLETED", initial_fingerprint, initial_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count)
         if audit_path:
-            page.screenshot(path=str(audit_path / "screenshot-after.png"))
-            _write_json(audit_path / "operations.json", operations)
-            write_dry_run_report(audit_path / "dry-run-report.json", DryRunAuditReport(plan.application_id, result.status, len(operations), 0, initial_fingerprint, result.current_fingerprint, operations))
+            self._persist_audit(page, audit_path, operations, report)
         return result
+
+    @staticmethod
+    def _report(session: GuardedBrowserSession, plan: ExecutionPlan, operations: list[dict[str, Any]], result: str, index: int, initial: str, current: str) -> DryRunAuditReport:
+        guard = session.network_guard
+        return DryRunAuditReport(plan.application_id, result, len(operations), max(len(plan.actions) - index - 1, 0), initial, current, operations, False, False, True, len(guard.blocked_writes), sum(event.resource_type == "websocket" for event in guard.blocked_writes))
+
+    @staticmethod
+    def _persist_audit(page: Any, audit_path: Path, operations: list[dict[str, Any]], report: DryRunAuditReport) -> None:
+        page.screenshot(path=str(audit_path / "screenshot-after.png"))
+        os.chmod(audit_path / "screenshot-after.png", 0o600)
+        _write_json(audit_path / "operations.json", operations)
+        write_dry_run_report(audit_path / "dry-run-report.json", report)
 
     @staticmethod
     def _fill_value(page: Any, locator: Any, binding: FormBindings | Any, field: Any, value: Any) -> None:
@@ -249,6 +326,7 @@ class PlaywrightSessionManager:
         self.context = None
         self.page = None
         self.network_guard: NetworkWriteGuard | None = None
+        self.guarded = False
 
     _DRY_RUN_INIT_SCRIPT = """
         (() => {
@@ -278,7 +356,7 @@ class PlaywrightSessionManager:
         validation = validate_navigation_url(request_url, self.allowed_hosts, resource=True)
         if not validation.valid:
             if self.network_guard:
-                self.network_guard.events.append(NetworkRequestEvent(request_url, str(getattr(route.request, "method", "GET")), str(getattr(route.request, "resource_type", "")), False, "; ".join(validation.errors)))
+                self.network_guard.events.append(NetworkRequestEvent(_audit_request_url(request_url), str(getattr(route.request, "method", "GET")), str(getattr(route.request, "resource_type", "")), False, "; ".join(validation.errors)))
             route.abort("blockedbyclient")
             return
         network_allowed = self.network_guard.inspect(route.request) if self.network_guard else False
@@ -286,6 +364,13 @@ class PlaywrightSessionManager:
             route.continue_()
         else:
             route.abort("blockedbyclient")
+
+    def _block_websocket(self, websocket: Any) -> None:  # pragma: no cover - exercised with Playwright installed
+        url = _audit_request_url(str(getattr(websocket, "url", "")))
+        if self.network_guard:
+            self.network_guard.events.append(NetworkRequestEvent(url, "GET", "websocket", False, "websocket blocked in dry-run"))
+        # Deliberately do not call websocket.connect().
+        return
 
     def start(self) -> None:
         if not self.allowed_hosts:
@@ -300,7 +385,12 @@ class PlaywrightSessionManager:
         self.network_guard = NetworkWriteGuard(self.allowed_hosts)
         self.context.add_init_script(self._DRY_RUN_INIT_SCRIPT)
         self.context.route("**/*", self._guard_route)
+        if not hasattr(self.context, "route_web_socket"):
+            self.close()
+            raise BrowserSessionError("Playwright >= 1.48 with route_web_socket is required")
+        self.context.route_web_socket("**", self._block_websocket)
         self.page = self.context.new_page()
+        self.guarded = True
 
     def open(self, url: str) -> None:
         if self.page is None:
@@ -325,3 +415,4 @@ class PlaywrightSessionManager:
         self.page = None
         self._playwright = None
         self.network_guard = None
+        self.guarded = False

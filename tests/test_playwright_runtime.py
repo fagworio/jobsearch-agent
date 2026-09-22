@@ -27,6 +27,8 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
     manager.start()
     try:
         page = manager.page
+        assert manager.context is not None
+        assert hasattr(manager.context, "route_web_socket")
         page.set_content(html)
         inspected = ATSInspector().inspect_page(page, form_selector="#application")
         inspected.form.artifact_root = str(tmp_path)
@@ -45,7 +47,7 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         )
         plan = build_execution_plan(application_context, inspected.bindings)
         audit_dir = tmp_path / "browser"
-        result = PlaywrightFormFiller().fill(page, application_context, plan, inspected.bindings, audit_dir=audit_dir)
+        result = PlaywrightFormFiller().fill(manager, application_context, plan, inspected.bindings, audit_dir=audit_dir)
         post_result = page.evaluate("""async () => {
             try { await fetch('https://example.com/write', {method: 'POST', body: 'blocked'}); return 'sent'; }
             catch (error) { return 'blocked'; }
@@ -57,6 +59,12 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         assert (audit_dir / "screenshot-before.png").is_file()
         assert (audit_dir / "screenshot-after.png").is_file()
         assert (audit_dir / "dry-run-report.json").is_file()
+        assert (audit_dir.stat().st_mode & 0o777) == 0o700
+        assert (audit_dir / "screenshot-before.png").stat().st_mode & 0o777 == 0o600
+        assert (audit_dir / "screenshot-after.png").stat().st_mode & 0o777 == 0o600
+        report = (audit_dir / "dry-run-report.json").read_text(encoding="utf-8")
+        assert '"network_guard_active": true' in report
+        assert '"blocked_write_count": 1' in report
         assert not hasattr(PlaywrightFormFiller(), "submit")
         assert manager.network_guard is not None
         assert manager.context is not None
