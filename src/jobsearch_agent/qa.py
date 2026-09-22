@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+from dataclasses import replace
 import hashlib
 import re
 import unicodedata
@@ -86,6 +87,7 @@ def load_answers(path: str | Path) -> list[ApplicationAnswer]:
             approved=bool(entry.get("approved", True)),
             legal=bool(entry.get("legal", is_legal_question(question))),
             semantic_type=str(entry.get("semantic_type", "unknown")),
+            field_key=str(entry.get("field_key", "")),
         ))
     return result
 
@@ -129,10 +131,14 @@ class AnswerKnowledgeBase:
         if semantic_type in {"first_name", "last_name"}:
             value = profile.identity.get(semantic_type, "")
             if value:
+                supported_by = [f"CareerProfile.identity.{semantic_type}"]
+                fact_id = profile.identity_fact_ids.get(semantic_type)
+                if fact_id:
+                    supported_by.append(fact_id)
                 return self._field_answer(
                     field,
                     value,
-                    [f"CareerProfile.identity.{semantic_type}"],
+                    supported_by,
                     "CareerProfile",
                     1.0,
                     semantic_type,
@@ -160,8 +166,8 @@ class AnswerKnowledgeBase:
             value = self._map_boolean_option("Yes" if preferences.relocation else "No", field.options)
             return self._field_answer(field, value, ["CandidatePreferences.relocation"], "CandidatePreferences", 1.0, semantic_type)
         answer = self.resolve(field.label, profile, preferences)
-        if answer and semantic_type != "unknown":
-            answer.semantic_type = semantic_type
+        if answer:
+            answer = replace(answer, semantic_type=semantic_type, field_key=field.key)
         if answer and field.options and not self._option_matches(answer.answer, field.options):
             return None
         return answer
@@ -192,7 +198,7 @@ class AnswerKnowledgeBase:
 
     @staticmethod
     def _field_answer(field: ApplicationField, value: str, supported_by: list[str], source: str, confidence: float, semantic_type: str) -> ApplicationAnswer:
-        return ApplicationAnswer(question_key(field.label), field.label, value, supported_by, source, confidence, True, semantic_type in {"work_authorization", "requires_sponsorship"}, semantic_type)
+        return ApplicationAnswer(question_key(field.label), field.label, value, supported_by, source, confidence, True, semantic_type in {"work_authorization", "requires_sponsorship"}, semantic_type, field.key)
 
     def _resolve_profile(self, question: str, profile: CareerProfile, preferences: CandidatePreferences | None) -> ApplicationAnswer | None:
         normalized = _normalize(question)

@@ -20,6 +20,14 @@ def test_demo_profile_and_locked_facts_are_valid():
     assert validate_profile_facts(profile, facts) == []
 
 
+def test_identity_fact_reference_must_exist():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    profile.identity_fact_ids["first_name"] = "missing_identity_fact"
+    errors = validate_profile_facts(profile, facts)
+    assert "identity references unknown fact: missing_identity_fact" in errors
+
+
 def test_unsupported_claim_is_blocked():
     facts = load_facts(ROOT / "profile/locked_facts.yaml")
     resume = Resume(

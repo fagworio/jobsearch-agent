@@ -6,6 +6,9 @@ identity:
   last_name: "Candidate"
   email: "demo@example.invalid"
   location: "São Paulo, BR"
+identity_fact_ids:
+  first_name: fact_demo_identity_001
+  last_name: fact_demo_identity_002
 professional_summary:
   pt-BR:
     text: "Desenvolvedor WordPress com experiência em plugins personalizados, WooCommerce e integrações REST."

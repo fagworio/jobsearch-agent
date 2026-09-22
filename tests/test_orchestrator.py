@@ -154,6 +154,7 @@ def test_orchestrator_carries_only_approved_answer_across_reinspection():
             source="manual_review",
             approved=True,
             semantic_type="unknown",
+            field_key="job_application[question_123]",
         )
     ]
     filler = ManualAnswerChangingFiller(page)
@@ -179,6 +180,20 @@ def test_orchestrator_does_not_carry_unapproved_answer():
             approved=False,
             semantic_type="unknown",
         )
+    ]
+    result = DryRunApplicationOrchestrator(
+        GreenhouseAdapter(), PROFILE, PREFERENCES, AnswerKnowledgeBase([]), filler=AlwaysChangedFiller(), max_cycles=3
+    ).run(FakeSession(page), context)
+
+    assert result.status == "NEEDS_ANSWER"
+
+
+def test_orchestrator_fails_closed_for_ambiguous_global_approved_answers():
+    page = FakePage(MANUAL_INITIAL_HTML)
+    context = _context()
+    context.answers = [
+        ApplicationAnswer("one", "Why are you interested?", "Answer one", approved=True, semantic_type="unknown"),
+        ApplicationAnswer("two", "Why are you interested?", "Answer two", approved=True, semantic_type="unknown"),
     ]
     result = DryRunApplicationOrchestrator(
         GreenhouseAdapter(), PROFILE, PREFERENCES, AnswerKnowledgeBase([]), filler=AlwaysChangedFiller(), max_cycles=3

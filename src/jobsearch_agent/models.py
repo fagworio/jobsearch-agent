@@ -124,6 +124,7 @@ class CareerProfile:
     skills: dict[str, dict[str, Any]]
     languages: dict[str, dict[str, Any]]
     preferences: dict[str, Any] = field(default_factory=dict)
+    identity_fact_ids: dict[str, str] = field(default_factory=dict)
     candidate_preferences: "CandidatePreferences | None" = None
     summary_fact_ids: dict[str, list[str]] = field(default_factory=dict)
     demo: bool = False
@@ -288,6 +289,7 @@ class ApplicationAnswer:
     approved: bool = False
     legal: bool = False
     semantic_type: str = "unknown"
+    field_key: str = ""
 
 
 @domain_dataclass

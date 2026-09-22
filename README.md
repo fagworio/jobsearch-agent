@@ -98,8 +98,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `FormCapabilityIssue` e levam a `UNSUPPORTED_FORM`, enquanto autorização de trabalho exige
   jurisdição explícita e confiança mínima antes de ser respondida automaticamente.
 - `first_name` e `last_name` só são preenchidos quando existem como atributos explícitos no perfil;
-  o agente não divide automaticamente um nome composto. Campos de localização atual e localização
-  preferida para relocação também possuem semânticas distintas.
+  o agente não divide automaticamente um nome composto. Quando configurados, seus
+  `identity_fact_ids` também entram na proveniência da resposta. Campos de localização atual e
+  localização preferida para relocação possuem semânticas distintas.
 - O `DryRunApplicationOrchestrator` executa o ciclo bounded `inspect → resolve → Safety Gate →
   plan → fill`. Quando o DOM muda, ele re-inspeciona o formulário, resolve novamente as respostas
   e gera um novo plano; fingerprints repetidos e excesso de ciclos interrompem com status explícito.

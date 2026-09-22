@@ -62,6 +62,7 @@ def load_profile(path: str | Path) -> CareerProfile:
         skills=_mapping(data.get("skills", {}), "skills"),
         languages=_mapping(data.get("languages", {}), "languages"),
         preferences=_mapping(data.get("preferences", {}), "preferences"),
+        identity_fact_ids={str(k): str(v) for k, v in _mapping(data.get("identity_fact_ids", {}), "identity_fact_ids").items()},
         demo=bool(data.get("demo", False)),
         version=str(data.get("version", "1")),
     )
@@ -141,6 +142,11 @@ def validate_profile(profile: CareerProfile) -> None:
 
 def validate_facts(profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
     errors: list[str] = []
+    for identity_key, fact_id in profile.identity_fact_ids.items():
+        if identity_key not in profile.identity:
+            errors.append(f"identity fact references missing identity field: {identity_key}")
+        if fact_id not in facts:
+            errors.append(f"identity references unknown fact: {fact_id}")
     referenced = {fact_id for exp in profile.experiences for fact_id in exp.fact_ids}
     missing = sorted(referenced - facts.keys())
     if missing:

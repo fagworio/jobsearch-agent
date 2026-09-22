@@ -131,17 +131,9 @@ class DryRunApplicationOrchestrator:
                 if cls._option_is_still_valid(candidate, field):
                     field.answer = candidate
                     continue
-            candidate = next(
-                (
-                    answer
-                    for answer in approved_answers
-                    if cls._answer_matches_field(answer, field)
-                    and cls._option_is_still_valid(answer, field)
-                ),
-                None,
-            )
-            if candidate is not None:
-                field.answer = candidate
+            candidates = [answer for answer in approved_answers if cls._answer_matches_field(answer, field)]
+            if len(candidates) == 1 and cls._option_is_still_valid(candidates[0], field):
+                field.answer = candidates[0]
 
     @staticmethod
     def _normalize_question(value: str) -> str:
@@ -150,6 +142,8 @@ class DryRunApplicationOrchestrator:
     @classmethod
     def _answer_matches_field(cls, answer: ApplicationAnswer, field: Any) -> bool:
         if not answer.approved or not answer.answer:
+            return False
+        if answer.field_key and answer.field_key != field.key:
             return False
         if answer.semantic_type != field.semantic_type:
             return False

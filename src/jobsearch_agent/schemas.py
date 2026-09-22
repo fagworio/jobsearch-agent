@@ -26,6 +26,7 @@ try:
     class ProfileSchema(BaseModel):
         model_config = ConfigDict(extra="allow")
         identity: dict[str, str]
+        identity_fact_ids: dict[str, str] = Field(default_factory=dict)
         professional_summary: dict[str, Any] = Field(default_factory=dict)
         summary_fact_ids: dict[str, list[str]] = Field(default_factory=dict)
         experience: list[dict[str, Any]] = Field(default_factory=list)

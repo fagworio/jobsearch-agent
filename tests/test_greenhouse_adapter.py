@@ -53,8 +53,12 @@ def test_greenhouse_identity_fields_use_explicit_profile_attributes():
 
     first_name = next(field for field in result.form.fields if field.semantic_type == "first_name")
     last_name = next(field for field in result.form.fields if field.semantic_type == "last_name")
-    assert kb.resolve_field(first_name, profile, preferences).answer == "Demo"
-    assert kb.resolve_field(last_name, profile, preferences).answer == "Candidate"
+    first_answer = kb.resolve_field(first_name, profile, preferences)
+    last_answer = kb.resolve_field(last_name, profile, preferences)
+    assert first_answer.answer == "Demo"
+    assert last_answer.answer == "Candidate"
+    assert first_answer.supported_by == ["CareerProfile.identity.first_name", "fact_demo_identity_001"]
+    assert last_answer.supported_by == ["CareerProfile.identity.last_name", "fact_demo_identity_002"]
 
     profile.identity.pop("first_name")
     profile.identity.pop("last_name")
