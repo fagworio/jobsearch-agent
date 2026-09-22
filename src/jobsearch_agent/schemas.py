@@ -35,6 +35,7 @@ try:
         current_location: str | None = None
         linkedin: str | None = None
         github: str | None = None
+        website: str | None = None
 
     class CandidatePreferencesSchema(BaseModel):
         model_config = ConfigDict(extra="allow")
@@ -50,6 +51,7 @@ try:
         professional_summary: dict[str, Any] = Field(default_factory=dict)
         summary_fact_ids: dict[str, list[str]] = Field(default_factory=dict)
         experience: list[dict[str, Any]] = Field(default_factory=list)
+        education: list[dict[str, Any]] = Field(default_factory=list)
         skills: dict[str, Any] = Field(default_factory=dict)
         languages: dict[str, Any] = Field(default_factory=dict)
         preferences: dict[str, Any] = Field(default_factory=dict)

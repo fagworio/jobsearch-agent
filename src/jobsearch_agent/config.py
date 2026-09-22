@@ -49,6 +49,9 @@ class Settings:
     def from_args(cls, root: Path | None = None, **values: object) -> "Settings":
         project_root = (root or Path.cwd()).resolve()
         environment = EnvironmentSettings()
+        local_profile = project_root / "profile/career_profile.local.yaml"
+        local_facts = project_root / "profile/locked_facts.local.yaml"
+        local_preferences = project_root / "profile/preferences.local.yaml"
         def path_arg(name: str, default: str) -> Path:
             raw = values.get(name) or os.getenv(name.upper()) or default
             return Path(str(raw)).expanduser()
@@ -56,9 +59,9 @@ class Settings:
             root=project_root,
             db_path=path_arg("db", "data/jobsearch.db"),
             artifacts_dir=path_arg("artifacts", "data/applications"),
-            profile_path=path_arg("profile", "profile/career_profile.yaml"),
-            facts_path=path_arg("facts", "profile/locked_facts.yaml"),
-            preferences_path=path_arg("preferences", "profile/preferences.yaml"),
+            profile_path=path_arg("profile", str(local_profile if local_profile.is_file() else Path("profile/career_profile.yaml"))),
+            facts_path=path_arg("facts", str(local_facts if local_facts.is_file() else Path("profile/locked_facts.yaml"))),
+            preferences_path=path_arg("preferences", str(local_preferences if local_preferences.is_file() else Path("profile/preferences.yaml"))),
             answers_path=path_arg("answers", "profile/answers.yaml"),
             application_policy_path=path_arg("application_policy", "profile/application_policy.yaml"),
             llm_base_url=environment.llm_base_url.rstrip("/"),

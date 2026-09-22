@@ -70,12 +70,12 @@ def test_legacy_database_migrates_idempotently_without_merging_weak_matches(tmp_
     connection.close()
 
     db = Database(path)
-    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
+    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4]
     assert len(db.list_jobs()) == 2
     assert db.list_duplicate_candidates()
     db.close()
     db = Database(path)
-    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
+    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4]
     assert len(db.list_jobs()) == 2
     db.close()
 

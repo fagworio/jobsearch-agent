@@ -43,6 +43,38 @@ class ExecutionPlan:
     form_fingerprint: str = ""
 
 
+@dataclass
+class DryRunExecutionPlan(ExecutionPlan):
+    """Plan that can fill/upload only and always stops before submission."""
+
+    final_action: str = "STOP_BEFORE_SUBMIT"
+
+
+@dataclass
+class LiveApplicationPlan:
+    """Provider navigation plan; submission is a separate boundary contract."""
+
+    application_id: str
+    provider: str
+    actions: list[ExecutionAction] = field(default_factory=list)
+    final_action: str = "REQUIRE_SUBMIT_AUTHORIZATION"
+    version: str = "1"
+    created_at: str = field(default_factory=now_iso)
+    form_fingerprint: str = ""
+
+
+def validate_live_application_plan(plan: LiveApplicationPlan) -> ValidationResult:
+    errors: list[str] = []
+    if plan.final_action != "REQUIRE_SUBMIT_AUTHORIZATION":
+        errors.append("live application plan must require explicit submit authorization")
+    for action in plan.actions:
+        if action.action_type in {"submit", "send", "apply"}:
+            errors.append("submission is not an execution action")
+        if action.action_type not in {"fill", "upload", "advance"}:
+            errors.append(f"unsupported live application action: {action.action_type}")
+    return ValidationResult(not errors, "OK" if not errors else "INVALID_LIVE_APPLICATION_PLAN", errors)
+
+
 def _field_value(field: ApplicationField) -> Any:
     if field.value not in (None, ""):
         return field.value
@@ -138,7 +170,7 @@ def build_execution_plan(context: ApplicationContext, bindings: FormBindings) ->
                 actions.append(ExecutionAction("upload", field.key, attachment_path=attachment_path, step=field.step, metadata={"semantic_type": field.semantic_type}, sha256=_sha256(attachment_path)))
         elif value not in (None, "", []):
             actions.append(ExecutionAction("fill", field.key, value=value, step=field.step, metadata={"semantic_type": field.semantic_type}))
-    plan = ExecutionPlan(context.application_id, context.form.provider, actions, form_fingerprint=compute_form_fingerprint(context.form, bindings))
+    plan = DryRunExecutionPlan(context.application_id, context.form.provider, actions, form_fingerprint=compute_form_fingerprint(context.form, bindings))
     result = validate_execution_plan(plan)
     if not result.valid:
         raise ExecutionPlanError("invalid execution plan: " + "; ".join(result.errors))

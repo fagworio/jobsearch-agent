@@ -28,6 +28,7 @@ _IDENTITY_SEMANTICS = {
     "current_location": "current_location",
     "linkedin": "linkedin",
     "github": "github",
+    "website": "website",
 }
 
 
@@ -141,6 +142,22 @@ class AnswerKnowledgeBase:
                 semantic_type = "work_authorization"
             elif "sponsorship" in normalized_label or "patrocinio" in normalized_label:
                 semantic_type = "requires_sponsorship"
+        if semantic_type == "experience_years":
+            skill = str((field.semantic_context or {}).get("skill", "")).strip()
+            normalized_skill = _normalize(skill)
+            for skill_key, skill_data in profile.skills.items():
+                if not isinstance(skill_data, dict):
+                    continue
+                aliases = {_normalize(str(skill_key))}
+                aliases.update(_normalize(str(tag)) for tag in skill_data.get("tags", []))
+                if normalized_skill and normalized_skill in aliases:
+                    years = skill_data.get("years")
+                    if years is not None and str(years).strip():
+                        value = str(years)
+                        if not field.options or self._option_matches(value, field.options):
+                            support_path = f"CareerProfile.skills.{skill_key}.years"
+                            return self._field_answer(field, value, [support_path], "CareerProfile", 1.0, semantic_type)
+            return None
         if semantic_type in _IDENTITY_SEMANTICS:
             identity_key = _IDENTITY_SEMANTICS[semantic_type]
             value = profile.identity.get(identity_key, "")

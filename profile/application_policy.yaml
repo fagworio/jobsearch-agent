@@ -6,6 +6,15 @@ autonomy:
   fill_forms: review
   submit: manual
 
+providers:
+  greenhouse:
+    fill_forms: review
+    submit: manual
+  linkedin:
+    fill_forms: review
+    advance_steps: review
+    submit: manual
+
 limits:
   applications_per_day: 20
 

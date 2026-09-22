@@ -4,7 +4,7 @@ import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
 from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, NetworkWriteGuard, PlaywrightFormFiller, PlaywrightSessionManager, validate_navigation_url
-from jobsearch_agent.execution import ExecutionAction, ExecutionPlan, ExecutionPlanError, build_execution_plan
+from jobsearch_agent.execution import DryRunExecutionPlan, ExecutionAction, ExecutionPlan, ExecutionPlanError, LiveApplicationPlan, build_execution_plan, validate_live_application_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
 from jobsearch_agent.inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectionError, validate_bindings_against_html
 from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationState
@@ -130,6 +130,15 @@ def test_safety_gate_rejects_invalid_option_before_execution():
     assert "invalid_option:auth" in readiness.blockers
     with pytest.raises(ExecutionPlanError):
         build_execution_plan(context, _bindings_for(context.form))
+
+
+def test_dry_run_and_live_plan_contracts_keep_submit_out_of_actions():
+    dry = DryRunExecutionPlan("application-1", "greenhouse")
+    assert dry.final_action == "STOP_BEFORE_SUBMIT"
+    live = LiveApplicationPlan("application-1", "greenhouse", [ExecutionAction("advance", "step-1")])
+    assert validate_live_application_plan(live).valid is True
+    blocked = LiveApplicationPlan("application-1", "greenhouse", [ExecutionAction("submit", "")])
+    assert validate_live_application_plan(blocked).valid is False
 
 
 def test_execution_plan_and_dry_run_have_no_submit_path(tmp_path: Path):

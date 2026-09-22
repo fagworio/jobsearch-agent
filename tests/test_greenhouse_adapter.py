@@ -271,6 +271,7 @@ def test_identity_and_contact_semantics_resolve_only_explicit_profile_values():
       <label for="timezone">Time Zone</label><input id="timezone" name="job_application[time_zone]">
       <label for="linkedin">LinkedIn</label><input id="linkedin" name="job_application[linkedin]" type="url">
       <label for="github">GitHub</label><input id="github" name="job_application[github]" type="url">
+      <label for="website">Personal Website</label><input id="website" name="job_application[website]" type="url">
     """
     html = _html("simple.html").replace("</form>", additions + "</form>")
     result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
@@ -280,6 +281,7 @@ def test_identity_and_contact_semantics_resolve_only_explicit_profile_values():
     assert semantics["job_application[time_zone]"] == "timezone"
     assert semantics["job_application[linkedin]"] == "linkedin"
     assert semantics["job_application[github]"] == "github"
+    assert semantics["job_application[website]"] == "website"
 
     profile = load_profile(ROOT / "profile/career_profile.yaml")
     profile.identity.update({
@@ -289,6 +291,7 @@ def test_identity_and_contact_semantics_resolve_only_explicit_profile_values():
         "current_location": "Toronto, Canada",
         "linkedin": "https://www.linkedin.com/in/test-candidate",
         "github": "https://github.com/test-candidate",
+        "website": "https://example.invalid",
     })
     preferences = CandidatePreferences(timezone="America/Toronto")
     kb = AnswerKnowledgeBase([])
@@ -300,6 +303,7 @@ def test_identity_and_contact_semantics_resolve_only_explicit_profile_values():
         "job_application[time_zone]": ("America/Toronto", "CandidatePreferences.timezone"),
         "job_application[linkedin]": ("https://www.linkedin.com/in/test-candidate", "CareerProfile.identity.linkedin"),
         "job_application[github]": ("https://github.com/test-candidate", "CareerProfile.identity.github"),
+        "job_application[website]": ("https://example.invalid", "CareerProfile.identity.website"),
     }
     for key, (value, provenance) in expected.items():
         field = next(item for item in result.form.fields if item.key == key)

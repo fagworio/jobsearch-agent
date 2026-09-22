@@ -33,3 +33,26 @@ def test_real_profile_flag_rejects_demo(tmp_path, capsys):
     ])
     assert result == 2
     assert "demo profile" in capsys.readouterr().out
+
+
+def test_submission_commands_are_exposed_without_adding_submit_to_dry_run(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["application", "--help"])
+    assert exit_info.value.code == 0
+    application_help = capsys.readouterr().out
+    assert "review" in application_help
+    assert "authorize-submit" in application_help
+    assert "submit" in application_help
+
+
+def test_linkedin_inspect_cli_uses_local_html_only(tmp_path, capsys):
+    result = main([
+        "linkedin", "inspect", "job-linkedin-fixture",
+        "--html-file", str(ROOT / "tests/fixtures/linkedin/easy-apply-single.html"),
+        "--db", str(tmp_path / "jobs.db"),
+    ])
+    assert result == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["job_id"] == "job-linkedin-fixture"
+    assert output["classification"] == "EASY_APPLY"
+    assert output["network_access"] == "none"

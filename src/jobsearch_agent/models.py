@@ -62,6 +62,12 @@ class ApplicationState(StrEnum):
     MATERIALS_READY = "MATERIALS_READY"
     READY_FOR_REVIEW = "READY_FOR_REVIEW"
     READY_TO_APPLY = "READY_TO_APPLY"
+    REVIEW_REACHED = "REVIEW_REACHED"
+    SUBMIT_AUTHORIZED = "SUBMIT_AUTHORIZED"
+    SUBMITTING = "SUBMITTING"
+    SUBMITTED = "SUBMITTED"
+    SUBMIT_FAILED = "SUBMIT_FAILED"
+    SUBMIT_UNKNOWN = "SUBMIT_UNKNOWN"
     NEEDS_ANSWER = "NEEDS_ANSWER"
     NEEDS_ARTIFACT = "NEEDS_ARTIFACT"
     NEEDS_LOGIN = "NEEDS_LOGIN"
@@ -117,6 +123,17 @@ class Experience:
 
 
 @domain_dataclass
+class Education:
+    id: str
+    institution: str
+    credential: dict[str, str]
+    field_of_study: dict[str, str]
+    start_date: str = ""
+    end_date: str = ""
+    fact_ids: list[str] = field(default_factory=list)
+
+
+@domain_dataclass
 class CareerProfile:
     identity: dict[str, str]
     professional_summary: dict[str, str]
@@ -129,6 +146,7 @@ class CareerProfile:
     summary_fact_ids: dict[str, list[str]] = field(default_factory=dict)
     demo: bool = False
     version: str = "1"
+    education: list[Education] = field(default_factory=list)
 
 
 @domain_dataclass
@@ -287,6 +305,52 @@ class ApplicationEvent:
 
 
 @domain_dataclass
+class SubmissionIntent:
+    id: str
+    application_id: str
+    job_id: str
+    provider: str
+    destination: str
+    form_fingerprint: str
+    resume_sha256: str
+    answers_fingerprint: str
+    created_at: str = field(default_factory=now_iso)
+    expires_at: str = ""
+    status: str = "CREATED"
+    authorized_at: str = ""
+
+
+@domain_dataclass
+class ReviewSnapshot:
+    application_id: str
+    job_id: str
+    company: str
+    title: str
+    provider: str
+    destination: str
+    resume_filename: str
+    resume_sha256: str
+    resolved_fields: list[dict[str, Any]] = field(default_factory=list)
+    manual_questions: list[dict[str, Any]] = field(default_factory=list)
+    created_at: str = field(default_factory=now_iso)
+
+
+@domain_dataclass
+class SubmissionAttempt:
+    id: str
+    intent_id: str
+    application_id: str
+    provider: str
+    method: str
+    origin: str
+    path_hash: str
+    status: str = "SUBMITTING"
+    started_at: str = field(default_factory=now_iso)
+    completed_at: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@domain_dataclass
 class ApplicationAnswer:
     question_key: str
     question: str
@@ -319,6 +383,7 @@ class ApplicationPolicy:
         "fill_forms": "review",
         "submit": "manual",
     })
+    providers: dict[str, dict[str, str]] = field(default_factory=dict)
     applications_per_day: int = 20
     unknown_answer: str = "stop"
     captcha: str = "stop"

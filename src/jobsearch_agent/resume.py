@@ -153,10 +153,27 @@ def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
             bullets.append(bullet)
             claims.append(ResumeClaim(bullet, support, True))
         experience_rows.append({"company": experience.company, "role": experience.role, "start_date": experience.start_date, "end_date": experience.end_date, "bullets": bullets, "fact_ids": exp_facts})
+    education_rows: list[dict[str, Any]] = []
+    for item in profile.education:
+        fact_ids = [fact_id for fact_id in item.fact_ids if fact_id in facts]
+        if not fact_ids:
+            continue
+        credential = item.credential.get(language) or item.credential.get("en-US") or next(iter(item.credential.values()), "")
+        field_of_study = item.field_of_study.get(language) or item.field_of_study.get("en-US") or next(iter(item.field_of_study.values()), "")
+        education_rows.append({
+            "institution": item.institution,
+            "credential": credential,
+            "field_of_study": field_of_study,
+            "start_date": item.start_date,
+            "end_date": item.end_date,
+            "fact_ids": fact_ids,
+        })
+        for fact_id in fact_ids:
+            claims.append(ResumeClaim(_statement(facts[fact_id], language), [fact_id], True))
     return Resume(
         id=f"resume-{job.id}-{language}", job_id=job.id, language=language,
         header={"name": profile.identity.get("name", ""), "email": profile.identity.get("email", ""), "location": profile.identity.get("location", "")},
-        summary=summary, skills=strategy.keywords, experience=experience_rows, claims=claims,
+        summary=summary, skills=strategy.keywords, experience=experience_rows, education=education_rows, claims=claims,
     )
 
 
@@ -204,13 +221,19 @@ def validate_ats(resume: Resume) -> ValidationResult:
 
 def render_text(resume: Resume) -> str:
     labels = {
-        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "present": "Atual"},
-        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"},
-    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"})
+        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "education": "Formação", "present": "Atual"},
+        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "education": "Education", "present": "Present"},
+    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "education": "Education", "present": "Present"})
     lines = [resume.header.get("name", ""), resume.header.get("email", ""), resume.header.get("location", ""), "", labels["summary"], resume.summary, "", labels["skills"], ", ".join(resume.skills), "", labels["experience"]]
     for row in resume.experience:
         dates = f"{row['start_date']} - {row['end_date'] or labels['present']}"
         lines.extend([f"{row['role']} | {row['company']} | {dates}"] + [f"- {bullet}" for bullet in row["bullets"]] + [""])
+    if resume.education:
+        lines.extend([labels["education"]])
+        for row in resume.education:
+            dates = " - ".join(value for value in (row.get("start_date", ""), row.get("end_date", "")) if value)
+            credential = ", ".join(value for value in (row.get("credential", ""), row.get("field_of_study", "")) if value)
+            lines.extend([f"{credential} | {row['institution']}" + (f" | {dates}" if dates else ""), ""])
     return "\n".join(line for line in lines if line is not None).strip() + "\n"
 
 
@@ -220,9 +243,9 @@ def _xml_text(text: str) -> str:
 
 def _render_docx_python_docx(resume: Resume, target: Path) -> Path:
     labels = {
-        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "present": "Atual"},
-        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"},
-    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "present": "Present"})
+        "pt-BR": {"summary": "Resumo profissional", "skills": "Competências", "experience": "Experiência profissional", "education": "Formação", "present": "Atual"},
+        "en-US": {"summary": "Summary", "skills": "Skills", "experience": "Experience", "education": "Education", "present": "Present"},
+    }.get(resume.language, {"summary": "Summary", "skills": "Skills", "experience": "Experience", "education": "Education", "present": "Present"})
     document = Document()
     section = document.sections[0]
     section.top_margin = Inches(0.75)
@@ -246,6 +269,14 @@ def _render_docx_python_docx(resume: Resume, target: Path) -> Path:
         document.add_paragraph(f"{row['start_date']} - {row['end_date'] or labels['present']}")
         for bullet in row["bullets"]:
             document.add_paragraph(bullet, style="List Bullet")
+    if resume.education:
+        document.add_heading(labels["education"], level=1)
+        for row in resume.education:
+            credential = ", ".join(value for value in (row.get("credential", ""), row.get("field_of_study", "")) if value)
+            document.add_heading(f"{credential} | {row['institution']}", level=2)
+            dates = " - ".join(value for value in (row.get("start_date", ""), row.get("end_date", "")) if value)
+            if dates:
+                document.add_paragraph(dates)
     document.save(target)
     return target
 

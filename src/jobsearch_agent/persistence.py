@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .models import Application, ApplicationEvent, ApplicationState, Job, JobState, now_iso
+from .models import Application, ApplicationEvent, ApplicationState, Job, JobState, ReviewSnapshot, SubmissionAttempt, SubmissionIntent, now_iso
 from .serialization import canonical_json
 from .sources import JobIdentityCandidate, identity_records
 
@@ -208,10 +208,57 @@ def _migration_003_applications(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_004_submission_boundary(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS submission_intents (
+            id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            job_id TEXT NOT NULL REFERENCES jobs(id),
+            provider TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            form_fingerprint TEXT NOT NULL,
+            resume_sha256 TEXT NOT NULL,
+            answers_fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL,
+            intent_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            authorized_at TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS review_snapshots (
+            application_id TEXT PRIMARY KEY REFERENCES applications(id),
+            snapshot_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS submission_attempts (
+            id TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL REFERENCES submission_intents(id),
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            provider TEXT NOT NULL,
+            method TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            path_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_submission_attempts_application
+           ON submission_attempts(application_id, started_at)"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial", _migration_001_initial),
     (2, "namespaced_identities_and_duplicate_candidates", _migration_002_identities),
     (3, "application_domain_and_events", _migration_003_applications),
+    (4, "submission_boundary", _migration_004_submission_boundary),
 )
 
 
@@ -396,6 +443,132 @@ class Database:
     def get_application_form(self, application_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT form_json FROM application_forms WHERE application_id=?", (application_id,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def save_submission_intent(self, intent: SubmissionIntent) -> None:
+        self.connection.execute(
+            """INSERT INTO submission_intents
+               (id, application_id, job_id, provider, destination,
+                form_fingerprint, resume_sha256, answers_fingerprint, status,
+                intent_json, created_at, expires_at, authorized_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 status=excluded.status,
+                 intent_json=excluded.intent_json,
+                 authorized_at=excluded.authorized_at""",
+            (
+                intent.id,
+                intent.application_id,
+                intent.job_id,
+                intent.provider,
+                intent.destination,
+                intent.form_fingerprint,
+                intent.resume_sha256,
+                intent.answers_fingerprint,
+                intent.status,
+                canonical_json(intent),
+                intent.created_at,
+                intent.expires_at,
+                intent.authorized_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get_submission_intent(self, intent_id: str) -> SubmissionIntent | None:
+        row = self.connection.execute("SELECT intent_json FROM submission_intents WHERE id=?", (intent_id,)).fetchone()
+        return SubmissionIntent(**json.loads(row[0])) if row else None
+
+    def save_review_snapshot(self, snapshot: ReviewSnapshot) -> None:
+        self.connection.execute(
+            """INSERT INTO review_snapshots(application_id, snapshot_json, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(application_id) DO UPDATE SET
+                 snapshot_json=excluded.snapshot_json,
+                 updated_at=excluded.updated_at""",
+            (snapshot.application_id, canonical_json(snapshot), now_iso()),
+        )
+        self.connection.commit()
+
+    def get_review_snapshot(self, application_id: str) -> ReviewSnapshot | None:
+        row = self.connection.execute("SELECT snapshot_json FROM review_snapshots WHERE application_id=?", (application_id,)).fetchone()
+        return ReviewSnapshot(**json.loads(row[0])) if row else None
+
+    def get_submission_attempt(self, attempt_id: str) -> SubmissionAttempt | None:
+        row = self.connection.execute("SELECT attempt_json FROM submission_attempts WHERE id=?", (attempt_id,)).fetchone()
+        return SubmissionAttempt(**json.loads(row[0])) if row else None
+
+    def list_submission_attempts(self, application_id: str) -> list[SubmissionAttempt]:
+        rows = self.connection.execute(
+            "SELECT attempt_json FROM submission_attempts WHERE application_id=? ORDER BY started_at",
+            (application_id,),
+        ).fetchall()
+        return [SubmissionAttempt(**json.loads(row[0])) for row in rows]
+
+    def begin_submission_attempt(self, intent: SubmissionIntent, attempt: SubmissionAttempt, event: ApplicationEvent) -> None:
+        """Persist the attempt before network I/O and advance state atomically."""
+        with self.connection:
+            intent_row = self.connection.execute("SELECT status FROM submission_intents WHERE id=?", (intent.id,)).fetchone()
+            if not intent_row or str(intent_row[0]) != "AUTHORIZED":
+                raise ApplicationConflict(f"submission intent is not authorized: {intent.id}")
+            cursor = self.connection.execute(
+                """UPDATE applications SET state=?, updated_at=?
+                   WHERE id=? AND state=?""",
+                (ApplicationState.SUBMITTING.value, event.created_at, intent.application_id, ApplicationState.SUBMIT_AUTHORIZED.value),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict(f"application is not authorized for submission: {intent.application_id}")
+            self.connection.execute(
+                "UPDATE submission_intents SET status=?, intent_json=? WHERE id=?",
+                (intent.status, canonical_json(intent), intent.id),
+            )
+            self.connection.execute(
+                """INSERT INTO submission_attempts
+                   (id, intent_id, application_id, provider, method, origin,
+                    path_hash, status, attempt_json, started_at, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attempt.id,
+                    attempt.intent_id,
+                    attempt.application_id,
+                    attempt.provider,
+                    attempt.method,
+                    attempt.origin,
+                    attempt.path_hash,
+                    attempt.status,
+                    canonical_json(attempt),
+                    attempt.started_at,
+                    attempt.completed_at,
+                ),
+            )
+            self.connection.execute(
+                """INSERT INTO application_events
+                   (application_id, from_state, to_state, event, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
+            )
+
+    def complete_submission_attempt(self, attempt: SubmissionAttempt, intent: SubmissionIntent, target: ApplicationState, event: ApplicationEvent) -> None:
+        with self.connection:
+            cursor = self.connection.execute(
+                """UPDATE applications SET state=?, updated_at=?
+                   WHERE id=? AND state=?""",
+                (target.value, event.created_at, attempt.application_id, ApplicationState.SUBMITTING.value),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict(f"submission attempt is no longer active: {attempt.id}")
+            self.connection.execute(
+                "UPDATE submission_attempts SET status=?, attempt_json=?, completed_at=? WHERE id=?",
+                (attempt.status, canonical_json(attempt), attempt.completed_at, attempt.id),
+            )
+            self.connection.execute(
+                "UPDATE submission_intents SET status=?, intent_json=? WHERE id=?",
+                (intent.status, canonical_json(intent), intent.id),
+            )
+            self.connection.execute(
+                """INSERT INTO application_events
+                   (application_id, from_state, to_state, event, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
+            )
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}

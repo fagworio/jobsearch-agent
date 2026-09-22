@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from jobsearch_agent.models import Job, Resume, ResumeClaim
+from jobsearch_agent.models import Education, Fact, Job, Resume, ResumeClaim
 from jobsearch_agent.llm import LLMError
 from jobsearch_agent.profile import load_facts, load_profile, validate_facts as validate_profile_facts
-from jobsearch_agent.resume import cluster_fact_ids, validate_ats, validate_facts
+from jobsearch_agent.resume import cluster_fact_ids, render_text, validate_ats, validate_facts
 from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit
 from jobsearch_agent.resume import generate_resume, select_fact_ids
 from jobsearch_agent.sources import normalize_payload
@@ -98,6 +98,35 @@ def test_summary_requires_its_own_fact_support():
     result = validate_facts(resume, facts)
     assert not result.valid
     assert any("unsupported claim" in error for error in result.errors)
+
+
+def test_education_is_rendered_and_fact_grounded():
+    payload = json.loads((ROOT / "tests/fixtures/jobs/greenhouse.json").read_text())
+    job = normalize_payload(payload, payload["absolute_url"])
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    profile.education = [Education(
+        id="education-test",
+        institution="Example University",
+        credential={"en-US": "Bachelor's Degree"},
+        field_of_study={"en-US": "Computer Science"},
+        start_date="2010",
+        end_date="2014",
+        fact_ids=["fact_education_test"],
+    )]
+    facts = load_facts(ROOT / "profile/locked_facts.yaml")
+    facts["fact_education_test"] = Fact(
+        id="fact_education_test",
+        type="education",
+        statements={"en-US": "Bachelor's Degree in Computer Science at Example University from 2010 to 2014."},
+        verified=True,
+    )
+    analysis = analyze_requirements(job)
+    strategy = build_strategy(job, analysis, calculate_fit(job, analysis, profile), profile)
+    resume = generate_resume(job, strategy, profile, facts, select_fact_ids(job, strategy, profile, facts))
+
+    assert resume.education[0]["institution"] == "Example University"
+    assert "Example University" in render_text(resume)
+    assert validate_facts(resume, facts).valid
 
 
 def test_llm_error_uses_deterministic_rewrite_and_records_fallback():

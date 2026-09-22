@@ -26,8 +26,14 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.DRAFT: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.MATERIALS_READY: {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.READY_TO_APPLY: {ApplicationState.PREPARING, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REACHED, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.READY_TO_APPLY: {ApplicationState.PREPARING, ApplicationState.REVIEW_REACHED, ApplicationState.SUBMIT_AUTHORIZED, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.REVIEW_REACHED: {ApplicationState.READY_TO_APPLY, ApplicationState.SUBMIT_AUTHORIZED, ApplicationState.POLICY_BLOCKED},
+    ApplicationState.SUBMIT_AUTHORIZED: {ApplicationState.SUBMITTING, ApplicationState.POLICY_BLOCKED},
+    ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN},
+    ApplicationState.SUBMITTED: set(),
+    ApplicationState.SUBMIT_FAILED: set(),
+    ApplicationState.SUBMIT_UNKNOWN: set(),
     ApplicationState.NEEDS_ANSWER: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.NEEDS_ARTIFACT: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ANSWER, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.NEEDS_LOGIN: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
@@ -51,8 +57,14 @@ def load_application_policy(path: str | Path) -> ApplicationPolicy:
     autonomy = raw.get("autonomy", {}) if isinstance(raw, dict) else {}
     limits = raw.get("limits", {}) if isinstance(raw, dict) else {}
     safety = raw.get("safety", {}) if isinstance(raw, dict) else {}
+    providers = raw.get("providers", {}) if isinstance(raw, dict) else {}
     policy = ApplicationPolicy()
     policy.autonomy.update({str(key): str(value) for key, value in autonomy.items()})
+    policy.providers = {
+        str(provider): {str(key): str(value) for key, value in values.items()}
+        for provider, values in providers.items()
+        if isinstance(values, dict)
+    }
     policy.applications_per_day = int(limits.get("applications_per_day", policy.applications_per_day))
     policy.unknown_answer = str(safety.get("unknown_answer", policy.unknown_answer))
     policy.captcha = str(safety.get("captcha", policy.captcha))
@@ -63,7 +75,7 @@ def load_application_policy(path: str | Path) -> ApplicationPolicy:
 
 def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
     policy_data = data.get("policy", {}) or {}
-    policy = ApplicationPolicy(**{key: value for key, value in policy_data.items() if key in {"autonomy", "applications_per_day", "unknown_answer", "captcha", "mfa", "legal_question"}})
+    policy = ApplicationPolicy(**{key: value for key, value in policy_data.items() if key in {"autonomy", "providers", "applications_per_day", "unknown_answer", "captcha", "mfa", "legal_question"}})
     form_data = data.get("form")
     form = None
     if isinstance(form_data, dict):
@@ -184,6 +196,14 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
 
     if not form_analyzed:
         checks.append({"gate": "form", "result": "not_analyzed", "evidence": "No ApplicationForm has been inspected yet."})
+    provider_name = context.form.provider if context.form else ""
+    provider_policy = context.policy.providers.get(provider_name, {})
+    fill_forms_mode = provider_policy.get("fill_forms", context.policy.autonomy.get("fill_forms", "review"))
+    submit_mode = provider_policy.get("submit", context.policy.autonomy.get("submit", "manual"))
+    if provider_name and "advance_steps" in provider_policy:
+        advance_steps_mode = provider_policy["advance_steps"]
+    else:
+        advance_steps_mode = "review"
     if "unsupported_form" in blockers:
         decision = ApplicationState.UNSUPPORTED_FORM
     elif artifact_fields:
@@ -194,7 +214,7 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
         decision = ApplicationState.NEEDS_ANSWER
     elif not form_analyzed:
         decision = ApplicationState.READY_FOR_REVIEW
-    elif context.policy.autonomy.get("fill_forms", "review") != "auto":
+    elif fill_forms_mode != "auto":
         decision = ApplicationState.READY_FOR_REVIEW
     elif fit_blockers or not resume_ok:
         decision = ApplicationState.REJECTED
@@ -202,6 +222,6 @@ def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
         decision = ApplicationState.READY_TO_APPLY
     if fit_blockers or not resume_ok:
         decision = ApplicationState.REJECTED
-    requires_review = decision == ApplicationState.READY_FOR_REVIEW or context.policy.autonomy.get("submit", "manual") != "auto"
-    checks.append({"gate": "authorization", "result": "review" if requires_review else "authorized", "evidence": {"fill_forms": context.policy.autonomy.get("fill_forms", "review"), "submit": context.policy.autonomy.get("submit", "manual")}})
+    requires_review = decision == ApplicationState.READY_FOR_REVIEW or submit_mode != "auto"
+    checks.append({"gate": "authorization", "result": "review" if requires_review else "authorized", "evidence": {"provider": provider_name, "fill_forms": fill_forms_mode, "advance_steps": advance_steps_mode, "submit": submit_mode}})
     return ApplicationReadiness(decision, decision == ApplicationState.READY_TO_APPLY, requires_review, checks, blockers)

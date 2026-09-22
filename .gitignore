@@ -9,6 +9,8 @@ data/applications/*/
 data/preflight/
 data/public-preflight/
 data/browser_profiles/
+profile/*.local.yaml
+tmp/pdfs/
 work/
 dist/
 *.egg-info/

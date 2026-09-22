@@ -9,12 +9,15 @@ from pathlib import Path
 
 from .application import ApplicationDomainError
 from .config import Settings
+from .greenhouse import GreenhouseSubmissionExecutor
 from .llm import LLMError
+from .linkedin.inspector import LinkedInInspector
 from .models import to_dict
 from .persistence import ApplicationConflict, Database
 from .pipeline import PipelineError, analyze, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
 from .preflight import run_preflight
 from .profile import ProfileError, load_facts, load_preferences, load_profile, validate_facts, validate_profile_readiness
+from .submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService, build_review_snapshot
 from .sources import SourceError
 
 
@@ -24,10 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="raiz do projeto")
     parser.add_argument("--db", default="data/jobsearch.db")
     parser.add_argument("--artifacts", default="data/applications")
-    parser.add_argument("--profile", default="profile/career_profile.yaml")
-    parser.add_argument("--facts", default="profile/locked_facts.yaml")
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--facts", default=None)
     parser.add_argument("--real-profile", action="store_true", help="recusa fixtures demo")
-    parser.add_argument("--preferences", default="profile/preferences.yaml")
+    parser.add_argument("--preferences", default=None)
     parser.add_argument("--answers", default="profile/answers.yaml")
     parser.add_argument("--application-policy", default="profile/application_policy.yaml")
     parser.add_argument("--language", choices=["pt-BR", "en-US"], default=None)
@@ -94,6 +97,39 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_status)
     application_status.add_argument("application_id")
     application_status.set_defaults(handler="application_status")
+    application_review = application_sub.add_parser("review", help="cria ou consulta o Review Snapshot")
+    runtime_options(application_review)
+    application_review.add_argument("application_id")
+    application_review.add_argument("--provider")
+    application_review.add_argument("--destination")
+    application_review.add_argument("--form-fingerprint")
+    application_review.add_argument("--resume-sha256")
+    application_review.add_argument("--answers-fingerprint")
+    application_review.add_argument("--resume-filename", default="resume.pdf")
+    application_review.add_argument("--expires-in", type=int, default=300)
+    application_review.set_defaults(handler="application_review")
+    application_authorize = application_sub.add_parser("authorize-submit", help="autoriza uma SubmissionIntent existente")
+    runtime_options(application_authorize)
+    application_authorize.add_argument("intent_id")
+    application_authorize.set_defaults(handler="application_authorize")
+    application_submit = application_sub.add_parser("submit", help="executa uma submissão Greenhouse autorizada")
+    runtime_options(application_submit)
+    application_submit.add_argument("application_id")
+    application_submit.add_argument("--intent-id", required=True)
+    application_submit.add_argument("--payload-json", type=Path, required=True)
+    application_submit.add_argument("--form-fingerprint", required=True)
+    application_submit.add_argument("--resume-sha256", required=True)
+    application_submit.add_argument("--answers-fingerprint", required=True)
+    application_submit.add_argument("--timeout", type=float, default=10.0)
+    application_submit.set_defaults(handler="application_submit")
+
+    linkedin = sub.add_parser("linkedin", help="inspeção offline de fixtures LinkedIn")
+    linkedin_sub = linkedin.add_subparsers(dest="linkedin_command")
+    linkedin_inspect = linkedin_sub.add_parser("inspect", help="classifica HTML local sem abrir o LinkedIn")
+    runtime_options(linkedin_inspect)
+    linkedin_inspect.add_argument("job_id")
+    linkedin_inspect.add_argument("--html-file", type=Path, required=True)
+    linkedin_inspect.set_defaults(handler="linkedin_inspect")
 
     run_parser = sub.add_parser("run", help="executa ingestão, análise e geração")
     runtime_options(run_parser)
@@ -140,7 +176,14 @@ def main(argv: list[str] | None = None) -> int:
             errors = validate_facts(profile, facts)
             if settings.real_profile and profile.demo:
                 errors.append("demo profile cannot be used with --real-profile")
-            _print({"valid": not errors, "profile": to_dict(profile), "facts": len(facts), "errors": errors})
+            _print({
+                "valid": not errors,
+                "profile_kind": "demo" if profile.demo else "candidate",
+                "experience_count": len(profile.experiences),
+                "education_count": len(profile.education),
+                "facts": len(facts),
+                "errors": errors,
+            })
             return 0 if not errors else 2
         if args.handler == "profile_readiness":
             profile = load_profile(settings.resolve(settings.profile_path))
@@ -156,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
             _print({
                 "ready": ready,
                 "profile_kind": "demo" if profile.demo else "candidate",
-                "public_dry_run_allowed": ready and not profile.demo,
+                "policy_status": "BLOCKED" if profile.demo else "PASS",
+                "policy_blockers": ["DEMO_PROFILE_BLOCKED"] if profile.demo else [],
                 "missing_required": blockers,
                 "missing_optional": readiness.missing_optional,
                 "fact_errors": fact_errors,
@@ -185,6 +229,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "application_resume":
             _print(resume_application(settings, args.application_id))
             return 0
+        if args.handler == "linkedin_inspect":
+            html = args.html_file.read_text(encoding="utf-8")
+            inspection = LinkedInInspector().inspect_html(html, form_id=args.job_id)
+            _print({
+                "job_id": args.job_id,
+                "classification": inspection.classification,
+                "inspection": inspection,
+                "network_access": "none",
+            })
+            return 0 if inspection.classification.value != "AUTH_REQUIRED" else 2
         if args.handler == "run":
             payload = None if args.url else json.loads(args.json_file.read_text(encoding="utf-8"))
             _print(run(settings, payload, args.url or "", args.language))
@@ -206,11 +260,86 @@ def main(argv: list[str] | None = None) -> int:
                 application = db.get_application(args.application_id)
                 if not application:
                     raise ApplicationDomainError(f"application not found: {args.application_id}")
-                _print({"application": application, "events": db.list_application_events(application.id), "answers": db.list_application_answers(application.id), "form": db.get_application_form(application.id)})
+                _print({"application": application, "events": db.list_application_events(application.id), "answers": db.list_application_answers(application.id), "form": db.get_application_form(application.id), "review_snapshot": db.get_review_snapshot(application.id), "submission_attempts": db.list_submission_attempts(application.id)})
             finally:
                 db.close()
             return 0
-    except (ApplicationConflict, ApplicationDomainError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
+        if args.handler == "application_review":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                application = db.get_application(args.application_id)
+                if not application:
+                    raise ApplicationDomainError(f"application not found: {args.application_id}")
+                snapshot = db.get_review_snapshot(application.id)
+                supplied = [args.destination, args.form_fingerprint, args.resume_sha256, args.answers_fingerprint]
+                if any(value is not None for value in supplied):
+                    if not all(value is not None for value in supplied):
+                        raise SubmissionBoundaryError("review intent requires destination, form fingerprint, resume SHA256 and answers fingerprint")
+                    job = db.get_job(application.job_id)
+                    if not job:
+                        raise ApplicationDomainError(f"job not found: {application.job_id}")
+                    provider = args.provider or job.source
+                    snapshot = build_review_snapshot(
+                        application_id=application.id,
+                        job_id=application.job_id,
+                        company=job.company,
+                        title=job.title,
+                        provider=provider,
+                        destination=args.destination,
+                        resume_filename=args.resume_filename,
+                        resume_sha256=args.resume_sha256,
+                    )
+                    service = SubmissionService(db)
+                    service.save_review_snapshot(snapshot)
+                    intent = service.create_intent(
+                        application_id=application.id,
+                        job_id=application.job_id,
+                        provider=provider,
+                        destination=args.destination,
+                        form_fingerprint=args.form_fingerprint,
+                        resume_sha256=args.resume_sha256,
+                        answers_fingerprint=args.answers_fingerprint,
+                        expires_in_seconds=args.expires_in,
+                    )
+                else:
+                    intent = None
+                _print({"application": db.get_application(application.id), "review_snapshot": snapshot, "submission_intent": intent})
+            finally:
+                db.close()
+            return 0
+        if args.handler == "application_authorize":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                intent = SubmissionService(db).authorize_submission(args.intent_id)
+                _print({"submission_intent": intent, "application": db.get_application(intent.application_id), "events": db.list_application_events(intent.application_id)})
+            finally:
+                db.close()
+            return 0
+        if args.handler == "application_submit":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                intent = db.get_submission_intent(args.intent_id)
+                if not intent or intent.application_id != args.application_id:
+                    raise SubmissionBoundaryError("submission intent does not belong to application")
+                payload = json.loads(args.payload_json.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in payload.items()):
+                    raise SubmissionBoundaryError("payload JSON must be an object with string keys and values")
+                policy = LiveNetworkPolicy.for_submission("greenhouse", args.application_id, intent.id)
+                result = GreenhouseSubmissionExecutor(db, timeout=args.timeout).submit(
+                    intent.id,
+                    current_form_fingerprint=args.form_fingerprint,
+                    current_resume_sha256=args.resume_sha256,
+                    current_answers_fingerprint=args.answers_fingerprint,
+                    policy=policy,
+                    payload=payload,
+                )
+                application = db.get_application(args.application_id)
+                attempts = db.list_submission_attempts(args.application_id)
+                _print({"result": result, "application": application, "attempts": attempts})
+                return 0 if result.status == "SUBMITTED" else 2
+            finally:
+                db.close()
+    except (ApplicationConflict, ApplicationDomainError, SubmissionBoundaryError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
         _print({"error": str(exc), "type": type(exc).__name__})
         return 2
     return 2

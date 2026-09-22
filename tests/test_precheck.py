@@ -26,6 +26,7 @@ def _real_profile_settings(tmp_path, database_path, *, preferences=None):
         ROOT,
         db=str(database_path),
         profile=str(profile_path),
+        facts=str(ROOT / "profile/locked_facts.yaml"),
         preferences=str(preferences_path),
     )
 
@@ -55,7 +56,13 @@ def test_precheck_blocks_demo_candidate_with_unknown_canada_authorization_withou
         ),
     )
 
-    settings = Settings.from_args(ROOT, db=str(database_path))
+    settings = Settings.from_args(
+        ROOT,
+        db=str(database_path),
+        profile=str(ROOT / "profile/career_profile.yaml"),
+        facts=str(ROOT / "profile/locked_facts.yaml"),
+        preferences=str(ROOT / "profile/preferences.yaml"),
+    )
     result = precheck_job(settings, job.id)
     assert result["decision"] == "DEMO_PROFILE_BLOCKED"
     assert result["ready_for_dry_run"] is False
@@ -76,12 +83,18 @@ def test_precheck_blocks_demo_candidate_with_unknown_canada_authorization_withou
 
 
 def test_profile_readiness_cli_is_redacted_and_reports_demo_profile(capsys):
-    exit_code = main(["--root", str(ROOT), "profile", "readiness"])
+    exit_code = main([
+        "--root", str(ROOT), "profile", "readiness",
+        "--profile", str(ROOT / "profile/career_profile.yaml"),
+        "--facts", str(ROOT / "profile/locked_facts.yaml"),
+        "--preferences", str(ROOT / "profile/preferences.yaml"),
+    ])
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["ready"] is True
     assert payload["profile_kind"] == "demo"
-    assert payload["public_dry_run_allowed"] is False
+    assert payload["policy_status"] == "BLOCKED"
+    assert payload["policy_blockers"] == ["DEMO_PROFILE_BLOCKED"]
     assert payload["missing_required"] == []
     assert payload["missing_optional"] == [
         "identity.phone",

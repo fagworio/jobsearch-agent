@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from .models import CandidatePreferences, CareerProfile, Experience, Fact, ProfileReadiness
+from .models import CandidatePreferences, CareerProfile, Education, Experience, Fact, ProfileReadiness
 from .schemas import CandidatePreferencesSchema, FactSchema, ProfileSchema
 
 
@@ -54,11 +54,29 @@ def load_profile(path: str | Path) -> CareerProfile:
                 fact_ids=[str(item) for item in row.get("facts", [])],
             )
         )
+    raw_education = data.get("education", [])
+    if not isinstance(raw_education, list):
+        raise ProfileError("education must be a list")
+    education: list[Education] = []
+    for item in raw_education:
+        row = _mapping(item, "education item")
+        education.append(
+            Education(
+                id=str(row.get("id", "")),
+                institution=str(row.get("institution", "")),
+                credential={str(k): str(v) for k, v in _mapping(row.get("credential", {}), "education.credential").items()},
+                field_of_study={str(k): str(v) for k, v in _mapping(row.get("field_of_study", {}), "education.field_of_study").items()},
+                start_date=str(row.get("start_date", "")),
+                end_date=str(row.get("end_date", "")),
+                fact_ids=[str(value) for value in row.get("facts", [])],
+            )
+        )
     profile = CareerProfile(
         identity={str(k): str(v) for k, v in identity.items() if v is not None},
         professional_summary=summary_text,
         summary_fact_ids=summary_fact_ids,
         experiences=experiences,
+        education=education,
         skills=_mapping(data.get("skills", {}), "skills"),
         languages=_mapping(data.get("languages", {}), "languages"),
         preferences=_mapping(data.get("preferences", {}), "preferences"),
@@ -138,6 +156,9 @@ def validate_profile(profile: CareerProfile) -> None:
     for experience in profile.experiences:
         if not experience.id or not experience.role:
             raise ProfileError("each experience requires id and role")
+    for education in profile.education:
+        if not education.id or not education.institution or not education.fact_ids:
+            raise ProfileError("each education entry requires id, institution and supporting facts")
     if profile.demo and not profile.identity.get("name"):
         raise ProfileError("demo profile still requires an identity name")
 
@@ -194,7 +215,13 @@ def validate_facts(profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
             errors.append(f"identity references unknown fact: {fact_id}")
         elif facts[fact_id].type != "identity":
             errors.append(f"identity fact must have type identity: {fact_id}")
+    for education in profile.education:
+        for fact_id in education.fact_ids:
+            if fact_id in facts and facts[fact_id].type != "education":
+                errors.append(f"education fact must have type education: {fact_id}")
     referenced = {fact_id for exp in profile.experiences for fact_id in exp.fact_ids}
+    education_references = {fact_id for education in profile.education for fact_id in education.fact_ids}
+    referenced.update(education_references)
     missing = sorted(referenced - facts.keys())
     if missing:
         errors.append(f"experience references unknown facts: {', '.join(missing)}")
