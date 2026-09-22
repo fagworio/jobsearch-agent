@@ -6,7 +6,12 @@ from jobsearch_agent.application import ApplicationService
 from jobsearch_agent.models import ApplicationState, Job
 from jobsearch_agent.persistence import Database
 from jobsearch_agent.greenhouse import GreenhouseSubmissionExecutor
-from jobsearch_agent.submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService
+from jobsearch_agent.submission import (
+    LiveNetworkPolicy,
+    SubmissionBoundaryError,
+    SubmissionService,
+    build_review_snapshot,
+)
 from tests.submission_server import SubmissionTestServer
 
 
@@ -40,6 +45,18 @@ def _intent(db: Database, application_id: str, destination: str, path: str):
         answers_fingerprint="answers-v1",
         expires_in_seconds=300,
         allow_insecure_destination=True,
+    )
+    service.save_review_snapshot(
+        build_review_snapshot(
+            application_id=application_id,
+            job_id=intent.job_id,
+            company="Acme",
+            title="Engineer",
+            provider="greenhouse",
+            destination=destination,
+            resume_filename="resume.pdf",
+            resume_sha256=intent.resume_sha256,
+        )
     )
     service.authorize_submission(intent.id)
     policy = LiveNetworkPolicy(

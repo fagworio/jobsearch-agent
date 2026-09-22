@@ -233,6 +233,16 @@ class SubmissionService:
             raise SubmissionBoundaryError("application not found for submission intent")
         if application.state not in {ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REACHED}:
             raise ApplicationDomainError(f"explicit authorization requires READY_TO_APPLY, got {application.state.value}")
+        snapshot = self.database.get_review_snapshot(intent.application_id)
+        if not snapshot:
+            raise SubmissionBoundaryError("explicit authorization requires persisted review snapshot")
+        if (
+            snapshot.job_id != intent.job_id
+            or snapshot.provider != intent.provider
+            or snapshot.destination != intent.destination
+            or snapshot.resume_sha256 != intent.resume_sha256
+        ):
+            raise SubmissionBoundaryError("review snapshot does not match submission intent")
         intent.status = "AUTHORIZED"
         intent.authorized_at = now_iso()
         ApplicationService(self.database).transition(

@@ -32,8 +32,8 @@ def _ready_application(db: Database) -> str:
     return application.id
 
 
-def _intent(service: SubmissionService, application_id: str):
-    return service.create_intent(
+def _intent(service: SubmissionService, application_id: str, *, save_snapshot: bool = True):
+    intent = service.create_intent(
         application_id=application_id,
         job_id="job-submission",
         provider="greenhouse",
@@ -43,6 +43,20 @@ def _intent(service: SubmissionService, application_id: str):
         answers_fingerprint="answers-v1",
         expires_in_seconds=300,
     )
+    if save_snapshot:
+        service.save_review_snapshot(
+            build_review_snapshot(
+                application_id=application_id,
+                job_id="job-submission",
+                company="Acme",
+                title="Engineer",
+                provider="greenhouse",
+                destination=intent.destination,
+                resume_filename="resume.pdf",
+                resume_sha256=intent.resume_sha256,
+            )
+        )
+    return intent
 
 
 def test_submission_intent_is_bound_to_review_snapshot_and_requires_authorization(tmp_path: Path):
@@ -64,6 +78,7 @@ def test_submission_intent_is_bound_to_review_snapshot_and_requires_authorizatio
     intent = _intent(service, application_id)
     assert intent.form_fingerprint == "form-v1"
     assert snapshot.resume_sha256 == intent.resume_sha256
+    db.save_review_snapshot(snapshot)
     with pytest.raises(SubmissionBoundaryError, match="authorization"):
         service.begin_submission(
             intent.id,
@@ -77,6 +92,38 @@ def test_submission_intent_is_bound_to_review_snapshot_and_requires_authorizatio
     authorized = service.authorize_submission(intent.id)
     assert authorized.status == "AUTHORIZED"
     assert db.get_application(application_id).state == ApplicationState.SUBMIT_AUTHORIZED
+    db.close()
+
+
+def test_authorization_requires_persisted_review_snapshot(tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db)
+    service = SubmissionService(db)
+    intent = _intent(service, application_id, save_snapshot=False)
+    with pytest.raises(SubmissionBoundaryError, match="review snapshot"):
+        service.authorize_submission(intent.id)
+    db.close()
+
+
+def test_authorization_rejects_mismatched_review_snapshot(tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db)
+    service = SubmissionService(db)
+    intent = _intent(service, application_id, save_snapshot=False)
+    service.save_review_snapshot(
+        build_review_snapshot(
+            application_id=application_id,
+            job_id="job-submission",
+            company="Acme",
+            title="Engineer",
+            provider="greenhouse",
+            destination="https://boards.greenhouse.io/acme/jobs/other",
+            resume_filename="resume.pdf",
+            resume_sha256="resume-v1",
+        )
+    )
+    with pytest.raises(SubmissionBoundaryError, match="does not match"):
+        service.authorize_submission(intent.id)
     db.close()
 
 

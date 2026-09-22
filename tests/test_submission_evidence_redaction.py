@@ -5,7 +5,7 @@ import pytest
 from jobsearch_agent.application import ApplicationService
 from jobsearch_agent.models import ApplicationState, Job
 from jobsearch_agent.persistence import Database
-from jobsearch_agent.submission import LiveNetworkPolicy, SubmissionService, SubmissionVerification
+from jobsearch_agent.submission import LiveNetworkPolicy, SubmissionService, SubmissionVerification, build_review_snapshot
 
 
 def test_submission_evidence_redacts_untrusted_tokens_and_redirect_queries(tmp_path: Path):
@@ -27,6 +27,18 @@ def test_submission_evidence_redacts_untrusted_tokens_and_redirect_queries(tmp_p
         resume_sha256="resume",
         answers_fingerprint="answers",
         expires_in_seconds=300,
+    )
+    submission.save_review_snapshot(
+        build_review_snapshot(
+            application_id=application.id,
+            job_id=job.id,
+            company="Acme",
+            title="Engineer",
+            provider="greenhouse",
+            destination=intent.destination,
+            resume_filename="resume.pdf",
+            resume_sha256=intent.resume_sha256,
+        )
     )
     submission.authorize_submission(intent.id)
     policy = LiveNetworkPolicy.for_submission("greenhouse", application.id, intent.id)
