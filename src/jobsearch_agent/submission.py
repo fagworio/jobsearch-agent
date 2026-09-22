@@ -150,11 +150,23 @@ def _path_hash(url: str) -> str:
     return hashlib.sha256(urlsplit(url).path.encode("utf-8")).hexdigest()[:16]
 
 
+_SAFE_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _safe_evidence_token(value: object) -> str:
+    text = str(value)
+    return text if _SAFE_EVIDENCE_TOKEN.fullmatch(text) else "redacted"
+
+
 def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object]:
-    evidence: dict[str, object] = {"confirmation_type": verification.confirmation_type} if verification.confirmation_type else {}
-    for key in ("status_code", "redirect_path", "provider_status"):
-        if key in verification.evidence:
-            evidence[key] = verification.evidence[key]
+    evidence: dict[str, object] = {}
+    if verification.confirmation_type:
+        evidence["confirmation_type"] = _safe_evidence_token(verification.confirmation_type)
+    status_code = verification.evidence.get("status_code")
+    if isinstance(status_code, int) and not isinstance(status_code, bool) and 100 <= status_code <= 599:
+        evidence["status_code"] = status_code
+    if "provider_status" in verification.evidence:
+        evidence["provider_status"] = _safe_evidence_token(verification.evidence["provider_status"])
     return evidence
 
 
