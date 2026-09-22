@@ -26,7 +26,8 @@ try:
     class ProfileSchema(BaseModel):
         model_config = ConfigDict(extra="allow")
         identity: dict[str, str]
-        professional_summary: dict[str, str] = Field(default_factory=dict)
+        professional_summary: dict[str, Any] = Field(default_factory=dict)
+        summary_fact_ids: dict[str, list[str]] = Field(default_factory=dict)
         experience: list[dict[str, Any]] = Field(default_factory=list)
         skills: dict[str, Any] = Field(default_factory=dict)
         languages: dict[str, Any] = Field(default_factory=dict)
@@ -67,7 +68,7 @@ try:
         preferred_skills: list[str] = Field(default_factory=list)
         years_of_experience: str = ""
         education: list[str] = Field(default_factory=list)
-        language_requirements: list[str] = Field(default_factory=list)
+        language_requirements: list[dict[str, Any]] = Field(default_factory=list)
         location_requirements: list[str] = Field(default_factory=list)
         work_authorization: str = "unknown"
         employment_type: str = "unknown"
@@ -90,6 +91,7 @@ try:
         missing_preferred: list[str] = Field(default_factory=list)
         blockers: list[str] = Field(default_factory=list)
         explanation: list[str] = Field(default_factory=list)
+        criteria: list[dict[str, Any]] = Field(default_factory=list)
 
     class ResumeStrategySchema(BaseModel):
         target_role: str

@@ -36,6 +36,7 @@ class Settings:
     artifacts_dir: Path
     profile_path: Path
     facts_path: Path
+    preferences_path: Path
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
@@ -55,6 +56,7 @@ class Settings:
             artifacts_dir=path_arg("artifacts", "data/applications"),
             profile_path=path_arg("profile", "profile/career_profile.yaml"),
             facts_path=path_arg("facts", "profile/locked_facts.yaml"),
+            preferences_path=path_arg("preferences", "profile/preferences.yaml"),
             llm_base_url=environment.llm_base_url.rstrip("/"),
             llm_api_key=environment.llm_api_key,
             llm_model=environment.llm_model,

@@ -1,6 +1,7 @@
+locations:
+  remote: true
 autonomy:
   submit: review
 resume:
   template: ats
   max_pages: 2
-

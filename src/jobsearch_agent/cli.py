@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", default="profile/career_profile.yaml")
     parser.add_argument("--facts", default="profile/locked_facts.yaml")
     parser.add_argument("--real-profile", action="store_true", help="recusa fixtures demo")
+    parser.add_argument("--preferences", default="profile/preferences.yaml")
     parser.add_argument("--language", choices=["pt-BR", "en-US"], default=None)
     sub = parser.add_subparsers(dest="command")
 
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--artifacts", default=argparse.SUPPRESS)
         command.add_argument("--profile", default=argparse.SUPPRESS)
         command.add_argument("--facts", default=argparse.SUPPRESS)
+        command.add_argument("--preferences", default=argparse.SUPPRESS)
         command.add_argument("--real-profile", action="store_true", default=argparse.SUPPRESS)
         command.add_argument("--language", choices=["pt-BR", "en-US"], default=argparse.SUPPRESS)
 
@@ -83,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _settings(args: argparse.Namespace) -> Settings:
-    return Settings.from_args(args.root, db=args.db, artifacts=args.artifacts, profile=args.profile, facts=args.facts, real_profile=args.real_profile)
+    return Settings.from_args(args.root, db=args.db, artifacts=args.artifacts, profile=args.profile, facts=args.facts, preferences=args.preferences, real_profile=args.real_profile)
 
 
 def _print(value: object) -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from .models import CareerProfile, Experience, Fact
+from .models import CandidatePreferences, CareerProfile, Experience, Fact
 from .schemas import FactSchema, ProfileSchema
 
 
@@ -26,7 +26,18 @@ def load_profile(path: str | Path) -> CareerProfile:
     data = _mapping(yaml.safe_load(source.read_text(encoding="utf-8")) or {}, "profile")
     ProfileSchema.model_validate(data)
     identity = _mapping(data.get("identity"), "identity")
-    summary = _mapping(data.get("professional_summary"), "professional_summary")
+    summary = _mapping(data.get("professional_summary", {}), "professional_summary")
+    summary_text: dict[str, str] = {}
+    summary_fact_ids: dict[str, list[str]] = {}
+    for language, value in summary.items():
+        if isinstance(value, dict):
+            summary_text[str(language)] = str(value.get("text", ""))
+            summary_fact_ids[str(language)] = [str(item) for item in value.get("fact_ids", [])]
+        else:
+            summary_text[str(language)] = str(value)
+    legacy_summary_ids = data.get("professional_summary_fact_ids", {})
+    if isinstance(legacy_summary_ids, dict):
+        summary_fact_ids.update({str(k): [str(item) for item in v] for k, v in legacy_summary_ids.items() if isinstance(v, list)})
     raw_experiences = data.get("experience", [])
     if not isinstance(raw_experiences, list):
         raise ProfileError("experience must be a list")
@@ -45,7 +56,8 @@ def load_profile(path: str | Path) -> CareerProfile:
         )
     profile = CareerProfile(
         identity={str(k): str(v) for k, v in identity.items()},
-        professional_summary={str(k): str(v) for k, v in summary.items()},
+        professional_summary=summary_text,
+        summary_fact_ids=summary_fact_ids,
         experiences=experiences,
         skills=_mapping(data.get("skills", {}), "skills"),
         languages=_mapping(data.get("languages", {}), "languages"),
@@ -55,6 +67,43 @@ def load_profile(path: str | Path) -> CareerProfile:
     )
     validate_profile(profile)
     return profile
+
+
+def load_preferences(path: str | Path, legacy: dict[str, Any] | None = None) -> CandidatePreferences:
+    """Load mutable candidate preferences, with explicit legacy compatibility."""
+    source = Path(path)
+    raw = yaml.safe_load(source.read_text(encoding="utf-8")) if source.exists() else {}
+    data = _mapping(raw or {}, "preferences")
+    legacy_data = dict(legacy or {})
+    merged: dict[str, Any] = dict(legacy_data)
+    merged.update(data)
+    resume = _mapping(merged.get("resume", {}), "preferences.resume")
+    compensation = _mapping(merged.get("compensation", {}), "preferences.compensation")
+    locations = _mapping(merged.get("locations", {}), "preferences.locations")
+    limits = _mapping(merged.get("limits", {}), "preferences.limits")
+    autonomy = _mapping(merged.get("autonomy", {}), "preferences.autonomy")
+    def preference_value(name: str, nested: dict[str, Any], default: Any = None) -> Any:
+        if name in data:
+            return data[name]
+        if name in nested:
+            return nested[name]
+        return legacy_data.get(name, default)
+
+    return CandidatePreferences(
+        remote=bool(preference_value("remote", locations, False)),
+        allowed_locations=[str(item) for item in preference_value("allowed_locations", locations, []) if item],
+        allowed_countries=[str(item) for item in preference_value("allowed_countries", locations, []) if item],
+        relocation=bool(preference_value("relocation", locations, False)),
+        minimum_salary=str(preference_value("minimum_salary", compensation, "")),
+        currency=str(preference_value("currency", compensation, "USD" if compensation.get("minimum_monthly_usd") else "")),
+        employment_types=[str(item) for item in preference_value("employment_types", {}, []) if item],
+        work_authorization=[str(item) for item in preference_value("work_authorization", {}, []) if item],
+        timezones=[str(item) for item in preference_value("timezones", {}, []) if item],
+        max_applications_per_day=int(preference_value("max_applications_per_day", limits)) if preference_value("max_applications_per_day", limits) is not None else None,
+        resume_template=str(preference_value("resume_template", resume, "ats")),
+        max_pages=int(preference_value("max_pages", resume, 2)),
+        autonomy={str(k): str(v) for k, v in autonomy.items()},
+    )
 
 
 def load_facts(path: str | Path) -> dict[str, Fact]:

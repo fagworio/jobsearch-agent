@@ -7,6 +7,9 @@ identity:
 professional_summary:
   pt-BR: "Desenvolvedor WordPress com experiência em plugins personalizados, WooCommerce e integrações REST."
   en-US: "WordPress developer with experience in custom plugins, WooCommerce and REST integrations."
+professional_summary_fact_ids:
+  pt-BR: [fact_demo_001, fact_demo_002]
+  en-US: [fact_demo_001, fact_demo_002]
 experience:
   - id: experience_demo_001
     company: "Example Studio"
@@ -32,4 +35,3 @@ languages:
   english: {level: advanced}
 preferences:
   remote: true
-
