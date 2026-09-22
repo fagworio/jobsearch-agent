@@ -12,7 +12,7 @@ from .llm import OpenAICompatibleProvider
 from .models import JobState, now_iso, to_dict
 from .observability import append_event
 from .persistence import Database
-from .profile import load_facts, load_profile, validate_facts as validate_profile_facts
+from .profile import load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts
 from .resume import generate_resume, render_docx, render_pdf_from_docx, render_text, select_fact_ids, validate_ats, validate_facts as validate_resume_facts
 from .schemas import validate_contract
 from .serialization import canonical_json
@@ -68,6 +68,8 @@ def search(settings: Settings, query: str, *, sites: list[str] | None = None, lo
 def _load_profile_data(settings: Settings):
     profile = load_profile(settings.resolve(settings.profile_path))
     facts = load_facts(settings.resolve(settings.facts_path))
+    preferences = load_preferences(settings.resolve(settings.preferences_path), profile.preferences)
+    profile.candidate_preferences = preferences
     if settings.real_profile and profile.demo:
         raise PipelineError("demo profile cannot be used with --real-profile")
     errors = validate_profile_facts(profile, facts)
@@ -119,7 +121,8 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
         job.preferred_requirements = list(analysis.preferred_skills)
         strategy = build_strategy(job, analysis, fit, profile)
         selected = select_fact_ids(job, strategy, profile, facts)
-        resume = generate_resume(job, strategy, profile, facts, selected, provider_for(settings))
+        rewrite_fallbacks: list[dict[str, str]] = []
+        resume = generate_resume(job, strategy, profile, facts, selected, provider_for(settings), rewrite_fallbacks)
         validate_contract("job", job)
         validate_contract("analysis", analysis)
         validate_contract("fit", fit)
@@ -148,6 +151,8 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
         db.save_job(job, canonical_job_key(job), job.raw_payload)
         db.save_analysis(job.id, analysis=analysis, fit=fit, strategy=strategy, resume=resume, validation=report, updated_at=now_iso())
         db.record_event(job.id, "resume_prepared", {"valid": report["valid"], "state": job.state.value}, now_iso())
+        for fallback in rewrite_fallbacks:
+            db.record_event(job.id, "resume_rewrite_fallback", fallback, now_iso())
         append_event(settings.root, "resume_prepared", job_id=job.id, valid=report["valid"], state=job.state.value)
         return {"job_id": job.id, "fit": to_dict(fit), "strategy": to_dict(strategy), "resume": to_dict(resume), "validation": report, "artifacts": str(artifact_dir), "pdf_error": pdf_error}
     finally:

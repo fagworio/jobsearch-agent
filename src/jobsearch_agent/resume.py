@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from .llm import LLMProvider, LLMRequest
+from .llm import LLMError, LLMProvider, LLMRequest
 from .models import CareerProfile, Fact, Job, Resume, ResumeClaim, ResumeStrategy, ValidationResult
 from .skills import SkillRegistry
 
@@ -94,7 +94,7 @@ def cluster_fact_ids(fact_ids: list[str], facts: dict[str, Fact], max_per_claim:
     return clusters
 
 
-def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts: dict[str, Fact], provider: LLMProvider | None = None) -> tuple[str, list[str]]:
+def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts: dict[str, Fact], provider: LLMProvider | None = None, fallback_events: list[dict[str, str]] | None = None) -> tuple[str, list[str]]:
     """Monta um claim contextual preservando todos os facts do grupo.
 
     Quando configurado, o LLM recebe somente os facts selecionados e deve
@@ -104,32 +104,43 @@ def rewrite_claim(job: Job, strategy: ResumeStrategy, fact_ids: list[str], facts
     language = strategy.language
     statements = [_statement(facts[fact_id], language) for fact_id in fact_ids]
     if provider and fact_ids:
-        response = provider.complete(LLMRequest(
-            system="Rewrite only the supplied facts for the target role. Return JSON with text and supported_by. Never add metrics, technologies, entities or responsibilities.",
-            user="\n".join([
-                f"Target role: {job.title}",
-                f"Language: {language}",
-                f"Focus: {', '.join(strategy.focus + strategy.secondary)}",
-                "Facts:",
-                *[f"{fact_id}: {_statement(facts[fact_id], language)}" for fact_id in fact_ids],
-            ]),
-            schema="{text: string, supported_by: string[]}",
-        ))
-        text = response.get("text") if isinstance(response, dict) else None
-        support = response.get("supported_by") if isinstance(response, dict) else None
-        if isinstance(text, str) and text.strip() and isinstance(support, list) and set(support) == set(fact_ids):
-            return text.strip(), list(support)
+        try:
+            response = provider.complete(LLMRequest(
+                system="Rewrite only the supplied facts for the target role. Return JSON with text and supported_by. Never add metrics, technologies, entities or responsibilities.",
+                user="\n".join([
+                    f"Target role: {job.title}",
+                    f"Language: {language}",
+                    f"Focus: {', '.join(strategy.focus + strategy.secondary)}",
+                    "Facts:",
+                    *[f"{fact_id}: {_statement(facts[fact_id], language)}" for fact_id in fact_ids],
+                ]),
+                schema="{text: string, supported_by: string[]}",
+            ))
+            text = response.get("text") if isinstance(response, dict) else None
+            support = response.get("supported_by") if isinstance(response, dict) else None
+            if isinstance(text, str) and text.strip() and isinstance(support, list) and set(support) == set(fact_ids):
+                return text.strip(), list(support)
+            if fallback_events is not None:
+                fallback_events.append({"reason": "invalid_response", "provider": type(provider).__name__})
+        except LLMError:
+            if fallback_events is not None:
+                fallback_events.append({"reason": "llm_error", "provider": type(provider).__name__})
     if len(statements) > 1:
         return "; ".join(statement.rstrip(".") for statement in statements) + ".", fact_ids
     return statements[0] if statements else "", fact_ids
 
 
-def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], selected_ids: list[str], provider: LLMProvider | None = None) -> Resume:
+def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact], selected_ids: list[str], provider: LLMProvider | None = None, fallback_events: list[dict[str, str]] | None = None) -> Resume:
     language = strategy.language
     claims: list[ResumeClaim] = []
     summary = profile.professional_summary.get(language) or profile.professional_summary.get("en-US", "")
+    summary_ids = [fact_id for fact_id in profile.summary_fact_ids.get(language, profile.summary_fact_ids.get("en-US", [])) if fact_id in facts]
+    if summary_ids and provider:
+        rewritten_summary, support = rewrite_claim(job, strategy, summary_ids, facts, provider, fallback_events)
+        if rewritten_summary:
+            summary, summary_ids = rewritten_summary, support
     if summary:
-        claims.append(ResumeClaim(summary, list(selected_ids), bool(selected_ids)))
+        claims.append(ResumeClaim(summary, summary_ids, bool(summary_ids)))
     experience_rows: list[dict[str, Any]] = []
     for experience in profile.experiences:
         exp_facts = [fact_id for fact_id in experience.fact_ids if fact_id in selected_ids]
@@ -138,7 +149,7 @@ def generate_resume(job: Job, strategy: ResumeStrategy, profile: CareerProfile, 
         grouped_ids = cluster_fact_ids(exp_facts, facts)
         bullets: list[str] = []
         for group in grouped_ids:
-            bullet, support = rewrite_claim(job, strategy, group, facts, provider)
+            bullet, support = rewrite_claim(job, strategy, group, facts, provider, fallback_events)
             bullets.append(bullet)
             claims.append(ResumeClaim(bullet, support, True))
         experience_rows.append({"company": experience.company, "role": experience.role, "start_date": experience.start_date, "end_date": experience.end_date, "bullets": bullets, "fact_ids": exp_facts})
