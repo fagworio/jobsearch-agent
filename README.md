@@ -24,6 +24,7 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli run --json-file tests/fixtures/job
 
 # cria/retoma a candidatura persistida, sem browser e sem submit
 PYTHONPATH=src python3 -m jobsearch_agent.cli application prepare <job-id> --db data/jobsearch.db
+PYTHONPATH=src python3 -m jobsearch_agent.cli application resume <application-id> --db data/jobsearch.db
 PYTHONPATH=src python3 -m jobsearch_agent.cli application status <application-id> --db data/jobsearch.db
 ```
 
@@ -63,5 +64,7 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA` e `UNSUPPORTED_FORM`
   são estados de domínio, não erros técnicos.
 - `ApplicationPolicy` controla autonomia e segurança separadamente de `CandidatePreferences`.
+- `READY_TO_APPLY` só é emitido com `ApplicationForm` conhecido e campos obrigatórios resolvidos;
+  `submit: manual` continua exigindo revisão antes do envio.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

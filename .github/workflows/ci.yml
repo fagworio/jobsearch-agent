@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  core-minimal:
+  core-runtime:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +50,15 @@ jobs:
           test -s data/ci-applications/*/resume.docx
           test -s data/ci-applications/*/resume.pdf
           grep -R 'RESUME_READY' data/ci-applications/*/validation.json
+          JOB_ID=$(python -c 'import json; print(json.load(open("data/run.json"))["job_id"])' 2>/dev/null || true)
+          if [ -z "$JOB_ID" ]; then
+            python -m jobsearch_agent.cli ingest --json-file tests/fixtures/jobs/greenhouse.json --db data/ci-application.db --artifacts data/ci-applications > data/ingest.json
+            JOB_ID=$(python -c 'import json; print(json.load(open("data/ingest.json"))["job_id"])')
+          fi
+          python -m jobsearch_agent.cli application prepare "$JOB_ID" --db data/ci-application.db --artifacts data/ci-applications > data/application.json
+          APP_ID=$(python -c 'import json; print(json.load(open("data/application.json"))["application"]["id"])')
+          python -m jobsearch_agent.cli application status "$APP_ID" --db data/ci-application.db > data/application-status.json
+          grep -q 'READY_FOR_REVIEW' data/application.json
       - name: Validate EN-US generation path
         run: |
           python -m jobsearch_agent.cli run \
