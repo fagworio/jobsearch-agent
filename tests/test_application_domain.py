@@ -85,6 +85,18 @@ def test_qa_normalizes_pt_br_and_reads_explicit_work_authorization():
     assert answer.semantic_type == "work_authorization"
 
 
+def test_field_aware_qa_respects_semantic_type_and_options():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["Brazil"]})
+    kb = AnswerKnowledgeBase([])
+    yes_no = ApplicationField("auth", "Authorized to work in Brazil?", field_type="radio", semantic_type="work_authorization", options=["Yes", "No"], required=True)
+    countries = ApplicationField("countries", "Countries where you are authorized to work", field_type="text", semantic_type="work_authorization", required=True)
+    company = ApplicationField("company", "Current company name", field_type="text", required=True)
+    assert kb.resolve_field(yes_no, profile, preferences).answer == "Yes"
+    assert kb.resolve_field(countries, profile, preferences).answer == "Brazil"
+    assert kb.resolve_field(company, profile, preferences) is None
+
+
 def test_safety_gate_is_explainable_and_requires_unknown_answer():
     context = ApplicationContext(
         application_id="a",
@@ -98,7 +110,8 @@ def test_safety_gate_is_explainable_and_requires_unknown_answer():
     assert ready.ready_to_apply is False
     assert ready.requires_review is True
     field = ApplicationField("work_authorization", "Work authorization", required=True)
-    blocked = evaluate_safety_gate(context, [field])
+    context.form = ApplicationForm("form-unknown", fields=[field])
+    blocked = evaluate_safety_gate(context)
     assert blocked.decision == ApplicationState.NEEDS_ANSWER
     assert "unknown_answer:work_authorization" in blocked.blockers
     assert any(check["gate"] == "required_answers" for check in blocked.checks)

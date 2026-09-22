@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .models import Application, ApplicationContext, ApplicationEvent, ApplicationPolicy, ApplicationReadiness, ApplicationState
+from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState
 from .persistence import Database
 
 
@@ -23,7 +23,7 @@ class ApplicationDomainError(ValueError):
 
 TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.DRAFT: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
-    ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
+    ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.MATERIALS_READY: {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.READY_TO_APPLY: set(),
@@ -57,6 +57,33 @@ def load_application_policy(path: str | Path) -> ApplicationPolicy:
     policy.mfa = str(safety.get("mfa", policy.mfa))
     policy.legal_question = str(safety.get("legal_question", policy.legal_question))
     return policy
+
+
+def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
+    policy_data = data.get("policy", {}) or {}
+    policy = ApplicationPolicy(**{key: value for key, value in policy_data.items() if key in {"autonomy", "applications_per_day", "unknown_answer", "captcha", "mfa", "legal_question"}})
+    form_data = data.get("form")
+    form = None
+    if isinstance(form_data, dict):
+        fields = []
+        for raw_field in form_data.get("fields", []):
+            if not isinstance(raw_field, dict):
+                continue
+            answer_data = raw_field.get("answer")
+            answer = ApplicationAnswer(**answer_data) if isinstance(answer_data, dict) else None
+            fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step"}}, answer=answer))
+        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])])
+    answers = [ApplicationAnswer(**item) for item in data.get("answers", []) if isinstance(item, dict)]
+    return ApplicationContext(
+        application_id=str(data.get("application_id", "")),
+        job_id=str(data.get("job_id", "")),
+        fit=data.get("fit", {}) or {},
+        resume=data.get("resume", {}) or {},
+        validation=data.get("validation", {}) or {},
+        answers=answers,
+        form=form,
+        policy=policy,
+    )
 
 
 class ApplicationService:
@@ -96,7 +123,7 @@ class ApplicationService:
         return self.transition(application_id, ApplicationState.PREPARING, "application_resumed", {"previous_state": application.state.value})
 
 
-def evaluate_safety_gate(context: ApplicationContext, required_fields: list[Any] | None = None) -> ApplicationReadiness:
+def evaluate_safety_gate(context: ApplicationContext) -> ApplicationReadiness:
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
     all_fit_blockers = list(context.fit.get("blockers", []))
@@ -115,8 +142,9 @@ def evaluate_safety_gate(context: ApplicationContext, required_fields: list[Any]
     if not resume_ok:
         blockers.append("resume_invalid")
 
-    unknown_fields = [field.key for field in (required_fields or []) if field.required and not (field.value or (field.answer and field.answer.answer))]
-    unsupported_fields = [field.key for field in (required_fields or []) if field.field_type not in {"text", "textarea", "email", "tel", "url", "select", "radio", "checkbox", "date"}]
+    fields = context.form.fields if context.form else []
+    unknown_fields = [field.key for field in fields if field.required and not (field.value or (field.answer and field.answer.answer))]
+    unsupported_fields = [field.key for field in fields if field.field_type not in {"text", "textarea", "email", "tel", "url", "select", "radio", "checkbox", "date"}]
     if unsupported_fields:
         checks.append({"gate": "form", "result": "blocker", "evidence": unsupported_fields})
         blockers.append("unsupported_form")

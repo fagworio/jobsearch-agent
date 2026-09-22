@@ -98,6 +98,7 @@ def load_preferences(path: str | Path, legacy: dict[str, Any] | None = None) -> 
         currency=str(preference_value("currency", compensation, "USD" if compensation.get("minimum_monthly_usd") else "")),
         employment_types=[str(item) for item in preference_value("employment_types", {}, []) if item],
         work_authorization=[str(item) for item in preference_value("work_authorization", {}, []) if item],
+        requires_sponsorship=str(preference_value("requires_sponsorship", {}, "unknown")),
         timezones=[str(item) for item in preference_value("timezones", {}, []) if item],
         max_applications_per_day=int(preference_value("max_applications_per_day", limits)) if preference_value("max_applications_per_day", limits) is not None else None,
         resume_template=str(preference_value("resume_template", resume, "ats")),

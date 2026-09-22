@@ -113,7 +113,8 @@ def _extract_language_requirements(sentences: list[str]) -> list[LanguageRequire
 def _extract_work_authorization_requirement(description: str) -> WorkAuthorizationRequirement:
     sentences = _sentences(description)
     terms = ("authorized to work", "legally authorized", "work authorization", "work permit", "visa sponsorship", "patrocínio de visto", "autorização de trabalho", "autorizacao de trabalho")
-    sentence = next((item for item in sentences if any(term in item.lower() for term in terms)), "")
+    matching_sentences = [item for item in sentences if any(term in item.lower() for term in terms)]
+    sentence = " ".join(matching_sentences)
     if not sentence:
         return WorkAuthorizationRequirement()
     lowered = sentence.lower()
@@ -127,7 +128,12 @@ def _extract_work_authorization_requirement(description: str) -> WorkAuthorizati
     for country, aliases in country_aliases.items():
         if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases):
             countries.append(country)
-    sponsorship = "required" if "sponsor" in lowered or "patroc" in lowered else "unknown"
+    if re.search(r"\b(no|not|without|does not|doesn't)\b[^.]*\b(sponsor|patroc)", lowered):
+        sponsorship = "not_available"
+    elif re.search(r"\b(offer|available|provides|provide)\b[^.]*\b(sponsor|patroc)", lowered):
+        sponsorship = "available"
+    else:
+        sponsorship = "unknown"
     return WorkAuthorizationRequirement(True, countries, sponsorship, sentence, "deterministic")
 
 
@@ -293,6 +299,7 @@ def _work_authorization_fit(analysis: JobAnalysis, profile: CareerProfile) -> tu
     requirement = analysis.work_authorization_requirement
     preferences = profile.candidate_preferences or profile.preferences
     candidate_values = preferences.work_authorization if hasattr(preferences, "work_authorization") else preferences.get("work_authorization", [])
+    requires_sponsorship = preferences.requires_sponsorship if hasattr(preferences, "requires_sponsorship") else preferences.get("requires_sponsorship", "unknown")
     candidate_values = [str(value).lower() for value in candidate_values]
     candidate_countries = set(candidate_values)
     if any(value in candidate_countries for value in ("united states", "u.s.", "estados unidos", "us")):
@@ -305,6 +312,8 @@ def _work_authorization_fit(analysis: JobAnalysis, profile: CareerProfile) -> tu
         return 1.0, "", FitCriterionResult("work_authorization", candidate_values, "not required by job", FitCriterionStatus.UNKNOWN, 1.0, False, "The job has no explicit work authorization requirement.", "job_analysis")
     if not candidate_values:
         return 0.0, "work_authorization_unknown", FitCriterionResult("work_authorization", [], requirement.countries, FitCriterionStatus.UNKNOWN, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")
+    if requirement.sponsorship_available == "not_available" and str(requires_sponsorship).lower() == "yes":
+        return 0.0, "sponsorship_unavailable", FitCriterionResult("sponsorship", requires_sponsorship, requirement.sponsorship_available, FitCriterionStatus.BLOCKER, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")
     if not requirement.countries or candidate_countries.intersection(requirement.countries):
         return 1.0, "", FitCriterionResult("work_authorization", candidate_values, requirement.countries, FitCriterionStatus.MATCH, 1.0, False, requirement.evidence, "job_analysis + candidate_preferences")
     return 0.0, "work_authorization_mismatch", FitCriterionResult("work_authorization", candidate_values, requirement.countries, FitCriterionStatus.BLOCKER, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")

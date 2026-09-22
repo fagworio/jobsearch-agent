@@ -157,6 +157,7 @@ class CandidatePreferences:
     currency: str = ""
     employment_types: list[str] = field(default_factory=list)
     work_authorization: list[str] = field(default_factory=list)
+    requires_sponsorship: str = "unknown"
     timezones: list[str] = field(default_factory=list)
     max_applications_per_day: int | None = None
     resume_template: str = "ats"

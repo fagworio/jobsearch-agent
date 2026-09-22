@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
-from .application import ApplicationService, evaluate_safety_gate, load_application_policy
+from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
 from .config import Settings
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
@@ -202,8 +202,14 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
 def resume_application(settings: Settings, application_id: str) -> dict[str, Any]:
     db = Database(settings.resolve(settings.db_path))
     try:
-        application = ApplicationService(db).resume(application_id)
-        return {"application": to_dict(application), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
+        service = ApplicationService(db)
+        application = service.resume(application_id)
+        context = context_from_dict(application.context)
+        readiness = evaluate_safety_gate(context)
+        application = service.transition(application.id, readiness.decision, "safety_gate_re_evaluated", {"decision": readiness.decision.value, "blockers": readiness.blockers})
+        application.context["readiness"] = to_dict(readiness)
+        db.save_application(application)
+        return {"application": to_dict(application), "readiness": to_dict(readiness), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
     finally:
         db.close()
 

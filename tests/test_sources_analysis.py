@@ -121,3 +121,12 @@ def test_work_authorization_requirement_is_separate_from_candidate_answer():
     fit_with_answer = calculate_fit(job, analysis, profile)
     assert "work_authorization_unknown" not in fit_with_answer.blockers
     assert "work_authorization_mismatch" not in fit_with_answer.blockers
+
+
+def test_sponsorship_availability_is_separate_from_candidate_need():
+    job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Candidates must be legally authorized to work in the United States. We do not offer visa sponsorship.")
+    analysis = analyze_requirements(job)
+    assert analysis.work_authorization_requirement.sponsorship_available == "not_available"
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    profile.candidate_preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["United States"], "requires_sponsorship": "yes"})
+    assert "sponsorship_unavailable" in calculate_fit(job, analysis, profile).blockers

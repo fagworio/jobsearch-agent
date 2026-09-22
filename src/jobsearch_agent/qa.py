@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from .models import ApplicationAnswer, CandidatePreferences, CareerProfile
+from .models import ApplicationAnswer, ApplicationField, CandidatePreferences, CareerProfile
 
 
 LEGAL_TERMS = ("legal", "law", "declaration", "declare", "conviction", "criminal", "accommod", "disability", "ethnicity", "race", "visto", "autorização de trabalho", "autorizacao de trabalho")
@@ -84,9 +84,55 @@ class AnswerKnowledgeBase:
             return ApplicationAnswer(answer.question_key, question, answer.answer, list(answer.supported_by), "approved_semantic", scored[0][0], True, answer.legal, answer.semantic_type)
         return self._resolve_profile(question, profile, preferences)
 
+    def resolve_field(self, field: ApplicationField, profile: CareerProfile, preferences: CandidatePreferences | None = None) -> ApplicationAnswer | None:
+        """Resolve a field using semantic type and options before text matching."""
+        semantic_type = field.semantic_type
+        normalized_label = _normalize(field.label)
+        if semantic_type == "unknown":
+            if normalized_label in {"full name", "nome completo"}:
+                semantic_type = "full_name"
+            elif "email" in normalized_label or "e mail" in normalized_label:
+                semantic_type = "email"
+            elif "authorized to work" in normalized_label or "autorizacao de trabalho" in normalized_label:
+                semantic_type = "work_authorization"
+            elif "sponsorship" in normalized_label or "patrocinio" in normalized_label:
+                semantic_type = "requires_sponsorship"
+        if semantic_type == "work_authorization" and preferences and preferences.work_authorization:
+            if self._yes_no_options(field.options):
+                value = "Yes"
+            elif field.field_type in {"select", "radio"} and field.options:
+                values = {_normalize(option): option for option in field.options}
+                value = next((values[_normalize(country)] for country in preferences.work_authorization if _normalize(country) in values), "")
+            else:
+                value = ", ".join(preferences.work_authorization)
+            if value:
+                return self._field_answer(field, value, ["CandidatePreferences.work_authorization"], "CandidatePreferences", 1.0, semantic_type)
+        if semantic_type == "requires_sponsorship" and preferences and preferences.requires_sponsorship in {"yes", "no"}:
+            value = "Yes" if preferences.requires_sponsorship == "yes" else "No"
+            return self._field_answer(field, value, ["CandidatePreferences.requires_sponsorship"], "CandidatePreferences", 1.0, semantic_type)
+        answer = self.resolve(field.label, profile, preferences)
+        if answer and semantic_type != "unknown":
+            answer.semantic_type = semantic_type
+        if answer and field.options and not self._option_matches(answer.answer, field.options):
+            return None
+        return answer
+
+    @staticmethod
+    def _yes_no_options(options: list[str]) -> bool:
+        return {_normalize(option) for option in options} == {"yes", "no"}
+
+    @staticmethod
+    def _option_matches(value: str, options: list[str]) -> bool:
+        normalized = _normalize(value)
+        return any(normalized == _normalize(option) for option in options)
+
+    @staticmethod
+    def _field_answer(field: ApplicationField, value: str, supported_by: list[str], source: str, confidence: float, semantic_type: str) -> ApplicationAnswer:
+        return ApplicationAnswer(question_key(field.label), field.label, value, supported_by, source, confidence, True, semantic_type in {"work_authorization", "requires_sponsorship"}, semantic_type)
+
     def _resolve_profile(self, question: str, profile: CareerProfile, preferences: CandidatePreferences | None) -> ApplicationAnswer | None:
         normalized = _normalize(question)
-        if any(term in normalized for term in ("full name", "name", "nome")):
+        if normalized in {"full name", "nome completo"}:
             value = profile.identity.get("name", "")
             if value:
                 return ApplicationAnswer(question_key(question), question, value, ["CareerProfile.identity.name"], "CareerProfile", 1.0, True, False, "full_name")
