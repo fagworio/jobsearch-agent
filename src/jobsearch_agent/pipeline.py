@@ -9,7 +9,11 @@ from typing import Any
 
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
+from .ats import GreenhouseAdapter
+from .browser import DryRunBrowserExecutor
 from .config import Settings
+from .execution import build_execution_plan
+from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
 from .observability import append_event
@@ -296,6 +300,82 @@ def resume_application(settings: Settings, application_id: str) -> dict[str, Any
         application.context["readiness"] = to_dict(readiness)
         db.save_application(application)
         return {"application": to_dict(application), "readiness": to_dict(readiness), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
+    finally:
+        db.close()
+
+
+def dry_run_application(settings: Settings, application_id: str, html_file: str | Path, provider: str = "") -> dict[str, Any]:
+    """Inspect and execute a local fill-only dry-run for a persisted Application.
+
+    The input is a caller-provided local HTML snapshot. No browser is opened and
+    no network write is possible; the returned status is always bounded by
+    ``STOP_BEFORE_SUBMIT`` when execution reaches the fill phase.
+    """
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        application = db.get_application(application_id)
+        if not application:
+            raise PipelineError(f"application not found: {application_id}")
+        profile = load_profile(settings.resolve(settings.profile_path))
+        if profile.demo:
+            return {"status": "DEMO_PROFILE_BLOCKED", "application_id": application_id, "network_access": "none"}
+        preferences = load_preferences(settings.resolve(settings.preferences_path), profile.preferences)
+        profile.candidate_preferences = preferences
+        context = context_from_dict(application.context)
+        html = Path(html_file).read_text(encoding="utf-8")
+        selected_provider = provider or (db.get_job(application.job_id).source if db.get_job(application.job_id) else "")
+        if selected_provider == "linkedin":
+            inspected = LinkedInInspector().inspect_html(html, form_id=application_id)
+            if inspected.classification != LinkedInApplyClassification.EASY_APPLY or inspected.form is None or inspected.bindings is None:
+                return {
+                    "status": inspected.classification.value,
+                    "application_id": application_id,
+                    "auth_state": inspected.auth_state,
+                    "warnings": inspected.warnings,
+                    "network_access": "none",
+                }
+            form = inspected.form
+            bindings = inspected.bindings
+        elif selected_provider == "greenhouse":
+            inspected = GreenhouseAdapter().inspect(html, form_id=application_id)
+            form = inspected.form
+            bindings = inspected.bindings
+        else:
+            raise PipelineError(f"unsupported dry-run provider: {selected_provider}")
+        form.artifact_root = str(settings.resolve(settings.artifacts_dir) / application.job_id)
+        default_resume = Path(form.artifact_root) / "resume.pdf"
+        for field in form.fields:
+            if field.field_type.casefold() == "file" and field.semantic_type == "resume" and default_resume.is_file():
+                field.attachment_path = str(default_resume)
+        context.form = form
+        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+        for field in form.fields:
+            field.answer = answers.resolve_field(field, profile, preferences)
+        readiness = evaluate_safety_gate(context)
+        if not readiness.ready_to_apply:
+            return {
+                "status": readiness.decision.value,
+                "application_id": application_id,
+                "readiness": readiness,
+                "network_access": "none",
+            }
+        plan = build_execution_plan(context, bindings)
+        # The LinkedIn offline inspector owns the snapshot semantics; passing
+        # no second HTML snapshot avoids reinterpreting it through generic ATS
+        # adapters while keeping plan/context validation active.
+        execution = DryRunBrowserExecutor().execute(context, plan, bindings, None)
+        db.save_application_form(application_id, form)
+        application.context = to_dict(context)
+        db.save_application(application)
+        return {
+            "status": "STOP_BEFORE_SUBMIT",
+            "application_id": application_id,
+            "provider": selected_provider,
+            "readiness": to_dict(readiness),
+            "plan": to_dict(plan),
+            "execution": to_dict(execution),
+            "network_access": "none",
+        }
     finally:
         db.close()
 

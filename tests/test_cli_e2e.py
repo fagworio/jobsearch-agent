@@ -45,6 +45,15 @@ def test_submission_commands_are_exposed_without_adding_submit_to_dry_run(capsys
     assert "submit" in application_help
 
 
+def test_dry_run_command_requires_explicit_local_snapshot(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["dry-run", "--help"])
+    assert exit_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--html-file" in help_text
+    assert "snapshot HTML local" in help_text
+
+
 def test_linkedin_inspect_cli_uses_local_html_only(tmp_path, capsys):
     result = main([
         "linkedin", "inspect", "job-linkedin-fixture",

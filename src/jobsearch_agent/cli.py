@@ -14,7 +14,7 @@ from .llm import LLMError
 from .linkedin.inspector import LinkedInInspector
 from .models import to_dict
 from .persistence import ApplicationConflict, Database
-from .pipeline import PipelineError, analyze, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
+from .pipeline import PipelineError, analyze, dry_run_application, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
 from .preflight import run_preflight
 from .profile import ProfileError, load_facts, load_preferences, load_profile, validate_facts, validate_profile_readiness
 from .submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService, build_review_snapshot
@@ -148,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     precheck_parser.add_argument("job_id", help="ID de uma vaga já ingerida")
     precheck_parser.set_defaults(handler="precheck")
 
+    dry_run_parser = sub.add_parser(
+        "dry-run",
+        help="executa preenchimento local sem rede e sem submit",
+        description="Executa somente fill/upload em snapshot local; nunca submete.",
+    )
+    runtime_options(dry_run_parser)
+    dry_run_parser.add_argument("job_id", help="ID da Application persistida")
+    dry_run_parser.add_argument("--html-file", type=Path, required=True, help="snapshot HTML local")
+    dry_run_parser.add_argument("--provider", choices=["greenhouse", "linkedin"], required=True)
+    dry_run_parser.set_defaults(handler="dry_run")
+
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
     status.set_defaults(handler="status")
@@ -220,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
             result = precheck_job(settings, args.job_id)
             _print(result)
             return 0 if result["ready_for_dry_run"] else 2
+        if args.handler == "dry_run":
+            result = dry_run_application(settings, args.job_id, args.html_file, args.provider)
+            _print(result)
+            return 0 if result["status"] == "STOP_BEFORE_SUBMIT" else 2
         if args.handler == "prepare":
             _print(prepare(settings, args.job_id, args.language))
             return 0

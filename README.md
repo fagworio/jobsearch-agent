@@ -41,6 +41,11 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli application submit <application-id
   --form-fingerprint <fingerprint> --resume-sha256 <sha256> \
   --answers-fingerprint <fingerprint>
 
+# dry-run somente local: preenche/valida o snapshot e termina antes de submit
+PYTHONPATH=src python3 -m jobsearch_agent.cli dry-run <application-id> \
+  --provider linkedin --html-file tests/fixtures/linkedin/easy-apply-single.html \
+  --db data/jobsearch.db --artifacts data/applications
+
 # inspeção LinkedIn somente em HTML local; não abre navegador nem acessa rede
 jobsearch-agent linkedin inspect <job-id> --html-file tests/fixtures/linkedin/easy-apply-single.html
 ```
