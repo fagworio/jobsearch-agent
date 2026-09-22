@@ -52,7 +52,7 @@ _SEMANTIC_ALIASES: dict[str, set[str]] = {
     "full_name": {"full_name", "fullname", "name"},
     "email": {"email", "email_address"},
     "phone": {"phone", "phone_number", "mobile", "mobile_phone"},
-    "location": {"location", "city", "current_location"},
+    "location": {"location", "city", "current_location", "relocation_location"},
     "linkedin": {"linkedin", "linkedin_profile", "linkedin_url"},
     "github": {"github", "github_profile", "github_url"},
     "portfolio": {"portfolio", "portfolio_url", "website", "personal_website"},
@@ -167,7 +167,10 @@ class GreenhouseAdapter:
         soup = BeautifulSoup(html, "html.parser")
         if soup.find(attrs={"data-provider": "greenhouse"}) or soup.find(attrs={"data-ats": "greenhouse"}):
             return True
-        return bool(soup.find("form", id="application_form") and soup.select('form input[name^="job_application["]'))
+        return bool(
+            soup.find("form", id="application_form")
+            and soup.select('form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]')
+        )
 
     def confidence(self, url: str = "", html: str = "") -> float:
         hostname = (urlparse(url).hostname or "").casefold()
@@ -176,9 +179,13 @@ class GreenhouseAdapter:
         soup = BeautifulSoup(html, "html.parser")
         if soup.find(attrs={"data-provider": "greenhouse"}) or soup.find(attrs={"data-ats": "greenhouse"}):
             return 1.0
-        if soup.find("form", id="application_form") and soup.select('form input[name^="job_application["]'):
+        if soup.find("form", id="application_form") and soup.select(
+            'form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]'
+        ):
             return 1.0
-        if soup.select('input[name^="job_application["]'):
+        if soup.select(
+            'input[name^="job_application["], select[name^="job_application["], textarea[name^="job_application["]'
+        ):
             return 0.95
         return 0.0
 
@@ -200,7 +207,9 @@ class GreenhouseAdapter:
                 score += 100
             if form.get("data-provider") == "greenhouse":
                 score += 90
-            if form.select('input[name^="job_application["]'):
+            if form.select(
+                'input[name^="job_application["], select[name^="job_application["], textarea[name^="job_application["]'
+            ):
                 score += 80
             if score:
                 candidates.append((score, form))
@@ -233,12 +242,15 @@ class GreenhouseAdapter:
                 field.confidence = 0.0
                 field.source = "greenhouse_unknown"
         soup = BeautifulSoup(html, "html.parser")
+        root = soup.select_one(inspected.bindings.root_locator) if inspected.bindings.root_locator else soup
+        if root is None:
+            root = soup
         unsupported: list[str] = []
         capability_issues: list[FormCapabilityIssue] = []
-        if soup.select('[role="combobox"]'):
+        if root.select('[role="combobox"]'):
             unsupported.append("custom_combobox")
             capability_issues.append(FormCapabilityIssue("custom_combobox", "blocker", evidence="role=combobox"))
-        if soup.select('[contenteditable="true"]'):
+        if root.select('[contenteditable="true"]'):
             unsupported.append("contenteditable_control")
             capability_issues.append(FormCapabilityIssue("contenteditable_control", "blocker", evidence="contenteditable=true"))
         inspected.form.capability_issues = capability_issues

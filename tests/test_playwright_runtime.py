@@ -1,10 +1,14 @@
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import time
 
 import pytest
 
 pytest.importorskip("playwright")
 from pypdf import PdfWriter
 from jobsearch_agent.browser import PlaywrightFormFiller, PlaywrightSessionManager
+from jobsearch_agent.ats import GreenhouseAdapter
 from jobsearch_agent.execution import build_execution_plan
 from jobsearch_agent.inspector import ATSInspector
 from jobsearch_agent.models import ApplicationContext, ApplicationPolicy
@@ -72,3 +76,80 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         assert any(event.method == "POST" and not event.allowed for event in manager.network_guard.events)
     finally:
         manager.close()
+
+
+def test_greenhouse_conditional_get_is_pending_before_dom_change(tmp_path: Path):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/locations"):
+                time.sleep(0.4)
+                body = b'{"locations":["Sao Paulo"]}'
+            else:
+                body = b'''<!doctype html><form id="application_form">
+                  <label for="relocation">Are you willing to relocate?</label>
+                  <select id="relocation" name="job_application[relocation]" onchange="fetch('/locations?relocation=yes').then(() => { const input = document.createElement('input'); input.id = 'relocation_location'; input.name = 'job_application[relocation_location]'; input.required = true; document.querySelector('form').append(input); })">
+                    <option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option>
+                  </select>
+                </form>'''
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json" if self.path.startswith("/locations") else "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class LocalFixtureSession(PlaywrightSessionManager):
+        def __init__(self, origin):
+            super().__init__(allowed_hosts={"127.0.0.1"})
+            self.origin = origin
+            self.pending_samples = []
+
+        def _guard_route(self, route):
+            if route.request.url.startswith(self.origin):
+                allowed = self.network_guard.inspect(route.request)
+                if allowed:
+                    self.network_guard.begin_read(route.request)
+                    self.pending_samples.append(self.network_guard.pending_read_count)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+    origin = f"http://127.0.0.1:{server.server_port}"
+    manager = LocalFixtureSession(origin)
+    manager.start()
+    try:
+        page = manager.page
+        page.goto(origin + "/application")
+        adapter_result = GreenhouseAdapter().inspect(page.content(), origin + "/application")
+        relocation = next(field for field in adapter_result.form.fields if field.semantic_type == "relocation")
+        relocation.value = "Yes"
+        adapter_result.form.artifact_root = str(tmp_path)
+        context = ApplicationContext(
+            application_id="application-conditional",
+            job_id="job-conditional",
+            fit={"blockers": []},
+            validation={"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
+            form=adapter_result.form,
+            policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
+        )
+        plan = build_execution_plan(context, adapter_result.bindings)
+        started = time.monotonic()
+        result = PlaywrightFormFiller().fill(manager, context, plan, adapter_result.bindings)
+        assert time.monotonic() - started >= 0.35
+        assert max(manager.pending_samples) >= 1
+        assert manager.network_guard.pending_read_count == 0
+        assert result.status == "FORM_CHANGED"
+        assert len(result.operations) == 1
+        assert page.locator("#relocation_location").count() == 1
+    finally:
+        manager.close()
+        server.shutdown()
+        thread.join(timeout=2)

@@ -145,6 +145,9 @@ class AnswerKnowledgeBase:
             value = "Yes" if preferences.requires_sponsorship == "yes" else "No"
             value = self._map_boolean_option(value, field.options)
             return self._field_answer(field, value, ["CandidatePreferences.requires_sponsorship"], "CandidatePreferences", 1.0, semantic_type)
+        if semantic_type == "relocation" and preferences:
+            value = self._map_boolean_option("Yes" if preferences.relocation else "No", field.options)
+            return self._field_answer(field, value, ["CandidatePreferences.relocation"], "CandidatePreferences", 1.0, semantic_type)
         answer = self.resolve(field.label, profile, preferences)
         if answer and semantic_type != "unknown":
             answer.semantic_type = semantic_type

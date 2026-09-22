@@ -149,7 +149,7 @@ def test_work_authorization_requires_jurisdiction_and_confidence():
     assert kb.resolve_field(low_confidence, profile, preferences) is None
 
 
-def test_greenhouse_checkbox_and_conditional_fields_remain_generic():
+def test_greenhouse_checkbox_and_conditional_fields_keep_explicit_semantics():
     checkbox = inspect_with_adapter(_html("checkbox-group.html"), "https://boards.greenhouse.io/acme/jobs/1")
     assert checkbox.form.fields[0].field_type == "checkbox"
     assert checkbox.form.fields[0].semantic_type == "checkbox_multi"
@@ -157,7 +157,7 @@ def test_greenhouse_checkbox_and_conditional_fields_remain_generic():
 
     conditional = inspect_with_adapter(_html("conditional.html"), "https://boards.greenhouse.io/acme/jobs/1")
     assert next(field for field in conditional.form.fields if field.semantic_type == "relocation").key == "job_application[relocation]"
-    assert any(field.semantic_type == "unknown" for field in conditional.form.fields)
+    assert next(field for field in conditional.form.fields if field.key == "job_application[relocation_location]").semantic_type == "location"
 
 
 def test_greenhouse_adapter_rejects_ambiguous_or_non_greenhouse_roots():
@@ -174,3 +174,14 @@ def test_greenhouse_adapter_rejects_ambiguous_or_non_greenhouse_roots():
 
 def test_adapter_registry_does_not_guess_unknown_provider():
     assert adapter_for("https://example.com/apply", '<form data-provider="unknown"></form>') is None
+
+
+def test_unsupported_controls_outside_application_root_are_ignored():
+    for external_control in (
+        '<div role="combobox" aria-label="job search"></div>',
+        '<div contenteditable="true" aria-label="chat widget"></div>',
+    ):
+        html = _html("simple.html").replace("<body>", f"<body>{external_control}")
+        result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
+        assert result.unsupported_features == []
+        assert result.form.capability_issues == []
