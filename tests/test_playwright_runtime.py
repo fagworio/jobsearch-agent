@@ -65,6 +65,7 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         report = (audit_dir / "dry-run-report.json").read_text(encoding="utf-8")
         assert '"network_guard_active": true' in report
         assert '"blocked_write_count": 1' in report
+        assert '"pending_read_count": 0' in report
         assert not hasattr(PlaywrightFormFiller(), "submit")
         assert manager.network_guard is not None
         assert manager.context is not None

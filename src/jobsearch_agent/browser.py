@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import ipaddress
 import json
 import os
 from pathlib import Path
 import socket
+import time
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -22,7 +24,8 @@ class BrowserSessionError(RuntimeError):
 
 @dataclass
 class NetworkRequestEvent:
-    url: str
+    origin: str
+    path_hash: str
     method: str
     resource_type: str
     allowed: bool
@@ -37,29 +40,51 @@ class NetworkWriteGuard:
     def __init__(self, allowed_hosts: set[str]):
         self.allowed_hosts = allowed_hosts
         self.events: list[NetworkRequestEvent] = []
+        self._pending_reads: set[int] = set()
 
     @property
     def blocked_writes(self) -> list[NetworkRequestEvent]:
         return [event for event in self.events if not event.allowed and (event.method not in self.READ_METHODS or event.resource_type == "websocket")]
 
+    @property
+    def pending_read_count(self) -> int:
+        return len(self._pending_reads)
+
+    def begin_read(self, request: Any) -> None:
+        method = str(getattr(request, "method", "GET")).upper()
+        resource_type = str(getattr(request, "resource_type", ""))
+        if method in self.READ_METHODS and resource_type != "websocket":
+            self._pending_reads.add(id(request))
+
+    def finish_read(self, request: Any) -> None:
+        self._pending_reads.discard(id(request))
+
     def inspect(self, request: Any) -> bool:
         method = str(getattr(request, "method", "GET")).upper()
         resource_type = str(getattr(request, "resource_type", ""))
-        url = _audit_request_url(str(getattr(request, "url", "")))
+        origin, path_hash = _audit_network_target(str(getattr(request, "url", "")))
         if resource_type == "websocket":
-            self.events.append(NetworkRequestEvent(url, method, resource_type, False, "websocket blocked in dry-run"))
+            self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, "websocket blocked in dry-run"))
             return False
         if method not in self.READ_METHODS:
-            self.events.append(NetworkRequestEvent(url, method, resource_type, False, "write method blocked in dry-run"))
+            self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, "write method blocked in dry-run"))
             return False
-        self.events.append(NetworkRequestEvent(url, method, resource_type, True))
+        self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True))
         return True
 
 
-def _audit_request_url(url: str) -> str:
-    """Keep network evidence free of query strings and fragments."""
+def _audit_network_target(url: str) -> tuple[str, str]:
+    """Keep network evidence free of literal paths, query strings and fragments."""
     parsed = urlparse(url)
-    return parsed._replace(query="", fragment="").geturl()
+    hostname = (parsed.hostname or "").casefold()
+    origin = f"{parsed.scheme.casefold()}://{hostname}" if hostname else ""
+    try:
+        if parsed.port is not None:
+            origin += f":{parsed.port}"
+    except ValueError:
+        pass
+    path_hash = hashlib.sha256((parsed.path or "/").encode("utf-8")).hexdigest()[:16]
+    return origin, path_hash
 
 
 class GuardedBrowserSession(Protocol):
@@ -70,30 +95,62 @@ class GuardedBrowserSession(Protocol):
 
 
 class DOMStabilityGuard:
-    """Wait until the page has no mutations for a quiet interval."""
+    """Wait for a minimum observation window, DOM quietness and idle reads."""
 
-    def __init__(self, quiet_ms: int = 250, max_ms: int = 3000):
+    def __init__(self, quiet_ms: int = 250, min_observation_ms: int = 600, max_ms: int = 3000):
         self.quiet_ms = quiet_ms
+        self.min_observation_ms = min_observation_ms
         self.max_ms = max_ms
 
-    def wait(self, page: Any) -> None:
+    def wait(self, page: Any, pending_read_count: Any = None) -> None:
         script = """
-            ({quiet, maxWait}) => new Promise((resolve, reject) => {
+            ({quiet, minObservation, maxWait}) => new Promise((resolve, reject) => {
                 const root = document.documentElement || document;
-                let quietTimer;
-                let maxTimer = setTimeout(() => { observer.disconnect(); reject(new Error('DOM did not stabilize')); }, maxWait);
-                const finish = () => { clearTimeout(maxTimer); observer.disconnect(); resolve(true); };
+                const started = performance.now();
+                let lastMutation = started;
+                let checkTimer;
+                let maxTimer;
+                const finish = () => {
+                    clearTimeout(checkTimer);
+                    clearTimeout(maxTimer);
+                    observer.disconnect();
+                    resolve(true);
+                };
+                const fail = () => {
+                    clearTimeout(checkTimer);
+                    observer.disconnect();
+                    reject(new Error('DOM did not stabilize'));
+                };
                 const observer = new MutationObserver(() => {
-                    clearTimeout(quietTimer);
-                    quietTimer = setTimeout(finish, quiet);
+                    lastMutation = performance.now();
                 });
                 observer.observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
-                quietTimer = setTimeout(finish, quiet);
+                const check = () => {
+                    const now = performance.now();
+                    if (now - started >= minObservation && now - lastMutation >= quiet) {
+                        finish();
+                        return;
+                    }
+                    checkTimer = setTimeout(check, Math.min(quiet, 50));
+                };
+                maxTimer = setTimeout(fail, maxWait);
+                check();
             })
         """
+        deadline = time.monotonic() + self.max_ms / 1000
+        first_observation = True
         try:
-            page.evaluate(script, {"quiet": self.quiet_ms, "maxWait": self.max_ms})
+            while True:
+                remaining_ms = max(int((deadline - time.monotonic()) * 1000), 1)
+                page.evaluate(script, {"quiet": self.quiet_ms, "minObservation": self.min_observation_ms if first_observation else 0, "maxWait": remaining_ms})
+                if pending_read_count is None or pending_read_count() == 0:
+                    return
+                first_observation = False
+                if time.monotonic() >= deadline:
+                    raise BrowserSessionError("DOM_UNSTABLE: read requests did not settle")
         except Exception as exc:
+            if isinstance(exc, BrowserSessionError):
+                raise
             raise BrowserSessionError("DOM_UNSTABLE: form did not stabilize") from exc
 
 
@@ -146,6 +203,7 @@ class BrowserExecutionResult:
     network_guard_active: bool = False
     blocked_write_count: int = 0
     blocked_websocket_count: int = 0
+    pending_read_count: int = 0
 
 
 @dataclass
@@ -162,6 +220,7 @@ class DryRunAuditReport:
     network_guard_active: bool = False
     blocked_write_count: int = 0
     blocked_websocket_count: int = 0
+    pending_read_count: int = 0
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -248,12 +307,12 @@ class PlaywrightFormFiller:
             else:  # defensive; validate_execution_context already rejects it
                 raise BrowserSessionError(f"unsupported dry-run action: {action.action_type}")
             try:
-                DOMStabilityGuard().wait(page)
+                DOMStabilityGuard().wait(page, lambda: session.network_guard.pending_read_count)
             except BrowserSessionError:
                 report = self._report(session, plan, operations, "DOM_UNSTABLE", index, initial_fingerprint, "")
                 if audit_path:
                     self._persist_audit(page, audit_path, operations, report)
-                return BrowserExecutionResult(plan.application_id, operations, True, "DOM_UNSTABLE", initial_fingerprint, "", False, False, True, report.blocked_write_count, report.blocked_websocket_count)
+                return BrowserExecutionResult(plan.application_id, operations, True, "DOM_UNSTABLE", initial_fingerprint, "", False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
             current_html = page.content()
             current_validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")))
             if not current_validation.valid:
@@ -264,9 +323,9 @@ class PlaywrightFormFiller:
                 report = self._report(session, plan, operations, "FORM_CHANGED", index, initial_fingerprint, current_fingerprint)
                 if audit_path:
                     self._persist_audit(page, audit_path, operations, report)
-                return BrowserExecutionResult(plan.application_id, operations, True, "FORM_CHANGED", initial_fingerprint, current_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count)
+                return BrowserExecutionResult(plan.application_id, operations, True, "FORM_CHANGED", initial_fingerprint, current_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
         report = self._report(session, plan, operations, "COMPLETED", len(plan.actions) - 1, initial_fingerprint, initial_fingerprint)
-        result = BrowserExecutionResult(plan.application_id, operations, True, "COMPLETED", initial_fingerprint, initial_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count)
+        result = BrowserExecutionResult(plan.application_id, operations, True, "COMPLETED", initial_fingerprint, initial_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
         if audit_path:
             self._persist_audit(page, audit_path, operations, report)
         return result
@@ -274,7 +333,7 @@ class PlaywrightFormFiller:
     @staticmethod
     def _report(session: GuardedBrowserSession, plan: ExecutionPlan, operations: list[dict[str, Any]], result: str, index: int, initial: str, current: str) -> DryRunAuditReport:
         guard = session.network_guard
-        return DryRunAuditReport(plan.application_id, result, len(operations), max(len(plan.actions) - index - 1, 0), initial, current, operations, False, False, True, len(guard.blocked_writes), sum(event.resource_type == "websocket" for event in guard.blocked_writes))
+        return DryRunAuditReport(plan.application_id, result, len(operations), max(len(plan.actions) - index - 1, 0), initial, current, operations, False, False, True, len(guard.blocked_writes), sum(event.resource_type == "websocket" for event in guard.blocked_writes), guard.pending_read_count)
 
     @staticmethod
     def _persist_audit(page: Any, audit_path: Path, operations: list[dict[str, Any]], report: DryRunAuditReport) -> None:
@@ -356,19 +415,22 @@ class PlaywrightSessionManager:
         validation = validate_navigation_url(request_url, self.allowed_hosts, resource=True)
         if not validation.valid:
             if self.network_guard:
-                self.network_guard.events.append(NetworkRequestEvent(_audit_request_url(request_url), str(getattr(route.request, "method", "GET")), str(getattr(route.request, "resource_type", "")), False, "; ".join(validation.errors)))
+                origin, path_hash = _audit_network_target(request_url)
+                self.network_guard.events.append(NetworkRequestEvent(origin, path_hash, str(getattr(route.request, "method", "GET")), str(getattr(route.request, "resource_type", "")), False, "; ".join(validation.errors)))
             route.abort("blockedbyclient")
             return
         network_allowed = self.network_guard.inspect(route.request) if self.network_guard else False
         if network_allowed:
+            if self.network_guard:
+                self.network_guard.begin_read(route.request)
             route.continue_()
         else:
             route.abort("blockedbyclient")
 
     def _block_websocket(self, websocket: Any) -> None:  # pragma: no cover - exercised with Playwright installed
-        url = _audit_request_url(str(getattr(websocket, "url", "")))
+        origin, path_hash = _audit_network_target(str(getattr(websocket, "url", "")))
         if self.network_guard:
-            self.network_guard.events.append(NetworkRequestEvent(url, "GET", "websocket", False, "websocket blocked in dry-run"))
+            self.network_guard.events.append(NetworkRequestEvent(origin, path_hash, "GET", "websocket", False, "websocket blocked in dry-run"))
         # Deliberately do not call websocket.connect().
         return
 
@@ -389,6 +451,8 @@ class PlaywrightSessionManager:
             self.close()
             raise BrowserSessionError("Playwright >= 1.48 with route_web_socket is required")
         self.context.route_web_socket("**", self._block_websocket)
+        self.context.on("requestfinished", self._finish_read_request)
+        self.context.on("requestfailed", self._finish_read_request)
         self.page = self.context.new_page()
         self.guarded = True
 
@@ -416,3 +480,7 @@ class PlaywrightSessionManager:
         self._playwright = None
         self.network_guard = None
         self.guarded = False
+
+    def _finish_read_request(self, request: Any) -> None:
+        if self.network_guard:
+            self.network_guard.finish_read(request)

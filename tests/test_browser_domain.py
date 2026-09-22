@@ -196,8 +196,24 @@ def test_network_guard_records_aggregate_evidence_without_query_strings():
 
     guard = NetworkWriteGuard({"example.com"})
     assert guard.inspect(Request()) is False
-    assert guard.blocked_writes[0].url == "https://example.com/apply"
-    assert "candidate@example.com" not in guard.blocked_writes[0].url
+    assert guard.blocked_writes[0].origin == "https://example.com"
+    assert len(guard.blocked_writes[0].path_hash) == 16
+    assert "candidate@example.com" not in str(guard.blocked_writes[0].__dict__)
+
+
+def test_network_guard_tracks_pending_reads():
+    class Request:
+        method = "GET"
+        resource_type = "fetch"
+        url = "https://example.com/options"
+
+    guard = NetworkWriteGuard({"example.com"})
+    request = Request()
+    assert guard.pending_read_count == 0
+    guard.begin_read(request)
+    assert guard.pending_read_count == 1
+    guard.finish_read(request)
+    assert guard.pending_read_count == 0
 
 
 def test_inspector_separates_domain_form_from_dom_bindings():

@@ -84,9 +84,10 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O job opcional `browser-runtime` executa um fixture local em Chromium para provar inspeção,
   preenchimento, upload e screenshot sem qualquer submit.
 - O contexto dry-run bloqueia POST/PUT/PATCH/DELETE, WebSocket, `sendBeacon` e submissões de
-  formulário; o `NetworkWriteGuard` mantém evidência apenas agregada dos bloqueios, sem corpos ou
-  query strings, e cada mutação aguarda estabilidade por `MutationObserver` antes de revalidar o
-  DOM. Instabilidades interrompem com `DOM_UNSTABLE` e alterações estruturais com `FORM_CHANGED`.
+  formulário; o `NetworkWriteGuard` mantém evidência agregada por origem e hash de path, sem
+  valores literais, corpos ou query strings. Cada mutação aguarda uma janela mínima de observação,
+  estabilidade por `MutationObserver` e zero de leituras pendentes antes de revalidar o DOM.
+  Instabilidades interrompem com `DOM_UNSTABLE` e alterações estruturais com `FORM_CHANGED`.
 - O filler pode persistir um relatório redigido em `browser/`, com fingerprints, operações,
   screenshots e indicação explícita de que nenhuma escrita de rede foi permitida. O diretório de
   auditoria fica sob `artifact_root` com modo `0700`; seus arquivos ficam em `0600`.
