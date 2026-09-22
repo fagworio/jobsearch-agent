@@ -18,7 +18,8 @@ test-core-runtime:
 		--ignore=tests/test_submission_boundary.py \
 		--ignore=tests/test_linkedin_inspector.py \
 		--ignore=tests/test_linkedin_qa.py \
-		--ignore=tests/test_linkedin_session.py
+		--ignore=tests/test_linkedin_session.py \
+		-m "not requires_libreoffice"
 
 test-browser-runtime:
 	python3 -m pytest -q tests/test_playwright_runtime.py

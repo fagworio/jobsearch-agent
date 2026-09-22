@@ -37,6 +37,9 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "requires_libreoffice: test requires LibreOffice for PDF resume conversion",
+]
 pythonpath = ["src"]
 
 [tool.ruff]

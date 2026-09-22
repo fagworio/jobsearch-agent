@@ -12,6 +12,7 @@ from jobsearch_agent.persistence import Database
 ROOT = Path(__file__).parents[1]
 
 
+@pytest.mark.requires_libreoffice
 def test_cli_help_and_full_fixture_run(tmp_path, capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["--help"])
