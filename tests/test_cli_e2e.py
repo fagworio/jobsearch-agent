@@ -3,7 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from jobsearch_agent.application import ApplicationService
 from jobsearch_agent.cli import main
+from jobsearch_agent.models import ApplicationState, Job
+from jobsearch_agent.persistence import Database
 
 
 ROOT = Path(__file__).parents[1]
@@ -43,6 +46,48 @@ def test_submission_commands_are_exposed_without_adding_submit_to_dry_run(capsys
     assert "review" in application_help
     assert "authorize-submit" in application_help
     assert "submit" in application_help
+
+
+def test_cli_review_persists_snapshot_before_authorize(tmp_path, capsys):
+    db_path = tmp_path / "jobs.db"
+    db = Database(db_path)
+    job = Job(
+        id="job-cli-review",
+        source="greenhouse",
+        external_id="cli-review",
+        company="Acme",
+        title="Engineer",
+        description="Build software",
+    )
+    db.save_job(job, "greenhouse:cli-review", {})
+    application = ApplicationService(db).create_for_job(job.id)
+    service = ApplicationService(db)
+    service.transition(application.id, ApplicationState.PREPARING, "prepare")
+    service.transition(application.id, ApplicationState.MATERIALS_READY, "materials")
+    service.transition(application.id, ApplicationState.READY_TO_APPLY, "ready")
+    db.close()
+
+    review_result = main([
+        "application", "review", application.id,
+        "--provider", "greenhouse",
+        "--destination", "https://boards.greenhouse.io/acme/jobs/cli-review",
+        "--form-fingerprint", "form-v1",
+        "--resume-sha256", "resume-v1",
+        "--answers-fingerprint", "answers-v1",
+        "--db", str(db_path),
+    ])
+    assert review_result == 0
+    review_output = json.loads(capsys.readouterr().out)
+    intent_id = review_output["submission_intent"]["id"]
+    assert review_output["review_snapshot"]["destination"].endswith("/cli-review")
+
+    authorize_result = main([
+        "application", "authorize-submit", intent_id,
+        "--db", str(db_path),
+    ])
+    assert authorize_result == 0
+    authorize_output = json.loads(capsys.readouterr().out)
+    assert authorize_output["submission_intent"]["status"] == "AUTHORIZED"
 
 
 def test_dry_run_command_requires_explicit_local_snapshot(capsys):
