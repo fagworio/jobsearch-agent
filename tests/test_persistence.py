@@ -3,7 +3,7 @@ from pathlib import Path
 
 from jobsearch_agent.models import Job
 from jobsearch_agent.persistence import Database
-from jobsearch_agent.sources import JobSpyAdapter, canonical_job_key
+from jobsearch_agent.sources import JobSpyAdapter, canonical_job_key, identity_records
 from jobsearch_agent.serialization import canonical_json
 
 
@@ -78,3 +78,10 @@ def test_legacy_database_migrates_idempotently_without_merging_weak_matches(tmp_
     assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2]
     assert len(db.list_jobs()) == 2
     db.close()
+
+
+def test_identity_records_mark_url_and_source_as_strong_but_text_as_weak():
+    job = Job(id="job", source="greenhouse", external_id="123", company="Acme", title="Engineer", description="Build APIs", location="Remote", url="https://boards.greenhouse.io/acme/jobs/123")
+    records = identity_records(job)
+    assert {item.identity_type for item in records if item.strength == "strong"} == {"source_external_id", "canonical_url"}
+    assert {item.identity_type for item in records if item.strength == "weak"} == {"company_title_location", "description_fingerprint"}
