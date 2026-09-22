@@ -11,8 +11,8 @@ from .application import ApplicationDomainError
 from .config import Settings
 from .llm import LLMError
 from .models import to_dict
-from .persistence import Database
-from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, prepare_application, run, search
+from .persistence import ApplicationConflict, Database
+from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, prepare_application, resume_application, run, search
 from .profile import ProfileError, load_facts, load_profile, validate_facts
 from .sources import SourceError
 
@@ -82,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_prepare)
     application_prepare.add_argument("job_id")
     application_prepare.set_defaults(handler="application_prepare")
+    application_resume = application_sub.add_parser("resume", help="retoma uma Application após intervenção humana")
+    runtime_options(application_resume)
+    application_resume.add_argument("application_id")
+    application_resume.set_defaults(handler="application_resume")
     application_status = application_sub.add_parser("status", help="consulta uma Application")
     runtime_options(application_status)
     application_status.add_argument("application_id")
@@ -140,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "application_prepare":
             _print(prepare_application(settings, args.job_id, args.language))
             return 0
+        if args.handler == "application_resume":
+            _print(resume_application(settings, args.application_id))
+            return 0
         if args.handler == "run":
             payload = None if args.url else json.loads(args.json_file.read_text(encoding="utf-8"))
             _print(run(settings, payload, args.url or "", args.language))
@@ -161,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             return 0
-    except (ApplicationDomainError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (ApplicationConflict, ApplicationDomainError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
         _print({"error": str(exc), "type": type(exc).__name__})
         return 2
     return 2

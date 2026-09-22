@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Iterable
 
 from .llm import LLMError, LLMProvider, LLMRequest
-from .models import CareerProfile, FitCriterionResult, FitCriterionStatus, FitResult, Job, JobAnalysis, LanguageRequirement, LanguageResult, ResumeStrategy
+from .models import CareerProfile, FitCriterionResult, FitCriterionStatus, FitResult, Job, JobAnalysis, LanguageRequirement, LanguageResult, ResumeStrategy, WorkAuthorizationRequirement
 from .skills import SkillRegistry
 
 
@@ -110,6 +110,27 @@ def _extract_language_requirements(sentences: list[str]) -> list[LanguageRequire
     return requirements
 
 
+def _extract_work_authorization_requirement(description: str) -> WorkAuthorizationRequirement:
+    sentences = _sentences(description)
+    terms = ("authorized to work", "legally authorized", "work authorization", "work permit", "visa sponsorship", "patrocínio de visto", "autorização de trabalho", "autorizacao de trabalho")
+    sentence = next((item for item in sentences if any(term in item.lower() for term in terms)), "")
+    if not sentence:
+        return WorkAuthorizationRequirement()
+    lowered = sentence.lower()
+    countries: list[str] = []
+    country_aliases = {
+        "us": ("us", "u.s.", "united states", "estados unidos"),
+        "brazil": ("brazil", "brasil"),
+        "canada": ("canada",),
+        "uk": ("uk", "united kingdom", "reino unido"),
+    }
+    for country, aliases in country_aliases.items():
+        if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases):
+            countries.append(country)
+    sponsorship = "required" if "sponsor" in lowered or "patroc" in lowered else "unknown"
+    return WorkAuthorizationRequirement(True, countries, sponsorship, sentence, "deterministic")
+
+
 def analyze_requirements(job: Job, provider: LLMProvider | None = None) -> JobAnalysis:
     description = job.description or ""
     language = detect_language(f"{job.title} {description}")
@@ -132,6 +153,7 @@ def analyze_requirements(job: Job, provider: LLMProvider | None = None) -> JobAn
         language_requirements=_extract_language_requirements(sentences),
         location_requirements=[job.location] if job.location else [],
         work_authorization="unknown",
+        work_authorization_requirement=_extract_work_authorization_requirement(description),
         employment_type=job.employment_type,
         technologies=skills,
         responsibilities=sentences[:8],
@@ -267,6 +289,27 @@ def _location_fit(job: Job, profile: CareerProfile) -> tuple[float, bool]:
     return 0.5, False
 
 
+def _work_authorization_fit(analysis: JobAnalysis, profile: CareerProfile) -> tuple[float, str, FitCriterionResult]:
+    requirement = analysis.work_authorization_requirement
+    preferences = profile.candidate_preferences or profile.preferences
+    candidate_values = preferences.work_authorization if hasattr(preferences, "work_authorization") else preferences.get("work_authorization", [])
+    candidate_values = [str(value).lower() for value in candidate_values]
+    candidate_countries = set(candidate_values)
+    if any(value in candidate_countries for value in ("united states", "u.s.", "estados unidos", "us")):
+        candidate_countries.add("us")
+    if any(value in candidate_countries for value in ("brazil", "brasil")):
+        candidate_countries.add("brazil")
+    if any(value in candidate_countries for value in ("united kingdom", "reino unido", "uk")):
+        candidate_countries.add("uk")
+    if not requirement.required:
+        return 1.0, "", FitCriterionResult("work_authorization", candidate_values, "not required by job", FitCriterionStatus.UNKNOWN, 1.0, False, "The job has no explicit work authorization requirement.", "job_analysis")
+    if not candidate_values:
+        return 0.0, "work_authorization_unknown", FitCriterionResult("work_authorization", [], requirement.countries, FitCriterionStatus.UNKNOWN, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")
+    if not requirement.countries or candidate_countries.intersection(requirement.countries):
+        return 1.0, "", FitCriterionResult("work_authorization", candidate_values, requirement.countries, FitCriterionStatus.MATCH, 1.0, False, requirement.evidence, "job_analysis + candidate_preferences")
+    return 0.0, "work_authorization_mismatch", FitCriterionResult("work_authorization", candidate_values, requirement.countries, FitCriterionStatus.BLOCKER, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")
+
+
 def _ratio(found: Iterable[str], wanted: Iterable[str]) -> float:
     wanted_set = {item.lower() for item in wanted}
     return 1.0 if not wanted_set else len({item.lower() for item in found} & wanted_set) / len(wanted_set)
@@ -285,8 +328,9 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     language_match, language_blocker, language_criteria = _language_fit(analysis, profile)
     location_match, location_blocker = _location_fit(job, profile)
     blockers = []
-    if analysis.work_authorization == "unknown":
-        blockers.append("work_authorization_unknown")
+    work_authorization_match, work_authorization_blocker, work_authorization_criterion = _work_authorization_fit(analysis, profile)
+    if work_authorization_blocker:
+        blockers.append(work_authorization_blocker)
     if language_blocker:
         blockers.append("language_mismatch")
     if location_blocker:
@@ -320,11 +364,12 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
         for skill in preferred
     )
     criteria.extend(language_criteria)
+    criteria.append(work_authorization_criterion)
     location_result = FitCriterionStatus.BLOCKER if location_blocker else FitCriterionStatus.MATCH if location_match >= 1 else FitCriterionStatus.PARTIAL
     preferences = profile.candidate_preferences or profile.preferences
     criteria.append(FitCriterionResult("location", preferences, job.location or job.remote_type, location_result, location_match, location_blocker, f"Job location: {job.location or job.remote_type}", "job + candidate_preferences"))
     criteria.append(FitCriterionResult("experience", len(profile.experiences), analysis.years_of_experience or "experience", FitCriterionStatus.MATCH if experience_match else FitCriterionStatus.MISSING, experience_match, False, "Profile experience records", "career_profile"))
-    score = round(100 * (0.45 * required_match + 0.15 * preferred_match + 0.15 * experience_match + 0.15 * language_match + 0.10 * location_match), 2)
+    score = round(100 * (0.42 * required_match + 0.14 * preferred_match + 0.14 * experience_match + 0.15 * language_match + 0.05 * location_match + 0.10 * work_authorization_match), 2)
     explanation = [f"Required coverage: {required_match:.0%}.", f"Preferred coverage: {preferred_match:.0%}.", f"Language match: {language_match:.0%}.", f"Location match: {location_match:.0%}."]
     if missing_required:
         explanation.append("Missing required skills: " + ", ".join(missing_required))

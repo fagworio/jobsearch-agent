@@ -47,6 +47,15 @@ class FitCriterionStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+@domain_dataclass
+class WorkAuthorizationRequirement:
+    required: bool = False
+    countries: list[str] = field(default_factory=list)
+    sponsorship_available: str = "unknown"
+    evidence: str = ""
+    source: str = "deterministic"
+
+
 class ApplicationState(StrEnum):
     DRAFT = "DRAFT"
     PREPARING = "PREPARING"
@@ -165,6 +174,7 @@ class JobAnalysis:
     language_requirements: list[LanguageRequirement] = field(default_factory=list)
     location_requirements: list[str] = field(default_factory=list)
     work_authorization: str = "unknown"
+    work_authorization_requirement: WorkAuthorizationRequirement = field(default_factory=WorkAuthorizationRequirement)
     employment_type: str = "unknown"
     technologies: list[str] = field(default_factory=list)
     responsibilities: list[str] = field(default_factory=list)
@@ -275,12 +285,14 @@ class ApplicationAnswer:
     confidence: float = 0.0
     approved: bool = False
     legal: bool = False
+    semantic_type: str = "unknown"
 
 
 @domain_dataclass
 class ApplicationReadiness:
     decision: ApplicationState
-    ready: bool
+    ready_to_apply: bool
+    requires_review: bool = False
     checks: list[dict[str, Any]] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
 
@@ -307,9 +319,14 @@ class ApplicationField:
     key: str
     label: str
     field_type: str = "text"
+    semantic_type: str = "unknown"
     required: bool = False
+    options: list[str] = field(default_factory=list)
     value: str = ""
     answer: ApplicationAnswer | None = None
+    confidence: float = 0.0
+    source: str = "unknown"
+    step: str = ""
 
 
 @domain_dataclass
@@ -318,6 +335,7 @@ class ApplicationForm:
     provider: str = "generic"
     fields: list[ApplicationField] = field(default_factory=list)
     source: str = "fixture"
+    steps: list[str] = field(default_factory=list)
 
 
 @domain_dataclass

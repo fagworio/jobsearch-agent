@@ -13,6 +13,10 @@ from .serialization import canonical_json
 from .sources import JobIdentityCandidate, identity_records
 
 
+class ApplicationConflict(RuntimeError):
+    """Raised when another process changed an Application first."""
+
+
 def _migration_001_initial(connection: sqlite3.Connection) -> None:
     connection.execute(
         """CREATE TABLE IF NOT EXISTS jobs (
@@ -343,10 +347,15 @@ class Database:
     def save_application_transition(self, application: Application, event: ApplicationEvent) -> None:
         """Persist state and its audit event atomically."""
         with self.connection:
-            self.connection.execute(
-                """UPDATE applications SET state=?, context_json=?, updated_at=? WHERE id=?""",
-                (application.state.value, canonical_json(application.context), application.updated_at, application.id),
+            cursor = self.connection.execute(
+                """UPDATE applications SET state=?, context_json=?, updated_at=?
+                   WHERE id=? AND state=?""",
+                (application.state.value, canonical_json(application.context), application.updated_at, application.id, event.from_state.value),
             )
+            # The event carries the expected source state. Re-read it in the
+            # predicate so two workers cannot both win from the same state.
+            if cursor.rowcount != 1:
+                raise ApplicationConflict(f"application transition lost race: {application.id}")
             self.connection.execute(
                 """INSERT INTO application_events
                    (application_id, from_state, to_state, event, payload_json, created_at)

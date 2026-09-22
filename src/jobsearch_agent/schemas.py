@@ -71,6 +71,7 @@ try:
         language_requirements: list[dict[str, Any]] = Field(default_factory=list)
         location_requirements: list[str] = Field(default_factory=list)
         work_authorization: str = "unknown"
+        work_authorization_requirement: dict[str, Any] = Field(default_factory=dict)
         employment_type: str = "unknown"
         technologies: list[str] = Field(default_factory=list)
         responsibilities: list[str] = Field(default_factory=list)

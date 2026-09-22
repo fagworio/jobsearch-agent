@@ -168,7 +168,7 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
     try:
         service = ApplicationService(db)
         application = service.create_for_job(job_id)
-        if application.state in {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.REJECTED, ApplicationState.POLICY_BLOCKED}:
+        if application.state not in {ApplicationState.DRAFT, ApplicationState.PREPARING}:
             return {"application": to_dict(application), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
         if application.state == ApplicationState.DRAFT:
             application = service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
@@ -195,6 +195,15 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
         application.context["readiness"] = to_dict(readiness)
         db.save_application(application)
         return {"application": to_dict(application), "readiness": to_dict(readiness), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
+    finally:
+        db.close()
+
+
+def resume_application(settings: Settings, application_id: str) -> dict[str, Any]:
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        application = ApplicationService(db).resume(application_id)
+        return {"application": to_dict(application), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
     finally:
         db.close()
 

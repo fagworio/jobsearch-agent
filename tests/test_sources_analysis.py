@@ -108,3 +108,16 @@ def test_preferences_file_overrides_legacy_profile_preferences():
     job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Build software", location="Remote", remote_type="remote")
     analysis = analyze_requirements(job)
     assert calculate_fit(job, analysis, profile).location_match == 1.0
+
+
+def test_work_authorization_requirement_is_separate_from_candidate_answer():
+    job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Candidates must be legally authorized to work in the United States.")
+    analysis = analyze_requirements(job)
+    assert analysis.work_authorization_requirement.required is True
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    fit_without_answer = calculate_fit(job, analysis, profile)
+    assert "work_authorization_unknown" in fit_without_answer.blockers
+    profile.candidate_preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["United States"]})
+    fit_with_answer = calculate_fit(job, analysis, profile)
+    assert "work_authorization_unknown" not in fit_with_answer.blockers
+    assert "work_authorization_mismatch" not in fit_with_answer.blockers
