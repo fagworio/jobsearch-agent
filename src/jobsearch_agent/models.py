@@ -28,6 +28,25 @@ class JobState(StrEnum):
     NEEDS_HUMAN = "NEEDS_HUMAN"
 
 
+class IdentityStrength(StrEnum):
+    STRONG = "strong"
+    WEAK = "weak"
+
+
+class DuplicateStatus(StrEnum):
+    PENDING = "pending"
+    CONFIRMED_DUPLICATE = "confirmed_duplicate"
+    CONFIRMED_DISTINCT = "confirmed_distinct"
+
+
+class FitCriterionStatus(StrEnum):
+    MATCH = "match"
+    PARTIAL = "partial"
+    MISSING = "missing"
+    BLOCKER = "blocker"
+    UNKNOWN = "unknown"
+
+
 @domain_dataclass
 class Job:
     id: str
@@ -80,6 +99,8 @@ class CareerProfile:
     skills: dict[str, dict[str, Any]]
     languages: dict[str, dict[str, Any]]
     preferences: dict[str, Any] = field(default_factory=dict)
+    candidate_preferences: "CandidatePreferences | None" = None
+    summary_fact_ids: dict[str, list[str]] = field(default_factory=dict)
     demo: bool = False
     version: str = "1"
 
@@ -94,13 +115,39 @@ class LanguageResult:
 
 
 @domain_dataclass
+class LanguageRequirement:
+    language: str
+    minimum_level: str = "intermediate"
+    required: bool = True
+    evidence: str = ""
+    source: str = "deterministic"
+
+
+@domain_dataclass
+class CandidatePreferences:
+    remote: bool = False
+    allowed_locations: list[str] = field(default_factory=list)
+    allowed_countries: list[str] = field(default_factory=list)
+    relocation: bool = False
+    minimum_salary: str = ""
+    currency: str = ""
+    employment_types: list[str] = field(default_factory=list)
+    work_authorization: list[str] = field(default_factory=list)
+    timezones: list[str] = field(default_factory=list)
+    max_applications_per_day: int | None = None
+    resume_template: str = "ats"
+    max_pages: int = 2
+    autonomy: dict[str, str] = field(default_factory=dict)
+
+
+@domain_dataclass
 class JobAnalysis:
     language: LanguageResult
     required_skills: list[str] = field(default_factory=list)
     preferred_skills: list[str] = field(default_factory=list)
     years_of_experience: str = ""
     education: list[str] = field(default_factory=list)
-    language_requirements: list[str] = field(default_factory=list)
+    language_requirements: list[LanguageRequirement] = field(default_factory=list)
     location_requirements: list[str] = field(default_factory=list)
     work_authorization: str = "unknown"
     employment_type: str = "unknown"
@@ -125,6 +172,19 @@ class FitResult:
     missing_preferred: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
     explanation: list[str] = field(default_factory=list)
+    criteria: list["FitCriterionResult"] = field(default_factory=list)
+
+
+@domain_dataclass
+class FitCriterionResult:
+    criterion: str
+    candidate_value: Any = ""
+    requirement: Any = ""
+    result: FitCriterionStatus = FitCriterionStatus.UNKNOWN
+    score: float = 0.0
+    blocker: bool = False
+    evidence: str = ""
+    source: str = ""
 
 
 @domain_dataclass

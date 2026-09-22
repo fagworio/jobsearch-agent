@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +28,14 @@ from .schemas import validate_external_job
 
 class SourceError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class JobIdentityCandidate:
+    identity_type: str
+    identity_value: str
+    strength: str
+    source: str
 
 
 class SourceAdapter(Protocol):
@@ -259,12 +268,33 @@ def _normalized_text(value: str) -> str:
 
 
 def identity_candidates(job: Job) -> list[str]:
-    """Identidades em camadas: source, URL, texto e hash da descrição."""
+    """Return stable identity values, retaining the historical API."""
+    return [candidate.identity_value for candidate in identity_records(job)]
+
+
+def identity_records(job: Job) -> list[JobIdentityCandidate]:
+    """Build namespaced strong identities and non-merging weak signals.
+
+    Strong identities are safe for automatic consolidation. Weak identities are
+    deliberately persisted only as duplicate signals and never select an
+    existing job during ingestion.
+    """
     raw = job.raw_payload or {}
     platform = _text(raw.get("site") or raw.get("source_platform") or raw.get("job_source"))
-    source_key = f"source:{job.source}:{platform + ':' if platform else ''}{job.external_id}" if job.external_id else ""
+    namespace = f"{job.source}:{platform}" if platform else job.source
+    records: list[JobIdentityCandidate] = []
+    if job.external_id:
+        records.append(JobIdentityCandidate("source_external_id", f"source:{namespace}:{job.external_id}", "strong", job.source))
+    requisition_id = _text(raw.get("requisition_id") or raw.get("requisitionId"))
+    if requisition_id and requisition_id != job.external_id:
+        records.append(JobIdentityCandidate("requisition_id", f"requisition:{namespace}:{requisition_id}", "strong", job.source))
     url = _canonical_url(job.url or _text(raw.get("job_url") or raw.get("hostedUrl") or raw.get("jobUrl")))
+    if url:
+        records.append(JobIdentityCandidate("canonical_url", f"url:{url}", "strong", job.source))
     text_key = _normalized_text(f"{job.company}|{job.title}|{job.location}")
     description_key = hashlib.sha256(_normalized_text(job.description).encode("utf-8")).hexdigest()
-    candidates = [item for item in (source_key, f"url:{url}" if url else "", f"text:{text_key}" if text_key.strip("|") else "", f"description:{description_key}" if job.description else "") if item]
-    return candidates or [f"generated:{job.id}"]
+    if text_key.strip("|"):
+        records.append(JobIdentityCandidate("company_title_location", f"text:{text_key}", "weak", job.source))
+    if job.description:
+        records.append(JobIdentityCandidate("description_fingerprint", f"description:{description_key}", "weak", job.source))
+    return records or [JobIdentityCandidate("generated", f"generated:{job.id}", "weak", job.source)]
