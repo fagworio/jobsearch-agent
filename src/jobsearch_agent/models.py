@@ -47,6 +47,21 @@ class FitCriterionStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ApplicationState(StrEnum):
+    DRAFT = "DRAFT"
+    PREPARING = "PREPARING"
+    MATERIALS_READY = "MATERIALS_READY"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
+    READY_TO_APPLY = "READY_TO_APPLY"
+    NEEDS_ANSWER = "NEEDS_ANSWER"
+    NEEDS_LOGIN = "NEEDS_LOGIN"
+    NEEDS_MFA = "NEEDS_MFA"
+    NEEDS_CAPTCHA = "NEEDS_CAPTCHA"
+    UNSUPPORTED_FORM = "UNSUPPORTED_FORM"
+    POLICY_BLOCKED = "POLICY_BLOCKED"
+    REJECTED = "REJECTED"
+
+
 @domain_dataclass
 class Job:
     id: str
@@ -228,6 +243,93 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@domain_dataclass
+class Application:
+    id: str
+    job_id: str
+    state: ApplicationState = ApplicationState.DRAFT
+    context: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+
+@domain_dataclass
+class ApplicationEvent:
+    application_id: str
+    from_state: ApplicationState
+    to_state: ApplicationState
+    event: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=now_iso)
+
+
+@domain_dataclass
+class ApplicationAnswer:
+    question_key: str
+    question: str
+    answer: str = ""
+    supported_by: list[str] = field(default_factory=list)
+    source: str = "unknown"
+    confidence: float = 0.0
+    approved: bool = False
+    legal: bool = False
+
+
+@domain_dataclass
+class ApplicationReadiness:
+    decision: ApplicationState
+    ready: bool
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+
+
+@domain_dataclass
+class ApplicationPolicy:
+    autonomy: dict[str, str] = field(default_factory=lambda: {
+        "search": "auto",
+        "analyze": "auto",
+        "generate_resume": "auto",
+        "answer_known_questions": "auto",
+        "fill_forms": "review",
+        "submit": "manual",
+    })
+    applications_per_day: int = 20
+    unknown_answer: str = "stop"
+    captcha: str = "stop"
+    mfa: str = "stop"
+    legal_question: str = "stop"
+
+
+@domain_dataclass
+class ApplicationField:
+    key: str
+    label: str
+    field_type: str = "text"
+    required: bool = False
+    value: str = ""
+    answer: ApplicationAnswer | None = None
+
+
+@domain_dataclass
+class ApplicationForm:
+    form_id: str
+    provider: str = "generic"
+    fields: list[ApplicationField] = field(default_factory=list)
+    source: str = "fixture"
+
+
+@domain_dataclass
+class ApplicationContext:
+    application_id: str
+    job_id: str
+    fit: dict[str, Any] = field(default_factory=dict)
+    resume: dict[str, Any] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    answers: list[ApplicationAnswer] = field(default_factory=list)
+    form: ApplicationForm | None = None
+    policy: ApplicationPolicy = field(default_factory=ApplicationPolicy)
 
 
 def to_dict(value: Any) -> Any:

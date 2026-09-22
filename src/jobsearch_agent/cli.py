@@ -7,11 +7,12 @@ import json
 import sys
 from pathlib import Path
 
+from .application import ApplicationDomainError
 from .config import Settings
 from .llm import LLMError
 from .models import to_dict
 from .persistence import Database
-from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, run, search
+from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, prepare_application, run, search
 from .profile import ProfileError, load_facts, load_profile, validate_facts
 from .sources import SourceError
 
@@ -26,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--facts", default="profile/locked_facts.yaml")
     parser.add_argument("--real-profile", action="store_true", help="recusa fixtures demo")
     parser.add_argument("--preferences", default="profile/preferences.yaml")
+    parser.add_argument("--answers", default="profile/answers.yaml")
+    parser.add_argument("--application-policy", default="profile/application_policy.yaml")
     parser.add_argument("--language", choices=["pt-BR", "en-US"], default=None)
     sub = parser.add_subparsers(dest="command")
 
@@ -37,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--profile", default=argparse.SUPPRESS)
         command.add_argument("--facts", default=argparse.SUPPRESS)
         command.add_argument("--preferences", default=argparse.SUPPRESS)
+        command.add_argument("--answers", default=argparse.SUPPRESS)
+        command.add_argument("--application-policy", default=argparse.SUPPRESS)
         command.add_argument("--real-profile", action="store_true", default=argparse.SUPPRESS)
         command.add_argument("--language", choices=["pt-BR", "en-US"], default=argparse.SUPPRESS)
 
@@ -71,6 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("job_id")
     prepare_parser.set_defaults(handler="prepare")
 
+    application = sub.add_parser("application", help="prepara e consulta uma candidatura sem submissão")
+    application_sub = application.add_subparsers(dest="application_command")
+    application_prepare = application_sub.add_parser("prepare", help="cria ou retoma uma Application")
+    runtime_options(application_prepare)
+    application_prepare.add_argument("job_id")
+    application_prepare.set_defaults(handler="application_prepare")
+    application_status = application_sub.add_parser("status", help="consulta uma Application")
+    runtime_options(application_status)
+    application_status.add_argument("application_id")
+    application_status.set_defaults(handler="application_status")
+
     run_parser = sub.add_parser("run", help="executa ingestão, análise e geração")
     runtime_options(run_parser)
     run_group = run_parser.add_mutually_exclusive_group(required=True)
@@ -85,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _settings(args: argparse.Namespace) -> Settings:
-    return Settings.from_args(args.root, db=args.db, artifacts=args.artifacts, profile=args.profile, facts=args.facts, preferences=args.preferences, real_profile=args.real_profile)
+    return Settings.from_args(args.root, db=args.db, artifacts=args.artifacts, profile=args.profile, facts=args.facts, preferences=args.preferences, answers=args.answers, application_policy=args.application_policy, real_profile=args.real_profile)
 
 
 def _print(value: object) -> None:
@@ -121,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "prepare":
             _print(prepare(settings, args.job_id, args.language))
             return 0
+        if args.handler == "application_prepare":
+            _print(prepare_application(settings, args.job_id, args.language))
+            return 0
         if args.handler == "run":
             payload = None if args.url else json.loads(args.json_file.read_text(encoding="utf-8"))
             _print(run(settings, payload, args.url or "", args.language))
@@ -132,7 +151,17 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             return 0
-    except (ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
+        if args.handler == "application_status":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                application = db.get_application(args.application_id)
+                if not application:
+                    raise ApplicationDomainError(f"application not found: {args.application_id}")
+                _print({"application": application, "events": db.list_application_events(application.id), "answers": db.list_application_answers(application.id), "form": db.get_application_form(application.id)})
+            finally:
+                db.close()
+            return 0
+    except (ApplicationDomainError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
         _print({"error": str(exc), "type": type(exc).__name__})
         return 2
     return 2

@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
+from .application import ApplicationService, evaluate_safety_gate, load_application_policy
 from .config import Settings
 from .llm import OpenAICompatibleProvider
-from .models import JobState, now_iso, to_dict
+from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
 from .observability import append_event
 from .persistence import Database
 from .profile import load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts
+from .qa import AnswerKnowledgeBase, load_answers
 from .resume import generate_resume, render_docx, render_pdf_from_docx, render_text, select_fact_ids, validate_ats, validate_facts as validate_resume_facts
 from .schemas import validate_contract
 from .serialization import canonical_json
@@ -155,6 +157,44 @@ def prepare(settings: Settings, job_id: str, language_override: str | None = Non
             db.record_event(job.id, "resume_rewrite_fallback", fallback, now_iso())
         append_event(settings.root, "resume_prepared", job_id=job.id, valid=report["valid"], state=job.state.value)
         return {"job_id": job.id, "fit": to_dict(fit), "strategy": to_dict(strategy), "resume": to_dict(resume), "validation": report, "artifacts": str(artifact_dir), "pdf_error": pdf_error}
+    finally:
+        db.close()
+
+
+def prepare_application(settings: Settings, job_id: str, language_override: str | None = None) -> dict[str, Any]:
+    """Create/resume an Application without opening a browser or submitting."""
+    prepared = prepare(settings, job_id, language_override)
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        service = ApplicationService(db)
+        application = service.create_for_job(job_id)
+        if application.state in {ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.REJECTED, ApplicationState.POLICY_BLOCKED}:
+            return {"application": to_dict(application), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
+        if application.state == ApplicationState.DRAFT:
+            application = service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
+        policy = load_application_policy(settings.resolve(settings.application_policy_path))
+        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+        context = ApplicationContext(
+            application_id=application.id,
+            job_id=job_id,
+            fit=prepared["fit"],
+            resume=prepared["resume"],
+            validation=prepared["validation"],
+            answers=[],
+            form=None,
+            policy=policy,
+        )
+        # Loading the KB here intentionally does not infer missing questions;
+        # form fields are populated only by a future ATS adapter.
+        _ = answers
+        application.context = to_dict(context)
+        db.save_application(application)
+        service.transition(application.id, ApplicationState.MATERIALS_READY, "materials_ready", {"resume_valid": bool(prepared["validation"].get("valid"))})
+        readiness = evaluate_safety_gate(context)
+        application = service.transition(application.id, readiness.decision, "safety_gate_evaluated", {"decision": readiness.decision.value, "blockers": readiness.blockers})
+        application.context["readiness"] = to_dict(readiness)
+        db.save_application(application)
+        return {"application": to_dict(application), "readiness": to_dict(readiness), "events": [to_dict(event) for event in db.list_application_events(application.id)]}
     finally:
         db.close()
 

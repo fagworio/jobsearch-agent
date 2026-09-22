@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .models import Job, JobState, now_iso
+from .models import Application, ApplicationEvent, ApplicationState, Job, JobState, now_iso
 from .serialization import canonical_json
 from .sources import JobIdentityCandidate, identity_records
 
@@ -163,9 +163,51 @@ def _migration_002_identities(connection: sqlite3.Connection) -> None:
                 _record_possible_duplicate(connection, job_id, candidate_job_id, f"weak_identity:{identity_type}", {"identity_type": identity_type, "identity_value": identity_value})
 
 
+def _migration_003_applications(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS applications (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jobs(id),
+            state TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_application_job ON applications(job_id)")
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS application_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL,
+            event TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS application_answers (
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            question_key TEXT NOT NULL,
+            answer_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(application_id, question_key)
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS application_forms (
+            application_id TEXT PRIMARY KEY REFERENCES applications(id),
+            form_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial", _migration_001_initial),
     (2, "namespaced_identities_and_duplicate_candidates", _migration_002_identities),
+    (3, "application_domain_and_events", _migration_003_applications),
 )
 
 
@@ -258,6 +300,93 @@ class Database:
     def list_duplicate_candidates(self, status: str = "pending") -> list[dict[str, Any]]:
         rows = self.connection.execute("SELECT * FROM duplicate_candidates WHERE status=? ORDER BY created_at", (status,)).fetchall()
         return [dict(row) for row in rows]
+
+    def save_application(self, application: Application) -> None:
+        payload = canonical_json(application.context)
+        self.connection.execute(
+            """INSERT INTO applications(id, job_id, state, context_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 state=excluded.state,
+                 context_json=excluded.context_json,
+                 updated_at=excluded.updated_at""",
+            (application.id, application.job_id, application.state.value, payload, application.created_at, application.updated_at),
+        )
+        self.connection.commit()
+
+    def get_application(self, application_id: str) -> Application | None:
+        row = self.connection.execute("SELECT * FROM applications WHERE id=?", (application_id,)).fetchone()
+        if not row:
+            return None
+        return Application(
+            id=str(row["id"]),
+            job_id=str(row["job_id"]),
+            state=ApplicationState(row["state"]),
+            context=json.loads(row["context_json"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def get_application_for_job(self, job_id: str) -> Application | None:
+        row = self.connection.execute("SELECT id FROM applications WHERE job_id=?", (job_id,)).fetchone()
+        return self.get_application(str(row[0])) if row else None
+
+    def record_application_event(self, event: ApplicationEvent) -> None:
+        self.connection.execute(
+            """INSERT INTO application_events
+               (application_id, from_state, to_state, event, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
+        )
+        self.connection.commit()
+
+    def save_application_transition(self, application: Application, event: ApplicationEvent) -> None:
+        """Persist state and its audit event atomically."""
+        with self.connection:
+            self.connection.execute(
+                """UPDATE applications SET state=?, context_json=?, updated_at=? WHERE id=?""",
+                (application.state.value, canonical_json(application.context), application.updated_at, application.id),
+            )
+            self.connection.execute(
+                """INSERT INTO application_events
+                   (application_id, from_state, to_state, event, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
+            )
+
+    def list_application_events(self, application_id: str) -> list[ApplicationEvent]:
+        rows = self.connection.execute("SELECT * FROM application_events WHERE application_id=? ORDER BY id", (application_id,)).fetchall()
+        return [ApplicationEvent(str(row["application_id"]), ApplicationState(row["from_state"]), ApplicationState(row["to_state"]), str(row["event"]), json.loads(row["payload_json"]), str(row["created_at"])) for row in rows]
+
+    def save_application_answer(self, application_id: str, answer: Any) -> None:
+        self.connection.execute(
+            """INSERT INTO application_answers(application_id, question_key, answer_json, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(application_id, question_key) DO UPDATE SET
+                 answer_json=excluded.answer_json,
+                 updated_at=excluded.updated_at""",
+            (application_id, answer.question_key, canonical_json(answer), now_iso()),
+        )
+        self.connection.commit()
+
+    def list_application_answers(self, application_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute("SELECT answer_json FROM application_answers WHERE application_id=? ORDER BY question_key", (application_id,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def save_application_form(self, application_id: str, form: Any) -> None:
+        self.connection.execute(
+            """INSERT INTO application_forms(application_id, form_json, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(application_id) DO UPDATE SET
+                 form_json=excluded.form_json,
+                 updated_at=excluded.updated_at""",
+            (application_id, canonical_json(form), now_iso()),
+        )
+        self.connection.commit()
+
+    def get_application_form(self, application_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT form_json FROM application_forms WHERE application_id=?", (application_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}
