@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
-from .models import CandidatePreferences, CareerProfile, Experience, Fact
-from .schemas import FactSchema, ProfileSchema
+from .models import CandidatePreferences, CareerProfile, Experience, Fact, ProfileReadiness
+from .schemas import CandidatePreferencesSchema, FactSchema, ProfileSchema
 
 
 class ProfileError(ValueError):
@@ -55,7 +55,7 @@ def load_profile(path: str | Path) -> CareerProfile:
             )
         )
     profile = CareerProfile(
-        identity={str(k): str(v) for k, v in identity.items()},
+        identity={str(k): str(v) for k, v in identity.items() if v is not None},
         professional_summary=summary_text,
         summary_fact_ids=summary_fact_ids,
         experiences=experiences,
@@ -75,6 +75,7 @@ def load_preferences(path: str | Path, legacy: dict[str, Any] | None = None) -> 
     source = Path(path)
     raw = yaml.safe_load(source.read_text(encoding="utf-8")) if source.exists() else {}
     data = _mapping(raw or {}, "preferences")
+    CandidatePreferencesSchema.model_validate(data)
     legacy_data = dict(legacy or {})
     merged: dict[str, Any] = dict(legacy_data)
     merged.update(data)
@@ -100,6 +101,7 @@ def load_preferences(path: str | Path, legacy: dict[str, Any] | None = None) -> 
         employment_types=[str(item) for item in preference_value("employment_types", {}, []) if item],
         work_authorization=[str(item) for item in preference_value("work_authorization", {}, []) if item],
         requires_sponsorship=str(preference_value("requires_sponsorship", {}, "unknown")),
+        timezone=str(preference_value("timezone", {}, "") or ""),
         timezones=[str(item) for item in preference_value("timezones", {}, []) if item],
         max_applications_per_day=int(preference_value("max_applications_per_day", limits)) if preference_value("max_applications_per_day", limits) is not None else None,
         resume_template=str(preference_value("resume_template", resume, "ats")),
@@ -138,6 +140,49 @@ def validate_profile(profile: CareerProfile) -> None:
             raise ProfileError("each experience requires id and role")
     if profile.demo and not profile.identity.get("name"):
         raise ProfileError("demo profile still requires an identity name")
+
+
+PROFILE_REQUIRED_PATHS = (
+    "identity.first_name",
+    "identity.last_name",
+    "identity.email",
+)
+
+PROFILE_OPTIONAL_PATHS = (
+    "identity.phone",
+    "identity.linkedin",
+    "identity.github",
+    "preferences.timezone",
+)
+
+
+def validate_profile_readiness(
+    profile: CareerProfile,
+    preferences: CandidatePreferences | None = None,
+    required_paths: tuple[str, ...] = PROFILE_REQUIRED_PATHS,
+    optional_paths: tuple[str, ...] = PROFILE_OPTIONAL_PATHS,
+) -> ProfileReadiness:
+    """Check explicit candidate data needed before a real application dry-run.
+
+    Profile fields stay optional at storage boundaries; readiness applies the
+    stricter use-time contract without deriving values from adjacent fields.
+    """
+    preferences = preferences or profile.candidate_preferences
+    def is_missing(path: str) -> bool:
+        section, _, key = path.partition(".")
+        if section == "identity":
+            value: Any = profile.identity.get(key, "")
+        elif section == "preferences" and key == "timezone":
+            value = getattr(preferences, "timezone", "") if preferences else ""
+            if not value and preferences and len(preferences.timezones) == 1:
+                value = preferences.timezones[0]
+        else:
+            raise ProfileError(f"unsupported profile readiness path: {path}")
+        return value is None or (isinstance(value, str) and not value.strip()) or value == []
+
+    blockers = [path for path in required_paths if is_missing(path)]
+    missing_optional = [path for path in optional_paths if is_missing(path)]
+    return ProfileReadiness(not blockers, blockers, missing_optional)
 
 
 def validate_facts(profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:

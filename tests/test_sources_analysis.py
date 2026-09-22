@@ -123,6 +123,37 @@ def test_work_authorization_requirement_is_separate_from_candidate_answer():
     assert "work_authorization_mismatch" not in fit_with_answer.blockers
 
 
+def test_canada_authorization_mismatch_and_unavailable_sponsorship_block_fit():
+    job = Job(
+        id="canada-job",
+        source="fixture",
+        external_id="canada-1",
+        company="Example",
+        title="Engineer",
+        description=(
+            "Candidates must be legally authorized to work in Canada. "
+            "We do not offer visa sponsorship."
+        ),
+    )
+    analysis = analyze_requirements(job)
+    assert analysis.work_authorization_requirement.countries == ["canada"]
+    assert analysis.work_authorization_requirement.sponsorship_available == "not_available"
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    profile.candidate_preferences = load_preferences(
+        ROOT / "profile/preferences.yaml",
+        {"work_authorization": ["Brazil"], "requires_sponsorship": "no"},
+    )
+    mismatch = calculate_fit(job, analysis, profile)
+    assert "work_authorization_mismatch" in mismatch.blockers
+
+    profile.candidate_preferences = load_preferences(
+        ROOT / "profile/preferences.yaml",
+        {"work_authorization": ["Canada"], "requires_sponsorship": "yes"},
+    )
+    sponsorship_blocker = calculate_fit(job, analysis, profile)
+    assert "sponsorship_unavailable" in sponsorship_blocker.blockers
+
+
 def test_sponsorship_availability_is_separate_from_candidate_need():
     job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Candidates must be legally authorized to work in the United States. We do not offer visa sponsorship.")
     analysis = analyze_requirements(job)

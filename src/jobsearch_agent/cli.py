@@ -12,9 +12,9 @@ from .config import Settings
 from .llm import LLMError
 from .models import to_dict
 from .persistence import ApplicationConflict, Database
-from .pipeline import PipelineError, analyze, ingest, ingest_url, prepare, prepare_application, resume_application, run, search
+from .pipeline import PipelineError, analyze, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
 from .preflight import run_preflight
-from .profile import ProfileError, load_facts, load_profile, validate_facts
+from .profile import ProfileError, load_facts, load_preferences, load_profile, validate_facts, validate_profile_readiness
 from .sources import SourceError
 
 
@@ -51,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     profile_validate = profile_sub.add_parser("validate")
     runtime_options(profile_validate)
     profile_validate.set_defaults(handler="profile_validate")
+    profile_readiness = profile_sub.add_parser("readiness", help="avalia completude para dry-run real")
+    runtime_options(profile_readiness)
+    profile_readiness.set_defaults(handler="profile_readiness")
 
     ingest_parser = sub.add_parser("ingest", help="ingere uma vaga")
     runtime_options(ingest_parser)
@@ -104,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--url", required=True)
     preflight_parser.set_defaults(handler="preflight")
 
+    precheck_parser = sub.add_parser("precheck", help="avalia fit e perfil antes de iniciar o browser")
+    runtime_options(precheck_parser)
+    precheck_parser.add_argument("job_id", help="ID de uma vaga já ingerida")
+    precheck_parser.set_defaults(handler="precheck")
+
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
     status.set_defaults(handler="status")
@@ -134,6 +142,26 @@ def main(argv: list[str] | None = None) -> int:
                 errors.append("demo profile cannot be used with --real-profile")
             _print({"valid": not errors, "profile": to_dict(profile), "facts": len(facts), "errors": errors})
             return 0 if not errors else 2
+        if args.handler == "profile_readiness":
+            profile = load_profile(settings.resolve(settings.profile_path))
+            facts = load_facts(settings.resolve(settings.facts_path))
+            preferences = load_preferences(settings.resolve(settings.preferences_path), profile.preferences)
+            profile.candidate_preferences = preferences
+            fact_errors = validate_facts(profile, facts)
+            readiness = validate_profile_readiness(profile, preferences)
+            blockers = list(readiness.blockers)
+            if fact_errors:
+                blockers.append("invalid_locked_facts")
+            ready = readiness.ready and not fact_errors
+            _print({
+                "ready": ready,
+                "profile_kind": "demo" if profile.demo else "candidate",
+                "public_dry_run_allowed": ready and not profile.demo,
+                "missing_required": blockers,
+                "missing_optional": readiness.missing_optional,
+                "fact_errors": fact_errors,
+            })
+            return 0 if ready else 2
         if args.handler == "ingest":
             result = ingest_url(settings, args.url) if args.url else ingest(settings, json.loads(args.json_file.read_text(encoding="utf-8")), "")
             _print(result)
@@ -144,6 +172,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "analyze":
             _print(analyze(settings, args.job_id, args.language))
             return 0
+        if args.handler == "precheck":
+            result = precheck_job(settings, args.job_id)
+            _print(result)
+            return 0 if result["ready_for_dry_run"] else 2
         if args.handler == "prepare":
             _print(prepare(settings, args.job_id, args.language))
             return 0

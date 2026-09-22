@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
@@ -13,7 +14,7 @@ from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
 from .observability import append_event
 from .persistence import Database
-from .profile import load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts
+from .profile import PROFILE_OPTIONAL_PATHS, PROFILE_REQUIRED_PATHS, load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts, validate_profile_readiness
 from .qa import AnswerKnowledgeBase, load_answers
 from .resume import generate_resume, render_docx, render_pdf_from_docx, render_text, select_fact_ids, validate_ats, validate_facts as validate_resume_facts
 from .schemas import validate_contract
@@ -105,6 +106,91 @@ def analyze(settings: Settings, job_id: str, language_override: str | None = Non
         return {"job": to_dict(job), "analysis": to_dict(analysis), "fit": to_dict(fit)}
     finally:
         db.close()
+
+
+def precheck_job(settings: Settings, job_id: str) -> dict[str, Any]:
+    """Assess job fit and candidate readiness without persisting or opening a browser."""
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        job = db.get_job(job_id)
+    finally:
+        db.close()
+    if not job:
+        raise PipelineError(f"job not found: {job_id}")
+    profile, _facts = _load_profile_data(settings)
+    preferences = profile.candidate_preferences
+    analysis = analyze_requirements(job, provider_for(settings))
+    fit = calculate_fit(job, analysis, profile)
+    description = job.description or ""
+    optional_requirements = _explicitly_required_profile_paths(description)
+    required_paths = tuple(dict.fromkeys((*PROFILE_REQUIRED_PATHS, *optional_requirements)))
+    optional_paths = tuple(path for path in PROFILE_OPTIONAL_PATHS if path not in optional_requirements)
+    readiness = validate_profile_readiness(profile, preferences, required_paths, optional_paths)
+    authorization_unknown = "work_authorization_unknown" in fit.blockers
+    fit_blockers = [item for item in fit.blockers if item != "work_authorization_unknown"]
+    fit_status = "UNKNOWN" if authorization_unknown and not fit_blockers else "BLOCKED" if fit_blockers else "MATCH"
+    profile_blockers = list(readiness.blockers)
+    if authorization_unknown:
+        countries = analysis.work_authorization_requirement.countries or ["unspecified"]
+        profile_blockers.extend(
+            f"work_authorization:{country.title() if country != 'unspecified' else country}"
+            for country in countries
+        )
+    policy_blockers = ["demo_profile"] if profile.demo else []
+    ready_for_dry_run = not fit_blockers and not profile_blockers and not policy_blockers
+    decision = (
+        "DEMO_PROFILE_BLOCKED"
+        if policy_blockers
+        else "BLOCKED_FIT"
+        if fit_blockers
+        else "NEEDS_PROFILE_DATA"
+        if profile_blockers
+        else "READY"
+    )
+    return {
+        "decision": decision,
+        "ready_for_dry_run": ready_for_dry_run,
+        "browser_started": False,
+        "job": {
+            "id": job.id,
+            "company": job.company,
+            "title": job.title,
+        },
+        "fit": {"status": fit_status, "blockers": fit_blockers, "score": fit.score},
+        "profile": {
+            "status": "NEEDS_DATA" if profile_blockers else "READY",
+            "missing_required": profile_blockers,
+            "missing_optional": readiness.missing_optional,
+        },
+        "policy": {
+            "status": "BLOCKED" if policy_blockers else "PASS",
+            "blockers": ["DEMO_PROFILE_BLOCKED"] if policy_blockers else [],
+            "message": "Demo profile cannot be used for public dry-run fill." if policy_blockers else "",
+        },
+        "work_authorization_requirement": to_dict(analysis.work_authorization_requirement),
+    }
+
+
+def _explicitly_required_profile_paths(description: str) -> list[str]:
+    """Promote optional profile data only when the posting explicitly requires it."""
+    fields = {
+        "phone": r"phone|telephone",
+        "linkedin": r"linkedin",
+        "github": r"github",
+        "timezone": r"time[ -]?zone|timezone",
+        "country": r"country of residence|country",
+    }
+    requirement = r"required|mandatory|must provide|must include|must submit|is needed"
+    paths: list[str] = []
+    for key, term in fields.items():
+        patterns = (
+            rf"\b(?:{requirement})\b.{{0,60}}\b(?:{term})\b",
+            rf"\b(?:{term})\b.{{0,60}}\b(?:{requirement})\b",
+        )
+        if any(re.search(pattern, description, re.IGNORECASE | re.DOTALL) for pattern in patterns):
+            path = f"preferences.timezone" if key == "timezone" else f"identity.{key}"
+            paths.append(path)
+    return paths
 
 
 def prepare(settings: Settings, job_id: str, language_override: str | None = None) -> dict[str, Any]:

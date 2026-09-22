@@ -20,6 +20,7 @@ dependências opcionais instaladas; a instalação de produção deve usar o amb
 ```bash
 PYTHONPATH=src python3 -m jobsearch_agent.cli --help
 PYTHONPATH=src python3 -m jobsearch_agent.cli profile validate --profile profile/career_profile.yaml --facts profile/locked_facts.yaml
+PYTHONPATH=src python3 -m jobsearch_agent.cli profile readiness
 PYTHONPATH=src python3 -m jobsearch_agent.cli run --json-file tests/fixtures/jobs/greenhouse.json --profile profile/career_profile.yaml --facts profile/locked_facts.yaml --db data/jobsearch.db --artifacts data/applications
 
 # cria/retoma a candidatura persistida, sem browser e sem submit
@@ -35,7 +36,19 @@ jobsearch-agent run --url https://boards.greenhouse.io/example/jobs/123
 
 # preflight público somente leitura: não preenche e não submete
 jobsearch-agent preflight --url https://boards.greenhouse.io/example/jobs/123
+
+# após ingestão, verifica fit e prontidão do perfil; não abre browser
+jobsearch-agent precheck <job-id>
 ```
+
+`profile readiness` separa dados essenciais ausentes (`missing_required`) de dados opcionais ausentes
+(`missing_optional`), sem imprimir valores pessoais. O perfil demo pode ser usado para análise e
+geração, mas a política bloqueia seu uso em public dry-run fill. `precheck <job-id>` mantém Fit,
+Profile e Policy separados; dados opcionais só viram necessários quando o anúncio os exigir
+explicitamente. `BLOCKED_FIT`, `NEEDS_PROFILE_DATA` ou `DEMO_PROFILE_BLOCKED` impede iniciar o dry-run;
+`READY` indica que os gates passaram.
+País, nome preferido e fuso horário precisam ser informados explicitamente: não são derivados de
+localização ou nome.
 
 Com o grupo opcional de discovery instalado:
 
@@ -107,6 +120,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   o agente não divide automaticamente um nome composto. Quando configurados, seus
   `identity_fact_ids` também entram na proveniência da resposta. Campos de localização atual e
   localização preferida para relocação possuem semânticas distintas.
+- Country, preferred first name, timezone, telefone, LinkedIn e GitHub são resolvidos somente a
+  partir de atributos explícitos. Preferências de timezone aceitam um valor explícito `timezone`
+  ou uma única entrada em `timezones`; readiness não infere timezone a partir da cidade.
 - O `DryRunApplicationOrchestrator` executa o ciclo bounded `inspect → resolve → Safety Gate →
   plan → fill`. Quando o DOM muda, ele re-inspeciona o formulário, resolve novamente as respostas
   e gera um novo plano; fingerprints repetidos e excesso de ciclos interrompem com status explícito.

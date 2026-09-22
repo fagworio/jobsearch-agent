@@ -5,7 +5,7 @@ import pytest
 from jobsearch_agent.application import evaluate_safety_gate
 from jobsearch_agent.ats import GreenhouseAdapter, adapter_for, inspect_with_adapter
 from jobsearch_agent.inspector import InspectionError, validate_bindings_against_html
-from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationPolicy, ApplicationState, ApplicationForm, FormCapabilityIssue
+from jobsearch_agent.models import ApplicationContext, ApplicationField, ApplicationPolicy, ApplicationState, ApplicationForm, CandidatePreferences, FormCapabilityIssue
 from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
 
@@ -260,3 +260,73 @@ def test_phone_widget_internal_combobox_is_not_counted_as_an_application_field()
     result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
     assert "iti-0__search-input" not in {field.key for field in result.form.fields}
     assert result.form.capability_issues == []
+
+
+def test_identity_and_contact_semantics_resolve_only_explicit_profile_values():
+    additions = """
+      <label for="preferred">Preferred First Name</label><input id="preferred" name="job_application[preferred_first_name]">
+      <label for="country">Country</label><input id="country" name="job_application[country]" role="combobox" aria-autocomplete="list">
+      <label for="phone">Phone</label><input id="phone" name="job_application[phone]" type="tel">
+      <label for="location">Current Location</label><input id="location" name="job_application[current_location]">
+      <label for="timezone">Time Zone</label><input id="timezone" name="job_application[time_zone]">
+      <label for="linkedin">LinkedIn</label><input id="linkedin" name="job_application[linkedin]" type="url">
+      <label for="github">GitHub</label><input id="github" name="job_application[github]" type="url">
+    """
+    html = _html("simple.html").replace("</form>", additions + "</form>")
+    result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
+    semantics = {field.key: field.semantic_type for field in result.form.fields}
+    assert semantics["job_application[preferred_first_name]"] == "preferred_first_name"
+    assert semantics["job_application[country]"] == "country"
+    assert semantics["job_application[time_zone]"] == "timezone"
+    assert semantics["job_application[linkedin]"] == "linkedin"
+    assert semantics["job_application[github]"] == "github"
+
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    profile.identity.update({
+        "preferred_first_name": "Rae",
+        "phone": "+1 555 0100",
+        "country": "Canada",
+        "current_location": "Toronto, Canada",
+        "linkedin": "https://www.linkedin.com/in/test-candidate",
+        "github": "https://github.com/test-candidate",
+    })
+    preferences = CandidatePreferences(timezone="America/Toronto")
+    kb = AnswerKnowledgeBase([])
+    expected = {
+        "job_application[preferred_first_name]": ("Rae", "CareerProfile.identity.preferred_first_name"),
+        "job_application[country]": ("Canada", "CareerProfile.identity.country"),
+        "job_application[phone]": ("+1 555 0100", "CareerProfile.identity.phone"),
+        "job_application[current_location]": ("Toronto, Canada", "CareerProfile.identity.current_location"),
+        "job_application[time_zone]": ("America/Toronto", "CandidatePreferences.timezone"),
+        "job_application[linkedin]": ("https://www.linkedin.com/in/test-candidate", "CareerProfile.identity.linkedin"),
+        "job_application[github]": ("https://github.com/test-candidate", "CareerProfile.identity.github"),
+    }
+    for key, (value, provenance) in expected.items():
+        field = next(item for item in result.form.fields if item.key == key)
+        answer = kb.resolve_field(field, profile, preferences)
+        assert answer is not None
+        assert answer.answer == value
+        assert answer.supported_by == [provenance]
+        assert answer.field_key == key
+
+
+def test_preferred_name_country_location_and_timezone_are_never_derived():
+    html = _html("simple.html").replace(
+        "</form>",
+        '<label for="preferred">Preferred First Name</label><input id="preferred" name="job_application[preferred_first_name]">'
+        '<label for="country">Country</label><input id="country" name="job_application[country]">'
+        '<label for="location">Current Location</label><input id="location" name="job_application[current_location]">'
+        '<label for="timezone">Time Zone</label><input id="timezone" name="job_application[timezone]"></form>',
+    )
+    result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    preferences = CandidatePreferences()
+    kb = AnswerKnowledgeBase([])
+    for key in (
+        "job_application[preferred_first_name]",
+        "job_application[country]",
+        "job_application[current_location]",
+        "job_application[timezone]",
+    ):
+        field = next(item for item in result.form.fields if item.key == key)
+        assert kb.resolve_field(field, profile, preferences) is None

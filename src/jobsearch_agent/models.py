@@ -132,6 +132,14 @@ class CareerProfile:
 
 
 @domain_dataclass
+class ProfileReadiness:
+    ready: bool
+    blockers: list[str] = field(default_factory=list)
+    missing_optional: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+
+
+@domain_dataclass
 class LanguageResult:
     language: str
     locale: str
@@ -160,6 +168,7 @@ class CandidatePreferences:
     employment_types: list[str] = field(default_factory=list)
     work_authorization: list[str] = field(default_factory=list)
     requires_sponsorship: str = "unknown"
+    timezone: str = ""
     timezones: list[str] = field(default_factory=list)
     max_applications_per_day: int | None = None
     resume_template: str = "ats"

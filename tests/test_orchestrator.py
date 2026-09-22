@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from jobsearch_agent.ats import GreenhouseAdapter
 from jobsearch_agent.browser import BrowserExecutionResult
@@ -8,7 +8,7 @@ from jobsearch_agent.profile import load_profile
 from jobsearch_agent.qa import AnswerKnowledgeBase
 
 
-PROFILE = load_profile("profile/career_profile.yaml")
+PROFILE = replace(load_profile("profile/career_profile.yaml"), demo=False)
 PREFERENCES = CandidatePreferences(relocation=True, work_authorization=["Brazil"])
 
 
@@ -200,3 +200,16 @@ def test_orchestrator_fails_closed_for_ambiguous_global_approved_answers():
     ).run(FakeSession(page), context)
 
     assert result.status == "NEEDS_ANSWER"
+
+
+def test_demo_profile_is_blocked_before_session_factory_opens_browser():
+    demo_profile = load_profile("profile/career_profile.yaml")
+    orchestrator = DryRunApplicationOrchestrator(
+        GreenhouseAdapter(), demo_profile, PREFERENCES, AnswerKnowledgeBase([])
+    )
+    calls = []
+
+    result = orchestrator.run_with_session_factory(lambda: calls.append("opened"), _context())
+
+    assert result.status == "DEMO_PROFILE_BLOCKED"
+    assert calls == []

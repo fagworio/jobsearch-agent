@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .application import evaluate_safety_gate
 from .ats import ATSAdapter
@@ -62,6 +62,8 @@ class DryRunApplicationOrchestrator:
         context: ApplicationContext,
         audit_dir: str | Path | None = None,
     ) -> DryRunApplicationResult:
+        if self.profile.demo:
+            return DryRunApplicationResult("DEMO_PROFILE_BLOCKED", error="demo profile cannot be used for public dry-run fill")
         if not getattr(session, "page", None):
             return DryRunApplicationResult("INVALID_SESSION", error="browser session has no page")
         page = session.page
@@ -98,6 +100,18 @@ class DryRunApplicationOrchestrator:
             return DryRunApplicationResult(execution.status, history, readiness, execution, plan)
 
         return DryRunApplicationResult("MAX_CYCLES_EXCEEDED", history, error=f"maximum cycles exceeded: {self.max_cycles}")
+
+    def run_with_session_factory(
+        self,
+        session_factory: Callable[[], GuardedBrowserSession],
+        context: ApplicationContext,
+        audit_dir: str | Path | None = None,
+    ) -> DryRunApplicationResult:
+        """Enforce profile policy before creating a public browser session."""
+        if self.profile.demo:
+            return DryRunApplicationResult("DEMO_PROFILE_BLOCKED", error="demo profile cannot be used for public dry-run fill")
+        session = session_factory()
+        return self.run(session, context, audit_dir)
 
     def _resolve_fields(self, context: ApplicationContext) -> None:
         resolved: list[ApplicationAnswer] = []

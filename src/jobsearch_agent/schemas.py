@@ -23,15 +23,36 @@ try:
         tags: list[str] = Field(default_factory=list)
         verified: bool = True
 
+    class IdentitySchema(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        name: str | None = None
+        first_name: str | None = None
+        last_name: str | None = None
+        preferred_first_name: str | None = None
+        email: str | None = None
+        phone: str | None = None
+        country: str | None = None
+        current_location: str | None = None
+        linkedin: str | None = None
+        github: str | None = None
+
+    class CandidatePreferencesSchema(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        timezone: str | None = None
+        timezones: list[str] = Field(default_factory=list)
+        work_authorization: list[str] = Field(default_factory=list)
+        requires_sponsorship: str = "unknown"
+
     class ProfileSchema(BaseModel):
         model_config = ConfigDict(extra="allow")
-        identity: dict[str, str]
+        identity: IdentitySchema
         identity_fact_ids: dict[str, str] = Field(default_factory=dict)
         professional_summary: dict[str, Any] = Field(default_factory=dict)
         summary_fact_ids: dict[str, list[str]] = Field(default_factory=dict)
         experience: list[dict[str, Any]] = Field(default_factory=list)
         skills: dict[str, Any] = Field(default_factory=dict)
         languages: dict[str, Any] = Field(default_factory=dict)
+        preferences: dict[str, Any] = Field(default_factory=dict)
 
     class LanguageResultSchema(BaseModel):
         language: str
@@ -125,6 +146,14 @@ except ImportError:  # pragma: no cover - fallback do ambiente mínimo
             return value
 
     class FactSchema:  # type: ignore[no-redef]
+        @classmethod
+        def model_validate(cls, value: dict[str, Any]) -> dict[str, Any]:
+            return value
+
+    class IdentitySchema:  # type: ignore[no-redef]
+        pass
+
+    class CandidatePreferencesSchema:  # type: ignore[no-redef]
         @classmethod
         def model_validate(cls, value: dict[str, Any]) -> dict[str, Any]:
             return value

@@ -17,6 +17,19 @@ from .models import ApplicationAnswer, ApplicationField, CandidatePreferences, C
 
 AUTO_FILL_CONFIDENCE = 0.85
 
+_IDENTITY_SEMANTICS = {
+    "first_name": "first_name",
+    "last_name": "last_name",
+    "preferred_first_name": "preferred_first_name",
+    "full_name": "name",
+    "email": "email",
+    "phone": "phone",
+    "country": "country",
+    "current_location": "current_location",
+    "linkedin": "linkedin",
+    "github": "github",
+}
+
 
 _COUNTRY_ALIASES = {
     "brazil": "Brazil",
@@ -128,21 +141,27 @@ class AnswerKnowledgeBase:
                 semantic_type = "work_authorization"
             elif "sponsorship" in normalized_label or "patrocinio" in normalized_label:
                 semantic_type = "requires_sponsorship"
-        if semantic_type in {"first_name", "last_name"}:
-            value = profile.identity.get(semantic_type, "")
+        if semantic_type in _IDENTITY_SEMANTICS:
+            identity_key = _IDENTITY_SEMANTICS[semantic_type]
+            value = profile.identity.get(identity_key, "")
             if value:
-                supported_by = [f"CareerProfile.identity.{semantic_type}"]
-                fact_id = profile.identity_fact_ids.get(semantic_type)
+                supported_by = [f"CareerProfile.identity.{identity_key}"]
+                fact_id = profile.identity_fact_ids.get(identity_key)
                 if fact_id:
                     supported_by.append(fact_id)
-                return self._field_answer(
-                    field,
-                    value,
-                    supported_by,
-                    "CareerProfile",
-                    1.0,
-                    semantic_type,
-                )
+                if not field.options or self._option_matches(value, field.options):
+                    return self._field_answer(field, value, supported_by, "CareerProfile", 1.0, semantic_type)
+                return None
+        if semantic_type == "timezone" and preferences:
+            timezone_value = preferences.timezone
+            support_path = "CandidatePreferences.timezone"
+            if not timezone_value and len(preferences.timezones) == 1:
+                timezone_value = preferences.timezones[0]
+                support_path = "CandidatePreferences.timezones[0]"
+            if timezone_value:
+                if not field.options or self._option_matches(timezone_value, field.options):
+                    return self._field_answer(field, timezone_value, [support_path], "CandidatePreferences", 1.0, semantic_type)
+                return None
         if semantic_type == "work_authorization" and preferences and preferences.work_authorization:
             country = _field_country(field)
             if not country:
