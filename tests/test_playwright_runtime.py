@@ -1,5 +1,6 @@
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import threading
 import time
 
@@ -149,6 +150,100 @@ def test_greenhouse_conditional_get_is_pending_before_dom_change(tmp_path: Path)
         assert result.status == "FORM_CHANGED"
         assert len(result.operations) == 1
         assert page.locator("#relocation_location").count() == 1
+    finally:
+        manager.close()
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_status", "expected_reason"),
+    [
+        (["Canada", "Cameroon"], "COMPLETED", ""),
+        (["Canada", "Canada"], "UNSUPPORTED_FORM", "AMBIGUOUS_COMBOBOX_OPTION"),
+        (["Cameroon"], "UNSUPPORTED_FORM", "OPTION_NOT_FOUND_COMBOBOX_OPTION"),
+    ],
+)
+def test_single_async_greenhouse_combobox_waits_for_get_and_selects_one_exact_option(
+    tmp_path: Path, options, expected_status, expected_reason
+):
+    fixture = Path(__file__).parent / "fixtures/greenhouse/async-combobox.html"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/countries"):
+                time.sleep(0.4)
+                body = json.dumps(options).encode("utf-8")
+                content_type = "application/json"
+            else:
+                body = fixture.read_bytes()
+                content_type = "text/html"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class LocalFixtureSession(PlaywrightSessionManager):
+        def __init__(self, origin):
+            super().__init__(allowed_hosts={"127.0.0.1"})
+            self.origin = origin
+            self.pending_samples = []
+
+        def _guard_route(self, route):
+            if route.request.url.startswith(self.origin):
+                allowed = self.network_guard.inspect(route.request)
+                if allowed:
+                    self.network_guard.begin_read(route.request)
+                    self.pending_samples.append(self.network_guard.pending_read_count)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+    origin = f"http://127.0.0.1:{server.server_port}"
+    manager = LocalFixtureSession(origin)
+    manager.start()
+    try:
+        page = manager.page
+        page.goto(origin + "/application")
+        inspected = GreenhouseAdapter().inspect(page.content(), origin + "/application")
+        country = next(field for field in inspected.form.fields if field.key == "job_application[country]")
+        country.value = "Canada"
+        inspected.form.artifact_root = str(tmp_path)
+        context = ApplicationContext(
+            application_id="application-combobox",
+            job_id="job-combobox",
+            fit={"blockers": []},
+            validation={"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
+            form=inspected.form,
+            policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
+        )
+        plan = build_execution_plan(context, inspected.bindings)
+        started = time.monotonic()
+        audit_dir = tmp_path / "audit"
+        result = PlaywrightFormFiller().fill(manager, context, plan, inspected.bindings, audit_dir=audit_dir)
+        assert time.monotonic() - started >= 0.35
+        assert result.status == expected_status
+        assert len(result.operations) == (1 if expected_status == "COMPLETED" else 0)
+        if expected_status == "UNSUPPORTED_FORM":
+            assert result.reason.startswith(expected_reason)
+            report = json.loads((audit_dir / "dry-run-report.json").read_text(encoding="utf-8"))
+            assert report["result"] == "UNSUPPORTED_FORM"
+            assert report["reason"] == result.reason
+        else:
+            assert page.locator("#country").input_value() == "Canada"
+        assert max(manager.pending_samples) >= 1
+        assert manager.network_guard.pending_read_count == 0
+        assert result.blocked_write_count == 0
     finally:
         manager.close()
         server.shutdown()

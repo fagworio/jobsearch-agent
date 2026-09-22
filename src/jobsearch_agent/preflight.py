@@ -24,6 +24,7 @@ class PreflightResult:
     adapter_confidence: float = 0.0
     application_root: str = ""
     field_count: int = 0
+    field_keys: list[str] = field(default_factory=list)
     allowed_hosts: list[str] = field(default_factory=list)
     unsupported_features: list[str] = field(default_factory=list)
     capability_issues: list[dict[str, Any]] = field(default_factory=list)
@@ -55,9 +56,9 @@ def _write_result(result: PreflightResult, artifact_root: str | Path | None) -> 
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     path = directory / "preflight.json"
+    result.artifact_path = str(path)
     path.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
-    result.artifact_path = str(path)
 
 
 def _inspect_application_frames(page: Any, default_url: str) -> tuple[Any, Any, str, str]:
@@ -146,13 +147,14 @@ def run_preflight(url: str, artifact_root: str | Path | None = None, *, headless
             result.error = provider_or_error if result.provider == "" else "no supported ATS application form matched the public page"
             return result
         result.provider = detected.provider
-        result.adapter_confidence = detected.confidence(frame_url, manager.page.content())
+        result.adapter_confidence = inspection.confidence
         result.application_frame_url = frame_url
         result.application_root = inspection.bindings.root_locator
         result.field_count = len(inspection.form.fields)
+        result.field_keys = [item.key for item in inspection.form.fields]
         result.unsupported_features = list(inspection.unsupported_features)
         result.capability_issues = [asdict(issue) for issue in inspection.form.capability_issues]
-        result.warnings = list(inspection.warnings)
+        result.warnings.extend(inspection.warnings)
         if any(issue["severity"] == "blocker" for issue in result.capability_issues):
             result.status = "UNSUPPORTED_FORM"
         else:

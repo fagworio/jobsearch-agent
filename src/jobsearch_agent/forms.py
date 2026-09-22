@@ -15,7 +15,7 @@ from .models import ApplicationField, ApplicationForm, ValidationResult
 
 
 SUPPORTED_FIELD_TYPES = {
-    "text", "textarea", "email", "tel", "url", "select", "radio", "checkbox", "date", "file",
+    "text", "textarea", "email", "tel", "url", "select", "combobox", "radio", "checkbox", "date", "file",
 }
 TRUE_VALUES = {"true", "yes", "1", "on", "checked"}
 FALSE_VALUES = {"false", "no", "0", "off", "unchecked"}

@@ -25,6 +25,9 @@ class DOMFieldBinding:
     control: str
     option_locators: dict[str, str] = field(default_factory=dict)
     option_values: dict[str, str] = field(default_factory=dict)
+    listbox_id: str = ""
+    autocomplete: str = ""
+    multiple: bool = False
 
 
 @dataclass
@@ -67,7 +70,18 @@ def compute_form_fingerprint(form: ApplicationForm, bindings: FormBindings) -> s
         "form_id": form.form_id,
         "provider": form.provider,
         "fields": [{"key": item.key, "label": item.label, "field_type": item.field_type.casefold().strip(), "semantic_type": item.semantic_type, "semantic_context": item.semantic_context, "confidence": item.confidence, "source": item.source, "required": item.required, "options": item.options, "disabled": item.disabled} for item in sorted(form.fields, key=lambda item: item.key)],
-        "bindings": [{"field_key": item.field_key, "locator": item.locator, "control": item.control, "option_values": item.option_values} for item in sorted(bindings.fields, key=lambda item: item.field_key)],
+        "bindings": [
+            {
+                "field_key": item.field_key,
+                "locator": item.locator,
+                "control": item.control,
+                "option_values": item.option_values,
+                "listbox_id": item.listbox_id,
+                "autocomplete": item.autocomplete,
+                "multiple": item.multiple,
+            }
+            for item in sorted(bindings.fields, key=lambda item: item.field_key)
+        ],
         "root_locator": bindings.root_locator,
         "capability_issues": [issue.__dict__ for issue in form.capability_issues],
     }
@@ -87,7 +101,12 @@ def validate_form_bindings(form: ApplicationForm, bindings: FormBindings):
         errors.append("binding field_key is duplicated")
     if set(keys) != set(field_map):
         errors.append("bindings and form fields do not have the same keys")
-    compatible = {"text": {"text"}, "textarea": {"textarea"}, "email": {"email", "text"}, "tel": {"tel", "text"}, "url": {"url", "text"}, "date": {"date", "text"}, "select": {"select"}, "radio": {"radio"}, "checkbox": {"checkbox"}, "file": {"file"}}
+    compatible = {
+        "text": {"text"}, "textarea": {"textarea"}, "email": {"email", "text"},
+        "tel": {"tel", "text"}, "url": {"url", "text"}, "date": {"date", "text"},
+        "select": {"select"}, "combobox": {"combobox"}, "radio": {"radio"},
+        "checkbox": {"checkbox"}, "file": {"file"},
+    }
     for binding in bindings.fields:
         field = field_map.get(binding.field_key)
         if field is None:
@@ -210,6 +229,10 @@ class ATSInspector:
         soup = BeautifulSoup(html, "html.parser")
         root = self._select_root(soup, form_selector)
         controls = [element for element in root.find_all(["input", "textarea", "select"]) if self._is_data_control(element)]
+        # The international-phone widget inserts its own country search input;
+        # it is an implementation detail of the phone field, not an application
+        # answer field and must not become a second candidate identity field.
+        controls = [element for element in controls if not (element.get("role") == "combobox" and "iti__search-input" in element.get("class", []))]
         grouped: dict[str, list[Tag]] = defaultdict(list)
         for index, element in enumerate(controls):
             grouped[self._group_key(element, index)].append(element)
@@ -278,6 +301,9 @@ class ATSInspector:
     @staticmethod
     def _describe_group(soup: BeautifulSoup, group: list[Tag]) -> tuple[str, str, list[str], bool, list[str]]:
         first = group[0]
+        if first.get("role") == "combobox":
+            is_multiple = first.has_attr("multiple") or str(first.get("aria-multiselectable", "")).casefold() == "true"
+            return "combobox", "unknown", [], is_multiple, []
         if first.name == "textarea":
             return "textarea", "unknown", [], False, []
         if first.name == "select":
@@ -304,6 +330,20 @@ class ATSInspector:
                 value = _css_escape(str(option.get("value", "")))
                 option_locators[label] = f'{locator} option[value="{value}"]'
                 option_values[label] = str(option.get("value", ""))
+        elif field_type == "combobox":
+            controls = str(first.get("aria-controls", "") or first.get("aria-owns", "")).split()
+            listbox_id = controls[0] if len(controls) == 1 else ""
+            return DOMFieldBinding(
+                field_key,
+                locator,
+                field_type,
+                {},
+                {},
+                listbox_id,
+                str(first.get("aria-autocomplete", "")).casefold(),
+                first.has_attr("multiple")
+                or str(first.get("aria-multiselectable", "")).casefold() == "true",
+            )
         else:
             for index, (option, element) in enumerate(zip(options, group)):
                 option_value = str(element.get("value", ""))

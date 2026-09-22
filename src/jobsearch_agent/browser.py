@@ -204,6 +204,7 @@ class BrowserExecutionResult:
     blocked_write_count: int = 0
     blocked_websocket_count: int = 0
     pending_read_count: int = 0
+    reason: str = ""
 
 
 @dataclass
@@ -221,6 +222,7 @@ class DryRunAuditReport:
     blocked_write_count: int = 0
     blocked_websocket_count: int = 0
     pending_read_count: int = 0
+    reason: str = ""
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -302,7 +304,38 @@ class PlaywrightFormFiller:
                 locator.set_input_files(action.attachment_path)
                 operations.append({"operation": "upload", "field_key": action.field_key})
             elif action.action_type == "fill":
-                self._fill_value(page, locator, binding, field, action.value)
+                try:
+                    self._fill_value(page, locator, binding, field, action.value, lambda: session.network_guard.pending_read_count)
+                except BrowserSessionError as exc:
+                    combo_stop_prefixes = (
+                        "AMBIGUOUS_COMBOBOX_",
+                        "UNSUPPORTED_COMBOBOX_",
+                        "OPTION_NOT_FOUND_COMBOBOX_OPTION:",
+                        "unsupported combobox",
+                        "combobox value is empty",
+                        "combobox listbox is not bound",
+                    )
+                    if field_type != "combobox" or not str(exc).startswith(combo_stop_prefixes):
+                        raise
+                    reason = str(exc)
+                    report = self._report(session, plan, operations, "UNSUPPORTED_FORM", index, initial_fingerprint, "", reason, action_not_executed=True)
+                    if audit_path:
+                        self._persist_audit(page, audit_path, operations, report)
+                    return BrowserExecutionResult(
+                        application_id=plan.application_id,
+                        operations=operations,
+                        stopped_before_submit=True,
+                        status="UNSUPPORTED_FORM",
+                        initial_fingerprint=initial_fingerprint,
+                        current_fingerprint="",
+                        submission_attempted=False,
+                        network_writes_allowed=False,
+                        network_guard_active=True,
+                        blocked_write_count=report.blocked_write_count,
+                        blocked_websocket_count=report.blocked_websocket_count,
+                        pending_read_count=report.pending_read_count,
+                        reason=reason,
+                    )
                 operations.append({"operation": "fill", "field_key": action.field_key})
             else:  # defensive; validate_execution_context already rejects it
                 raise BrowserSessionError(f"unsupported dry-run action: {action.action_type}")
@@ -331,9 +364,35 @@ class PlaywrightFormFiller:
         return result
 
     @staticmethod
-    def _report(session: GuardedBrowserSession, plan: ExecutionPlan, operations: list[dict[str, Any]], result: str, index: int, initial: str, current: str) -> DryRunAuditReport:
+    def _report(
+        session: GuardedBrowserSession,
+        plan: ExecutionPlan,
+        operations: list[dict[str, Any]],
+        result: str,
+        index: int,
+        initial: str,
+        current: str,
+        reason: str = "",
+        action_not_executed: bool = False,
+    ) -> DryRunAuditReport:
         guard = session.network_guard
-        return DryRunAuditReport(plan.application_id, result, len(operations), max(len(plan.actions) - index - 1, 0), initial, current, operations, False, False, True, len(guard.blocked_writes), sum(event.resource_type == "websocket" for event in guard.blocked_writes), guard.pending_read_count)
+        pending_actions = max(len(plan.actions) - index - 1 + int(action_not_executed), 0)
+        return DryRunAuditReport(
+            plan.application_id,
+            result,
+            len(operations),
+            pending_actions,
+            initial,
+            current,
+            operations,
+            False,
+            False,
+            True,
+            len(guard.blocked_writes),
+            sum(event.resource_type == "websocket" for event in guard.blocked_writes),
+            guard.pending_read_count,
+            reason,
+        )
 
     @staticmethod
     def _persist_audit(page: Any, audit_path: Path, operations: list[dict[str, Any]], report: DryRunAuditReport) -> None:
@@ -343,13 +402,52 @@ class PlaywrightFormFiller:
         write_dry_run_report(audit_path / "dry-run-report.json", report)
 
     @staticmethod
-    def _fill_value(page: Any, locator: Any, binding: FormBindings | Any, field: Any, value: Any) -> None:
+    def _fill_value(page: Any, locator: Any, binding: FormBindings | Any, field: Any, value: Any, pending_read_count: Any = None) -> None:
         field_type = field.field_type.casefold().strip()
         if field_type == "select":
             option_value = binding.option_values.get(str(value))
             if option_value is None:
                 raise BrowserSessionError(f"select option is not bound: {field.key}")
             locator.select_option(option_value)
+        elif field_type == "combobox":
+            if binding.multiple or field.multiple:
+                raise BrowserSessionError(f"multiple combobox is unsupported: {field.key}")
+            if binding.autocomplete not in {"", "none", "list", "both"}:
+                raise BrowserSessionError(f"unsupported combobox autocomplete mode: {field.key}")
+            expected = " ".join(str(value).split()).casefold()
+            if not expected:
+                raise BrowserSessionError(f"combobox value is empty: {field.key}")
+            locator.click()
+            if binding.autocomplete in {"list", "both"}:
+                locator.fill(str(value))
+            DOMStabilityGuard().wait(page, pending_read_count)
+            controls = str(locator.get_attribute("aria-controls") or locator.get_attribute("aria-owns") or "").split()
+            if len(controls) > 1:
+                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field.key} has multiple associated listboxes")
+            listbox_id = controls[0] if controls else binding.listbox_id
+            if not listbox_id:
+                raise BrowserSessionError(f"UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND: {field.key}")
+            listboxes = page.get_by_role("listbox")
+            visible_boxes = [
+                listboxes.nth(index)
+                for index in range(listboxes.count())
+                if listboxes.nth(index).is_visible()
+                and listboxes.nth(index).get_attribute("id") == listbox_id
+            ]
+            if len(visible_boxes) != 1:
+                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field.key}")
+            options = visible_boxes[0].get_by_role("option")
+            exact_matches = []
+            for index in range(options.count()):
+                option = options.nth(index)
+                label = " ".join((option.inner_text() or "").split()).casefold()
+                if label == expected and option.is_visible():
+                    exact_matches.append(option)
+            if len(exact_matches) != 1:
+                if not exact_matches:
+                    raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")
+                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_OPTION: {field.key}")
+            exact_matches[0].click()
         elif field_type == "radio":
             option_locator = binding.option_locators.get(str(value))
             if not option_locator:

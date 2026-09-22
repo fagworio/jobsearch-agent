@@ -221,3 +221,42 @@ def test_unsupported_controls_outside_application_root_are_ignored():
         result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
         assert result.unsupported_features == []
         assert result.form.capability_issues == []
+
+
+def test_greenhouse_single_combobox_is_bound_but_location_and_custom_controls_stay_blocked():
+    html = _html("async-combobox.html")
+    result = inspect_with_adapter(html, "https://job-boards.greenhouse.io/acme/jobs/1")
+    field = next(item for item in result.form.fields if item.key == "job_application[country]")
+    binding = result.bindings.for_field(field.key)
+    assert field.field_type == "combobox"
+    assert binding.control == "combobox"
+    assert binding.listbox_id == "country-options"
+    assert binding.autocomplete == "list"
+    assert result.form.capability_issues == []
+
+    location = html.replace('name="job_application[country]"', 'name="job_application[location]"')
+    blocked = inspect_with_adapter(location, "https://job-boards.greenhouse.io/acme/jobs/1")
+    assert any(issue.code == "combobox_location" for issue in blocked.form.capability_issues)
+
+    multiselect = html.replace('aria-autocomplete="list"', 'aria-autocomplete="list" aria-multiselectable="true"')
+    blocked_multi = inspect_with_adapter(multiselect, "https://job-boards.greenhouse.io/acme/jobs/1")
+    assert any(issue.code == "combobox_multiple" for issue in blocked_multi.form.capability_issues)
+
+    unsupported_autocomplete = html.replace('aria-autocomplete="list"', 'aria-autocomplete="inline"')
+    blocked_autocomplete = inspect_with_adapter(unsupported_autocomplete, "https://job-boards.greenhouse.io/acme/jobs/1")
+    assert any(issue.code == "combobox_autocomplete" for issue in blocked_autocomplete.form.capability_issues)
+
+    custom = html.replace('<input id="country"', '<div id="country"')
+    blocked_custom = inspect_with_adapter(custom, "https://job-boards.greenhouse.io/acme/jobs/1")
+    assert any(issue.code == "custom_combobox" for issue in blocked_custom.form.capability_issues)
+
+
+def test_phone_widget_internal_combobox_is_not_counted_as_an_application_field():
+    html = _html("simple.html").replace(
+        "</form>",
+        '<input id="iti-0__search-input" class="iti__search-input" type="search" '
+        'role="combobox" aria-label="Search" aria-controls="iti-0__country-listbox"></form>',
+    )
+    result = inspect_with_adapter(html, "https://boards.greenhouse.io/acme/jobs/1")
+    assert "iti-0__search-input" not in {field.key for field in result.form.fields}
+    assert result.form.capability_issues == []

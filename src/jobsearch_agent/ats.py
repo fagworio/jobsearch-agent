@@ -260,9 +260,41 @@ class GreenhouseAdapter:
             root = soup
         unsupported: list[str] = []
         capability_issues: list[FormCapabilityIssue] = []
-        if root.select('[role="combobox"]'):
+        unsupported_combos = []
+        for control in root.select('[role="combobox"]'):
+            # Greenhouse's phone widget adds an internal country-search combo;
+            # the actual tel input remains the supported application field.
+            if "iti__search-input" in control.get("class", []):
+                continue
+            binding = None
+            for candidate in inspected.bindings.fields:
+                if candidate.control != "combobox":
+                    continue
+                try:
+                    matches = soup.select(candidate.locator)
+                except Exception:
+                    continue
+                if len(matches) == 1 and matches[0] is control:
+                    binding = candidate
+                    break
+            field = next(
+                (item for item in inspected.form.fields if binding and item.key == binding.field_key),
+                None,
+            )
+            if control.name != "input" or field is None:
+                unsupported_combos.append("custom_combobox")
+            elif field.multiple:
+                unsupported_combos.append("combobox_multiple")
+            elif field.semantic_type in {"current_location", "preferred_relocation_location"}:
+                # Greenhouse location controls can invoke geolocation and have
+                # provider-specific behavior; keep them fail-closed for v1.
+                unsupported_combos.append("combobox_location")
+            elif control.get("aria-autocomplete", "").casefold() not in {"", "none", "list", "both"}:
+                unsupported_combos.append("combobox_autocomplete")
+        if unsupported_combos:
             unsupported.append("custom_combobox")
-            capability_issues.append(FormCapabilityIssue("custom_combobox", "blocker", evidence="role=combobox"))
+            for issue in sorted(set(unsupported_combos)):
+                capability_issues.append(FormCapabilityIssue(issue, "blocker", evidence="role=combobox"))
         if root.select('[contenteditable="true"]'):
             unsupported.append("contenteditable_control")
             capability_issues.append(FormCapabilityIssue("contenteditable_control", "blocker", evidence="contenteditable=true"))

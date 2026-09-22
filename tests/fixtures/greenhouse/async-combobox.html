@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<body>
+  <form id="application_form" data-provider="greenhouse">
+    <label for="country">Country</label>
+    <input id="country" name="job_application[country]" role="combobox"
+      aria-autocomplete="list" aria-expanded="false" aria-controls="country-options"
+      aria-required="true" required autocomplete="off">
+    <div id="country-options" role="listbox" hidden></div>
+  </form>
+  <aside id="unrelated-options" role="listbox">
+    <div role="option">Canada</div>
+  </aside>
+  <script>
+    const input = document.querySelector('#country');
+    const listbox = document.querySelector('#country-options');
+    input.addEventListener('input', async () => {
+      listbox.hidden = false;
+      listbox.replaceChildren();
+      const response = await fetch(`/countries?q=${encodeURIComponent(input.value)}`);
+      const countries = await response.json();
+      for (const country of countries) {
+        const option = document.createElement('div');
+        option.setAttribute('role', 'option');
+        option.textContent = country;
+        option.addEventListener('click', () => {
+          input.value = country;
+          input.setAttribute('aria-expanded', 'false');
+          listbox.hidden = true;
+        });
+        listbox.append(option);
+      }
+    });
+  </script>
+</body>
+</html>
