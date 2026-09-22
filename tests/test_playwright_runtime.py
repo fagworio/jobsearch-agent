@@ -30,7 +30,7 @@ def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path:
         context = browser.new_context()
         page = context.new_page()
         page.set_content(html)
-        inspected = ATSInspector().inspect_page(page, "https://boards.greenhouse.io/example", form_selector="#application")
+        inspected = ATSInspector().inspect_page(page, form_selector="#application")
         inspected.form.artifact_root = str(tmp_path)
         for field in inspected.form.fields:
             if field.key == "name":

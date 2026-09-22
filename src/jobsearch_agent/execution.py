@@ -148,7 +148,7 @@ def build_execution_plan(context: ApplicationContext, bindings: FormBindings) ->
     return plan
 
 
-def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> ValidationResult:
+def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None, current_url: str = "") -> ValidationResult:
     """Public defense-in-depth check used at the browser boundary."""
     readiness = evaluate_safety_gate(context)
     if not readiness.ready_to_apply:
@@ -160,7 +160,7 @@ def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan,
     if not result.valid:
         return result
     if current_html is not None:
-        dom_result = validate_bindings_against_html(context.form, bindings, current_html)
+        dom_result = validate_bindings_against_html(context.form, bindings, current_html, current_url)
         if not dom_result.valid:
             return dom_result
     return result

@@ -103,14 +103,14 @@ def validate_form_bindings(form: ApplicationForm, bindings: FormBindings):
     return ValidationResult(not errors, "OK" if not errors else "INVALID_FORM_BINDINGS", errors)
 
 
-def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings, html: str):
+def validate_bindings_against_html(form: ApplicationForm, bindings: FormBindings, html: str, url: str = ""):
     from .models import ValidationResult
 
     static = validate_form_bindings(form, bindings)
     errors = list(static.errors)
     soup = BeautifulSoup(html, "html.parser")
     try:
-        current = ATSInspector().inspect_html(html, form_id=form.form_id, form_selector=bindings.root_locator or None)
+        current = ATSInspector().inspect_html(html, url=url, form_id=form.form_id, form_selector=bindings.root_locator or None)
         if compute_form_fingerprint(current.form, current.bindings) != compute_form_fingerprint(form, bindings):
             errors.append("current DOM fingerprint does not match inspected form")
     except InspectionError as exc:

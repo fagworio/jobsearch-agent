@@ -85,7 +85,7 @@ class PlaywrightFormFiller:
 
     def fill(self, page: Any, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings) -> BrowserExecutionResult:
         current_html = page.content()
-        validation = validate_execution_context(context, plan, bindings, current_html)
+        validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")))
         if not validation.valid:
             raise BrowserSessionError("refusing stale or invalid form: " + "; ".join(validation.errors))
         fields = {field.key: field for field in context.form.fields}
