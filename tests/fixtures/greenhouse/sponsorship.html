@@ -1,0 +1,15 @@
+<!doctype html>
+<html><body>
+  <form id="application_form">
+    <fieldset><legend>Are you authorized to work?</legend>
+      <label><input id="authorized_yes" name="job_application[authorized_to_work]" type="radio" value="yes">Yes</label>
+      <label><input id="authorized_no" name="job_application[authorized_to_work]" type="radio" value="no">No</label>
+    </fieldset>
+    <label for="sponsorship">Will you now or in the future require sponsorship?</label>
+    <select id="sponsorship" name="job_application[requires_sponsorship]" required>
+      <option value="">Choose</option>
+      <option value="yes">Yes, I will require sponsorship</option>
+      <option value="no">No, I will not require sponsorship</option>
+    </select>
+  </form>
+</body></html>

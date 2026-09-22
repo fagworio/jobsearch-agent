@@ -1,0 +1,13 @@
+<!doctype html>
+<html><body>
+  <form id="application_form">
+    <label for="relocation">Are you willing to relocate?</label>
+    <select id="relocation" name="job_application[relocation]">
+      <option value="yes">Yes</option><option value="no">No</option>
+    </select>
+    <div id="conditional-location" data-visible-after="relocation=yes">
+      <label for="future_location">Preferred relocation location</label>
+      <input id="future_location" name="job_application[relocation_location]">
+    </div>
+  </form>
+</body></html>

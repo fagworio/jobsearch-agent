@@ -91,5 +91,9 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O filler pode persistir um relatório redigido em `browser/`, com fingerprints, operações,
   screenshots e indicação explícita de que nenhuma escrita de rede foi permitida. O diretório de
   auditoria fica sob `artifact_root` com modo `0700`; seus arquivos ficam em `0600`.
+- O `GreenhouseAdapter` permanece separado do `ATSInspector`: identifica a assinatura estrutural,
+  encontra o root da aplicação e enriquece `ApplicationField` com semantic type, confiança e
+  origem. Ele não responde perguntas nem executa ações de browser; campos customizados continuam
+  `unknown` e podem bloquear no Safety Gate.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.
