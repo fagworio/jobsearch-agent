@@ -314,7 +314,25 @@ def render_pdf_from_docx(docx_path: str | Path, pdf_path: str | Path) -> Path:
     if not libreoffice:
         raise RuntimeError("LibreOffice is required to render PDF")
     with tempfile.TemporaryDirectory(prefix="jobsearch-pdf-") as directory:
-        result = subprocess.run([libreoffice, "--headless", "--convert-to", "pdf", "--outdir", directory, str(docx_path)], capture_output=True, text=True, timeout=60)
+        # A private LibreOffice user profile keeps the conversion working in
+        # containers and sandboxes where $HOME or XDG_RUNTIME_DIR is read-only.
+        profile = Path(directory) / "profile"
+        profile.mkdir()
+        result = subprocess.run(
+            [
+                libreoffice,
+                f"-env:UserInstallation={profile.as_uri()}",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                directory,
+                str(docx_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "PDF conversion failed")
         generated = Path(directory) / (Path(docx_path).stem + ".pdf")

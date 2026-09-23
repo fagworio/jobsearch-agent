@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from typing import Any
 
@@ -449,6 +449,8 @@ def to_dict(value: Any) -> Any:
         return {key: to_dict(item) for key, item in value.model_dump(mode="json").items()}
     if isinstance(value, StrEnum):
         return value.value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
     if hasattr(value, "__dataclass_fields__"):
         return {key: to_dict(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):

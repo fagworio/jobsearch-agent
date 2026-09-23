@@ -1,5 +1,6 @@
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import replace
 import json
 import threading
 import time
@@ -12,7 +13,10 @@ from jobsearch_agent.browser import PlaywrightFormFiller, PlaywrightSessionManag
 from jobsearch_agent.ats import GreenhouseAdapter
 from jobsearch_agent.execution import build_execution_plan
 from jobsearch_agent.inspector import ATSInspector
-from jobsearch_agent.models import ApplicationContext, ApplicationPolicy
+from jobsearch_agent.models import ApplicationContext, ApplicationPolicy, CandidatePreferences
+from jobsearch_agent.orchestrator import LiveApplicationOrchestrator
+from jobsearch_agent.profile import load_profile
+from jobsearch_agent.qa import AnswerKnowledgeBase
 
 
 def test_local_chromium_dry_run_inspects_fills_uploads_and_screenshots(tmp_path: Path):
@@ -244,6 +248,101 @@ def test_single_async_greenhouse_combobox_waits_for_get_and_selects_one_exact_op
         assert max(manager.pending_samples) >= 1
         assert manager.network_guard.pending_read_count == 0
         assert result.blocked_write_count == 0
+    finally:
+        manager.close()
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_live_orchestrator_fills_and_uploads_a_real_page_without_submitting(tmp_path: Path):
+    """Real browser, real HTTP: navigate, fill, upload the resume, never POST."""
+    posted: list[str] = []
+    form_html = """<!doctype html>
+    <form id="application_form">
+      <label for="email">Email</label>
+      <input id="email" name="job_application[email]" type="email" required>
+      <label for="resume">Resume</label>
+      <input id="resume" name="job_application[resume]" type="file" accept="application/pdf" required>
+      <button type="submit">Submit application</button>
+    </form>"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = form_html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            posted.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class LocalLiveSession(PlaywrightSessionManager):
+        def __init__(self, origin):
+            super().__init__(allowed_hosts={"127.0.0.1"})
+            self.origin = origin
+
+        def _guard_route(self, route):
+            if route.request.url.startswith(self.origin):
+                if self.network_guard.inspect(route.request):
+                    self.network_guard.begin_read(route.request)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+        def open(self, url):  # test-only: loopback bypasses the public-host policy
+            self.page.goto(url, wait_until="domcontentloaded")
+
+    resume = tmp_path / "resume.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with resume.open("wb") as handle:
+        writer.write(handle)
+
+    origin = f"http://127.0.0.1:{server.server_port}"
+    profile = replace(load_profile("profile/career_profile.yaml"), demo=False)
+    manager = LocalLiveSession(origin)
+    manager.start()
+    try:
+        context = ApplicationContext(
+            application_id="application-live-browser",
+            job_id="job-live-browser",
+            fit={"blockers": []},
+            validation={"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
+            policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
+        )
+        orchestrator = LiveApplicationOrchestrator(
+            GreenhouseAdapter(),
+            profile,
+            CandidatePreferences(),
+            AnswerKnowledgeBase([]),
+            artifact_root=str(tmp_path),
+            default_resume=str(resume),
+        )
+        result = orchestrator.run(manager, context, origin + "/application")
+
+        assert result.status == "FILLED_REVIEW_REQUIRED"
+        assert manager.page.locator("#email").input_value() != ""
+        assert manager.page.locator("#resume").evaluate("element => element.files.length") == 1
+        assert result.form_fingerprint
+        assert orchestrator.filler is not None
+        assert not hasattr(orchestrator.filler, "submit")
+        assert posted == [], "the guarded session must never reach a real submit"
+        assert manager.network_guard is not None
+        assert manager.network_guard.blocked_writes == []
     finally:
         manager.close()
         server.shutdown()

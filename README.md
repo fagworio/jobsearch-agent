@@ -2,10 +2,12 @@
 
 Agente local para descobrir, analisar e preparar candidaturas com currículo específico por vaga.
 
-Esta milestone implementa **Analyze + Generate** e a base da Submission Boundary: ingestão de uma
-vaga, análise, fit, estratégia de currículo, validação factual, saída TXT/DOCX/PDF, `SubmissionIntent`,
-autorização explícita, duplicate guard, estados pós-tentativa e executor controlado Greenhouse. LinkedIn
-continua manual e o dry-run nunca submete.
+Esta milestone implementa **Analyze + Generate**, a base da Submission Boundary e o **preenchimento
+ao vivo**: ingestão de uma vaga, análise, fit, estratégia de currículo, validação factual, saída
+TXT/DOCX/PDF, `SubmissionIntent`, autorização explícita, duplicate guard, estados pós-tentativa e
+executor controlado Greenhouse. O comando `apply` abre a URL real da vaga em um browser guardado,
+inspeciona o formulário, resolve as respostas pelo Career Profile, preenche, sobe o currículo em
+multipart e **para antes do submit**. LinkedIn continua manual: não existe executor live para ele.
 
 ## Uso rápido
 
@@ -46,6 +48,15 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli dry-run <application-id> \
   --provider linkedin --html-file tests/fixtures/linkedin/easy-apply-single.html \
   --db data/jobsearch.db --artifacts data/applications
 
+# aplica ao vivo: abre a URL da vaga, preenche, sobe o currículo e para antes do submit
+PYTHONPATH=src python3 -m jobsearch_agent.cli apply <job-id> --db data/jobsearch.db
+
+# a mesma execução, autorizando e executando UM POST controlado ao final
+PYTHONPATH=src python3 -m jobsearch_agent.cli apply <job-id> --submit
+
+# executa o POST de uma Application que já tem formulário e fingerprints persistidos
+PYTHONPATH=src python3 -m jobsearch_agent.cli application submit <application-id> --intent-id <intent-id>
+
 # inspeção LinkedIn somente em HTML local; não abre navegador nem acessa rede
 jobsearch-agent linkedin inspect <job-id> --html-file tests/fixtures/linkedin/easy-apply-single.html
 ```
@@ -78,6 +89,36 @@ vínculos com o `SubmissionIntent` e rejeita snapshots incompletos ou divergente
 País, nome preferido e fuso horário precisam ser informados explicitamente: não são derivados de
 localização ou nome.
 
+### Aplicação ao vivo (`apply`)
+
+`apply <job-id>` usa a URL já persistida da vaga e exige que o ATS tenha adapter e política de rede
+(hoje somente Greenhouse). O fluxo é:
+
+```text
+abre a URL em sessão guardada (escrita de rede bloqueada)
+→ revela o formulário por um botão "Apply" não-submit
+→ inspeciona o ApplicationForm e resolve as respostas pelo Career Profile
+→ Safety Gate (fit, prontidão, answers grounded, artefatos)
+→ preenche os campos e sobe o resume.pdf
+→ avança etapas por botões type="button" Next/Continue, quando existirem
+→ FILLED_REVIEW_REQUIRED
+```
+
+Sem `--submit`, o comando nunca escreve na rede: a sessão do browser bloqueia POST/PUT/PATCH/DELETE,
+WebSocket e submit de formulário. Se um controle de avanço tentar uma escrita, a execução para com
+`ADVANCE_BLOCKED_BY_NETWORK_POLICY` em vez de contornar a política.
+
+Com `--submit`, o agente cria o `ReviewSnapshot`, cria e autoriza a `SubmissionIntent` e executa **um
+único** POST multipart, vinculado a destino, fingerprint do formulário, SHA-256 do currículo e
+fingerprint das respostas. O `LiveNetworkPolicy` fixa origem, método, caminho e estágio. Confirmação
+só vira `SUBMITTED` com status de provider reconhecido (JSON ou página HTML de confirmação); timeout,
+redirect ou resposta ambígua viram `SUBMIT_UNKNOWN` e não são reenviados automaticamente.
+
+`fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
+Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos
+casos existe transição automática para `SUBMIT_AUTHORIZED`: o submit sempre exige autorização
+explícita via `--submit` ou `application authorize-submit`.
+
 Dados reais de candidato ficam nos arquivos locais ignorados pelo Git
 `profile/career_profile.local.yaml`, `profile/locked_facts.local.yaml` e
 `profile/preferences.local.yaml`. Quando presentes, esses arquivos são selecionados como defaults;
@@ -89,6 +130,20 @@ Com o grupo opcional de discovery instalado:
 ```bash
 jobsearch-agent search --query "Senior WordPress Developer" --sites indeed,google --location Brazil
 ```
+
+A descoberta por ATS usa as APIs JSON públicas dos próprios boards — sem credenciais e sem
+scraping:
+
+```bash
+jobsearch-agent discover --provider greenhouse --board gitlab --board stripe --query frontend
+jobsearch-agent discover --provider ashby --board ramp --location remote --limit 20
+jobsearch-agent discover --provider lever --board spotify --db data/jobsearch.db
+```
+
+Prefira `discover` a `search`: agregadores como Indeed e Google bloqueiam clientes automatizados
+com frequência (respostas vazias ou degradadas), enquanto as APIs de board são endpoints
+públicos e estáveis, publicados pelos ATS justamente para alimentar seus job boards. `discover`
+persiste as vagas no SQLite, então `precheck`, `prepare` e `apply` funcionam na sequência.
 
 O provider sem configuração usa análise determinística e geração segura. Para interpretação LLM,
 configure `JOBSEARCH_LLM_BASE_URL`, `JOBSEARCH_LLM_API_KEY` e `JOBSEARCH_LLM_MODEL`. O perfil
@@ -110,6 +165,13 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - Todo claim gerado mantém `fact_id` rastreável.
 - Falta de suporte factual bloqueia o artefato.
 - O fit é separado da prontidão para candidatura.
+- O fit é calculado sobre as skills reconhecidas pelo registry em
+  [knowledge/skills.yaml](knowledge/skills.yaml). Um anúncio cujo requisito não foi extraído não
+  recebe cobertura perfeita: sem nenhuma skill reconhecida, `required_match` é `0.0` e o critério
+  `required_skills` fica `unknown`, em vez de virar um match de 100%. O score mede cobertura dentro
+  do vocabulário conhecido; ele não é uma medida calibrada de relevância, e extração esparsa tende a
+  superestimar a cobertura. Para requisitos em texto livre, configure o provider LLM
+  (`JOBSEARCH_LLM_*`), que substitui `required_skills` por extração semântica grounded.
 - `Job` e `Application` possuem ciclos de vida independentes; interrupções como
   `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA` e `UNSUPPORTED_FORM`
   são estados de domínio, não erros técnicos.
@@ -182,5 +244,17 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O `DryRunApplicationOrchestrator` executa o ciclo bounded `inspect → resolve → Safety Gate →
   plan → fill`. Quando o DOM muda, ele re-inspeciona o formulário, resolve novamente as respostas
   e gera um novo plano; fingerprints repetidos e excesso de ciclos interrompem com status explícito.
+- O `LiveApplicationOrchestrator` reusa o mesmo ciclo bounded contra a página real: navega, revela o
+  formulário, preenche, sobe o currículo e para. Ele dirige uma `GuardedBrowserSession`, então
+  nenhuma submissão é alcançável a partir dessa camada.
+- O payload de submissão é derivado do `ApplicationForm` resolvido (`build_submission_payload`),
+  mantendo as chaves `name` do DOM (por exemplo `job_application[first_name]`). Campo obrigatório sem
+  valor bloqueia a submissão em vez de enviar uma candidatura incompleta, e artefato fora do
+  `artifact_root` é recusado.
+- O executor Greenhouse envia o PDF como parte multipart quando o formulário tem campo de currículo.
+  Confirmação só é aceita por status reconhecido (JSON ou página HTML); redirect, erro e resposta
+  ambígua permanecem `SUBMIT_UNKNOWN`, e uma segunda tentativa é bloqueada.
+- `apply` só existe para providers com adapter e `LiveNetworkPolicy`. LinkedIn não possui executor
+  live: a política da plataforma proíbe automação de atividade por software de terceiros.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

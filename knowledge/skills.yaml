@@ -50,4 +50,179 @@ sql:
   label: SQL
   aliases: [sql, postgresql, postgres, mysql]
   categories: [database]
-
+html:
+  label: HTML
+  aliases: [html, html5, semantic html]
+  categories: [frontend]
+css:
+  label: CSS
+  aliases: [css, css3, flexbox, grid layout]
+  categories: [frontend]
+sass:
+  label: Sass
+  aliases: [sass, scss, less]
+  categories: [frontend, css]
+tailwind_css:
+  label: Tailwind CSS
+  aliases: [tailwind, tailwind css, tailwindcss]
+  categories: [frontend, css]
+nextjs:
+  label: Next.js
+  aliases: [nextjs, next.js, next js]
+  categories: [frontend, react]
+nodejs:
+  label: Node.js
+  aliases: [nodejs, node.js, node js, node]
+  categories: [backend, javascript]
+vue:
+  label: Vue.js
+  aliases: [vue, vuejs, vue.js, nuxt]
+  categories: [frontend]
+angular:
+  label: Angular
+  aliases: [angular, angularjs, angular.js]
+  categories: [frontend]
+jquery:
+  label: jQuery
+  aliases: [jquery]
+  categories: [frontend, javascript]
+graphql:
+  label: GraphQL
+  aliases: [graphql, apollo]
+  categories: [backend, integrations]
+mysql:
+  label: MySQL
+  aliases: [mysql, mariadb]
+  categories: [database]
+magento:
+  label: Magento
+  aliases: [magento, adobe commerce]
+  categories: [ecommerce, php]
+shopify:
+  label: Shopify
+  aliases: [shopify, liquid]
+  categories: [ecommerce]
+liquid:
+  label: Liquid
+  aliases: [liquid, shopify liquid]
+  categories: [ecommerce, frontend]
+eleventy:
+  label: Eleventy
+  aliases: [eleventy, 11ty]
+  categories: [frontend, static site]
+seo:
+  label: SEO
+  aliases: [seo, search engine optimization, core web vitals, technical seo]
+  categories: [marketing, web]
+primefaces:
+  label: PrimeFaces
+  aliases: [primefaces, jsf, jakarta faces, javaserver faces]
+  categories: [frontend, java]
+webpack:
+  label: Webpack
+  aliases: [webpack, vite, rollup, esbuild, bundler]
+  categories: [frontend, tooling]
+testing:
+  label: Testing
+  aliases: [jest, vitest, cypress, playwright, unittest, pytest, tdd, integration tests, unit tests]
+  categories: [quality]
+accessibility:
+  label: Accessibility
+  aliases: [accessibility, a11y, wcag, aria]
+  categories: [frontend, quality]
+performance:
+  label: Performance
+  aliases: [performance optimization, page speed, lighthouse, web performance, caching]
+  categories: [frontend, quality]
+agile:
+  label: Agile
+  aliases: [agile, scrum, kanban, sprint planning]
+  categories: [process]
+ci_cd:
+  label: CI/CD
+  aliases: [ci/cd, continuous integration, continuous delivery, github actions, gitlab ci, jenkins, pipelines]
+  categories: [devops]
+linux:
+  label: Linux
+  aliases: [linux, unix, bash, shell scripting]
+  categories: [devops, systems]
+nginx:
+  label: Nginx
+  aliases: [nginx, apache, reverse proxy]
+  categories: [devops, systems]
+redis:
+  label: Redis
+  aliases: [redis, memcached]
+  categories: [database, caching]
+mongodb:
+  label: MongoDB
+  aliases: [mongodb, mongo, nosql]
+  categories: [database]
+elasticsearch:
+  label: Elasticsearch
+  aliases: [elasticsearch, opensearch, solr]
+  categories: [search, database]
+kafka:
+  label: Kafka
+  aliases: [kafka, rabbitmq, message queue, pub/sub]
+  categories: [backend, integrations]
+java:
+  label: Java
+  aliases: [java, spring boot, spring, jvm, kotlin]
+  categories: [backend]
+go:
+  label: Go
+  aliases: [golang, go lang]
+  categories: [backend]
+rust:
+  label: Rust
+  aliases: [rust]
+  categories: [backend, systems]
+ruby:
+  label: Ruby
+  aliases: [ruby, ruby on rails, rails]
+  categories: [backend]
+csharp:
+  label: C#
+  aliases: [c#, .net, dotnet, asp.net]
+  categories: [backend]
+laravel:
+  label: Laravel
+  aliases: [laravel, symfony, codeigniter]
+  categories: [backend, php]
+django:
+  label: Django
+  aliases: [django, flask, fastapi]
+  categories: [backend, python]
+kubernetes:
+  label: Kubernetes
+  aliases: [kubernetes, k8s, helm, openshift]
+  categories: [devops, cloud]
+terraform:
+  label: Terraform
+  aliases: [terraform, infrastructure as code, iac, pulumi, cloudformation]
+  categories: [devops, cloud]
+observability:
+  label: Observability
+  aliases: [prometheus, grafana, datadog, cloudwatch, opentelemetry, monitoring, observability]
+  categories: [devops, quality]
+security:
+  label: Security
+  aliases: [oauth, jwt, sso, saml, owasp, penetration testing, application security]
+  categories: [security]
+mobile:
+  label: Mobile
+  aliases: [react native, flutter, swift, kotlin, ios, android]
+  categories: [mobile]
+design:
+  label: Design
+  aliases: [figma, sketch, adobe xd, design system, ux, ui design, wireframes]
+  categories: [design]
+cms_other:
+  label: Other CMS
+  aliases: [drupal, joomla, contentful, sanity, strapi, headless cms, webflow, squarespace, wix]
+  categories: [cms]
+ecommerce_other:
+  label: Other commerce
+  aliases: [bigcommerce, prestashop, salesforce commerce, commercetools, stripe, braintree, payment gateway]
+  categories: [ecommerce]

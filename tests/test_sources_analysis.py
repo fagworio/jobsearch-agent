@@ -161,3 +161,70 @@ def test_sponsorship_availability_is_separate_from_candidate_need():
     profile = load_profile(ROOT / "profile/career_profile.yaml")
     profile.candidate_preferences = load_preferences(ROOT / "profile/preferences.yaml", {"work_authorization": ["United States"], "requires_sponsorship": "yes"})
     assert "sponsorship_unavailable" in calculate_fit(job, analysis, profile).blockers
+
+
+def test_provider_payloads_with_pandas_scalars_stay_json_serializable():
+    """JobSpy hands back pandas records: dates, numpy scalars and NaN."""
+    import json
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from jobsearch_agent.sources import _json_safe, normalize_payload
+
+    payload = {
+        "title": "WordPress Developer",
+        "company": "Acme",
+        "job_url": "https://example.test/jobs/1",
+        "date_posted": date(2026, 9, 1),
+        "updated_at": datetime(2026, 9, 2, 10, 30),
+        "min_amount": Decimal("5000.0"),
+        "max_amount": float("nan"),
+        "nested": {"posted": date(2026, 8, 1)},
+        "tags": [date(2026, 7, 1)],
+    }
+    job = normalize_payload(payload, payload["job_url"])
+
+    assert job.posted_at == "2026-09-01"
+    encoded = json.dumps(job.raw_payload)
+    assert "2026-09-01" in encoded
+    assert "NaN" not in encoded
+    assert _json_safe(float("nan")) is None
+    assert _json_safe(Decimal("12.5")) == "12.5"
+    assert _json_safe({1: "a"}) == {"1": "a"}
+
+
+def test_fuzzy_skill_extraction_rejects_partial_token_hits():
+    """WRatio scores 'github' against 'github actions' at 90; that is not a skill."""
+    from jobsearch_agent.skills import SkillRegistry
+
+    registry = SkillRegistry.load(ROOT / "knowledge/skills.yaml")
+    assert registry.extract("A GitHub profile is required for this role.") == []
+    assert registry.extract("Build software for our customers.") == []
+    # Exact and near-exact aliases still resolve.
+    assert "CI/CD" in registry.extract("We run GitHub Actions and GitLab CI pipelines.")
+    assert "Kubernetes" in registry.extract("Experience with Kubernetes and Helm.")
+
+
+def test_fit_does_not_treat_missing_requirements_as_a_perfect_match():
+    """A posting with no extractable requirement must not score as a full match."""
+    from jobsearch_agent.skills import SkillRegistry
+
+    registry = SkillRegistry.load(ROOT / "knowledge/skills.yaml")
+    assert registry.extract("Build software for our customers.") == []
+    job = Job(id="j", source="fixture", external_id="1", company="Co", title="Engineer", description="Build software for our customers.")
+    analysis = analyze_requirements(job)
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    fit = calculate_fit(job, analysis, profile)
+    assert fit.required_match == 0.0
+    assert any(item.criterion == "required_skills" and item.result.value == "unknown" for item in fit.criteria)
+    assert "no required skill was extracted" in " ".join(fit.explanation).casefold()
+
+
+def test_fit_scores_a_matching_stack_above_an_unrelated_one():
+    profile = load_profile(ROOT / "profile/career_profile.yaml")
+    matching = Job(id="m", source="fixture", external_id="m", company="Co", title="WordPress Developer", description="WordPress, WooCommerce and PHP.")
+    unrelated = Job(id="u", source="fixture", external_id="u", company="Co", title="DevOps Engineer", description="Kubernetes, Terraform, Go and Rust in production.")
+    matching_fit = calculate_fit(matching, analyze_requirements(matching), profile)
+    unrelated_fit = calculate_fit(unrelated, analyze_requirements(unrelated), profile)
+    assert matching_fit.score > unrelated_fit.score
+    assert "missing_required:Kubernetes" in unrelated_fit.blockers

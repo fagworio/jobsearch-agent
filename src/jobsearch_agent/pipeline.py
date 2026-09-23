@@ -10,14 +10,16 @@ from typing import Any
 
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
-from .ats import GreenhouseAdapter
-from .browser import DryRunBrowserExecutor
+from .ats import GreenhouseAdapter, adapter_for
+from .browser import DryRunBrowserExecutor, PlaywrightSessionManager
 from .config import Settings
 from .execution import build_execution_plan
+from .greenhouse import GreenhouseSubmissionExecutor
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
 from .observability import append_event
+from .orchestrator import LiveApplicationOrchestrator
 from .persistence import Database
 from .profile import PROFILE_OPTIONAL_PATHS, PROFILE_REQUIRED_PATHS, load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts, validate_profile_readiness
 from .qa import AnswerKnowledgeBase, load_answers
@@ -25,7 +27,14 @@ from .resume import generate_resume, render_docx, render_pdf_from_docx, render_t
 from .schemas import validate_contract
 from .serialization import canonical_json
 from .sources import JOBSPY, canonical_job_key, fetch_payload, normalize_payload
-from .submission import compute_answers_fingerprint
+from .submission import (
+    LiveNetworkPolicy,
+    SubmissionService,
+    build_review_snapshot,
+    build_submission_payload,
+    compute_answers_fingerprint,
+    review_field_rows,
+)
 
 
 class PipelineError(RuntimeError):
@@ -72,6 +81,52 @@ def search(settings: Settings, query: str, *, sites: list[str] | None = None, lo
         db.close()
     append_event(settings.root, "jobs_discovered", query=query, count=len(persisted), source="jobspy")
     return {"query": query, "source": "jobspy", "count": len(persisted), "jobs": [to_dict(job) for job in persisted]}
+
+
+def discover(
+    settings: Settings,
+    provider: str,
+    boards: list[str],
+    *,
+    query: str = "",
+    location: str = "",
+    limit: int = 0,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Discover jobs from public ATS board APIs and persist them.
+
+    Read-only GET against the board's own public JSON endpoint. No credentials,
+    no session and no scraping: boards that fail are reported without aborting
+    the others.
+    """
+    from .boards import discover_many
+
+    pairs = [(provider, board) for board in boards]
+    jobs, failures = discover_many(
+        pairs,
+        timeout=timeout or settings.request_timeout,
+        query=query,
+        location=location,
+        limit=limit,
+    )
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        persisted = []
+        for job in jobs:
+            job = db.save_job(job, canonical_job_key(job), job.raw_payload)
+            db.record_event(job.id, "job_discovered", {"source": job.source, "title": job.title, "board": job.company}, now_iso())
+            persisted.append(job)
+    finally:
+        db.close()
+    append_event(settings.root, "jobs_discovered", source=f"board:{provider}", count=len(persisted))
+    return {
+        "provider": provider,
+        "query": query,
+        "location": location,
+        "count": len(persisted),
+        "failures": failures,
+        "jobs": [to_dict(job) for job in persisted],
+    }
 
 
 def _load_profile_data(settings: Settings):
@@ -418,6 +473,231 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
         }
     finally:
         db.close()
+
+
+def apply_live(
+    settings: Settings,
+    job_id: str,
+    *,
+    headless: bool = True,
+    allow_advance: bool = True,
+    max_cycles: int = 5,
+    submit: bool = False,
+    submit_timeout: float = 10.0,
+    intent_ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Open the job's real page, fill it, upload the resume and stop before submit.
+
+    The browser runs inside the same guarded session used by the dry run: every
+    network write is blocked, so this flow can fill and upload but can never
+    submit. ``submit=True`` performs the separate, explicitly authorized HTTP
+    submission against the persisted review snapshot after the fill succeeded.
+    """
+    prepared = prepare(settings, job_id)
+    artifact_dir = Path(prepared["artifacts"])
+    resume_path = artifact_dir / "resume.pdf"
+    if not prepared["validation"].get("valid"):
+        return {
+            "status": "MATERIALS_INVALID",
+            "job_id": job_id,
+            "validation": prepared["validation"],
+            "browser_started": False,
+        }
+    if not resume_path.is_file():
+        return {"status": "MISSING_RESUME_ARTIFACT", "job_id": job_id, "browser_started": False}
+
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        job = db.get_job(job_id)
+        if not job:
+            raise PipelineError(f"job not found: {job_id}")
+        if not job.url:
+            raise PipelineError(f"job has no application URL: {job_id}")
+        adapter = adapter_for(job.url, "")
+        if adapter is None:
+            raise PipelineError(f"no supported ATS adapter for live apply: {job.url}")
+        profile, _facts = _load_profile_data(settings)
+        preferences = profile.candidate_preferences
+        policy = load_application_policy(settings.resolve(settings.application_policy_path))
+        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+
+        service = ApplicationService(db)
+        application = service.create_for_job(job_id)
+        if application.state == ApplicationState.DRAFT:
+            application = service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
+        if application.state == ApplicationState.PREPARING:
+            application = service.transition(application.id, ApplicationState.MATERIALS_READY, "materials_ready")
+
+        context = ApplicationContext(
+            application_id=application.id,
+            job_id=job_id,
+            fit=prepared["fit"],
+            resume=prepared["resume"],
+            validation=prepared["validation"],
+            answers=[],
+            form=None,
+            policy=policy,
+        )
+        resume_sha256 = hashlib.sha256(resume_path.read_bytes()).hexdigest()
+
+        session = PlaywrightSessionManager(headless=headless, allowed_hosts=adapter.allowed_hosts(job.url))
+        session.start()
+        try:
+            orchestrator = LiveApplicationOrchestrator(
+                adapter,
+                profile,
+                preferences,
+                answers,
+                max_cycles=max_cycles,
+                allow_advance=allow_advance,
+                artifact_root=str(artifact_dir),
+                default_resume=str(resume_path),
+            )
+            live = orchestrator.run(session, context, job.url, audit_dir=artifact_dir / "browser")
+        finally:
+            session.close()
+
+        response: dict[str, Any] = {
+            "status": live.status,
+            "job_id": job_id,
+            "application_id": application.id,
+            "provider": live.provider or adapter.provider,
+            "url": live.url or job.url,
+            "advanced_steps": live.advanced_steps,
+            "form_fingerprint": live.form_fingerprint,
+            "network_writes_allowed": False,
+            "error": live.error,
+        }
+        if live.form is not None:
+            answers_fingerprint = compute_answers_fingerprint(live.form)
+            db.save_application_form(application.id, live.form)
+            context.form = live.form
+            context.validation["dry_run"] = {
+                "form_fingerprint": live.form_fingerprint,
+                "answers_fingerprint": answers_fingerprint,
+                "status": live.status,
+                "source": "live",
+            }
+            application.context = to_dict(context)
+            application.context["resume_sha256"] = resume_sha256
+            application = _advance_to_review(service, application, live, context)
+            response["answers_fingerprint"] = answers_fingerprint
+            response["application_state"] = application.state.value
+            if submit:
+                response["submission"] = _submit_live(
+                    db,
+                    application,
+                    job,
+                    live.form,
+                    artifact_dir,
+                    provider=adapter.provider,
+                    timeout=submit_timeout,
+                    ttl_seconds=intent_ttl_seconds,
+                )
+                response["application_state"] = db.get_application(application.id).state.value
+        append_event(
+            settings.root,
+            "application_live_fill",
+            job_id=job_id,
+            status=live.status,
+            advanced_steps=live.advanced_steps,
+        )
+        return response
+    finally:
+        db.close()
+
+
+def _advance_to_review(service: ApplicationService, application, live, context: ApplicationContext):
+    """Record that a live fill reached the human review surface."""
+    readiness = live.readiness or evaluate_safety_gate(context)
+    application.context["readiness"] = to_dict(readiness)
+    service.database.save_application(application)
+    if live.status != "FILLED_REVIEW_REQUIRED":
+        return application
+    if application.state == ApplicationState.MATERIALS_READY:
+        application = service.transition(
+            application.id,
+            ApplicationState.READY_FOR_REVIEW,
+            "live_fill_materials_ready",
+            {"network_access": "browser_guarded", "submission_attempted": False},
+        )
+    if application.state == ApplicationState.READY_FOR_REVIEW:
+        application = service.transition(
+            application.id,
+            ApplicationState.REVIEW_REACHED,
+            "live_fill_review_reached",
+            {"network_access": "browser_guarded", "submission_attempted": False},
+        )
+    return application
+
+
+def _submit_live(
+    db: Database,
+    application,
+    job,
+    form,
+    artifact_dir: Path,
+    *,
+    provider: str,
+    timeout: float,
+    ttl_seconds: int,
+) -> dict[str, Any]:
+    """Authorize and perform the single submission for a filled application."""
+    validation = application.context.get("validation", {})
+    live = validation.get("dry_run", {})
+    form_fingerprint = str(live.get("form_fingerprint", ""))
+    answers_fingerprint = str(live.get("answers_fingerprint", ""))
+    resume_sha256 = str(application.context.get("resume_sha256", ""))
+    if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
+        raise PipelineError("live submission requires form, answers and resume fingerprints")
+    resolved_fields, manual_questions = review_field_rows(form)
+    submission_service = SubmissionService(db)
+    submission_service.save_review_snapshot(
+        build_review_snapshot(
+            application_id=application.id,
+            job_id=application.job_id,
+            company=job.company,
+            title=job.title,
+            provider=provider,
+            destination=job.url,
+            resume_filename="resume.pdf",
+            resume_sha256=resume_sha256,
+            form_fingerprint=form_fingerprint,
+            answers_fingerprint=answers_fingerprint,
+            resolved_fields=resolved_fields,
+            manual_questions=manual_questions,
+        )
+    )
+    intent = submission_service.create_intent(
+        application_id=application.id,
+        job_id=application.job_id,
+        provider=provider,
+        destination=job.url,
+        form_fingerprint=form_fingerprint,
+        resume_sha256=resume_sha256,
+        answers_fingerprint=answers_fingerprint,
+        expires_in_seconds=ttl_seconds,
+    )
+    submission_service.authorize_submission(intent.id)
+    payload = build_submission_payload(form, artifact_root=str(artifact_dir))
+    policy = LiveNetworkPolicy.for_submission(provider, application.id, intent.id)
+    execution = GreenhouseSubmissionExecutor(db, timeout=timeout).submit(
+        intent.id,
+        current_form_fingerprint=form_fingerprint,
+        current_resume_sha256=resume_sha256,
+        current_answers_fingerprint=answers_fingerprint,
+        policy=policy,
+        fields=payload.fields,
+        files=payload.files,
+    )
+    return {
+        "intent_id": intent.id,
+        "status": execution.status,
+        "http_status": execution.http_status,
+        "files_sent": execution.files_sent,
+        "fields_sent": execution.fields_sent,
+        "error": execution.error,
+    }
 
 
 def run(settings: Settings, payload: dict[str, Any] | None = None, url: str = "", language_override: str | None = None) -> dict[str, Any]:

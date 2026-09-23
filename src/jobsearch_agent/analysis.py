@@ -331,7 +331,10 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     matched = [skill for skill in required + preferred if _skill_matches(skill, profile_skills)]
     missing_required = [skill for skill in required if skill not in matched]
     missing_preferred = [skill for skill in preferred if skill not in matched]
-    required_match = _ratio(matched, required)
+    requirements_known = bool(required)
+    # Absence of evidence is not evidence of a match: a posting whose
+    # requirements could not be extracted must not score as a perfect fit.
+    required_match = _ratio(matched, required) if requirements_known else 0.0
     preferred_match = _ratio(matched, preferred)
     experience_match = 1.0 if profile.experiences else 0.0
     language_match, language_blocker, language_criteria = _language_fit(analysis, profile)
@@ -378,8 +381,12 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
     preferences = profile.candidate_preferences or profile.preferences
     criteria.append(FitCriterionResult("location", preferences, job.location or job.remote_type, location_result, location_match, location_blocker, f"Job location: {job.location or job.remote_type}", "job + candidate_preferences"))
     criteria.append(FitCriterionResult("experience", len(profile.experiences), analysis.years_of_experience or "experience", FitCriterionStatus.MATCH if experience_match else FitCriterionStatus.MISSING, experience_match, False, "Profile experience records", "career_profile"))
+    if not requirements_known:
+        criteria.append(FitCriterionResult("required_skills", 0, "at least one recognised requirement", FitCriterionStatus.UNKNOWN, 0.0, False, "No required skill was extracted from the posting; required coverage is reported as 0%", "skill_registry"))
     score = round(100 * (0.42 * required_match + 0.14 * preferred_match + 0.14 * experience_match + 0.15 * language_match + 0.05 * location_match + 0.10 * work_authorization_match), 2)
     explanation = [f"Required coverage: {required_match:.0%}.", f"Preferred coverage: {preferred_match:.0%}.", f"Language match: {language_match:.0%}.", f"Location match: {location_match:.0%}."]
+    if not requirements_known:
+        explanation.append("No required skill was extracted from the posting, so fit is not estimated.")
     if missing_required:
         explanation.append("Missing required skills: " + ", ".join(missing_required))
     return FitResult(score, required_match, preferred_match, experience_match, language_match, location_match, matched, missing_required, missing_preferred, blockers, explanation, criteria)

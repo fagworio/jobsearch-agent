@@ -8,12 +8,23 @@ network policy, and persist the attempt before this class sends a request.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import httpx
 
 from .persistence import Database
 from .submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService, SubmissionVerification
+
+
+_CONFIRMATION_MARKERS = (
+    "application submitted",
+    "application has been submitted",
+    "your application was submitted",
+    "thank you for applying",
+    "thanks for applying",
+    "we received your application",
+    "we have received your application",
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +33,8 @@ class SubmissionExecutionResult:
     attempt_id: str
     http_status: int | None = None
     error: str = ""
+    files_sent: int = 0
+    fields_sent: int = 0
 
 
 class GreenhouseSubmissionExecutor:
@@ -44,13 +57,16 @@ class GreenhouseSubmissionExecutor:
         current_resume_sha256: str,
         current_answers_fingerprint: str,
         policy: LiveNetworkPolicy,
-        payload: Mapping[str, str],
+        fields: Mapping[str, str | Sequence[str]],
+        files: Mapping[str, tuple[str, bytes, str]] | None = None,
     ) -> SubmissionExecutionResult:
         intent = self.database.get_submission_intent(intent_id)
         if not intent:
             raise SubmissionBoundaryError(f"submission intent not found: {intent_id}")
         if intent.provider != self.provider:
             raise SubmissionBoundaryError(f"Greenhouse executor cannot handle provider: {intent.provider}")
+        if not fields and not files:
+            raise SubmissionBoundaryError("submission requires at least one field or file part")
         service = SubmissionService(self.database)
         attempt = service.begin_submission(
             intent_id,
@@ -65,7 +81,14 @@ class GreenhouseSubmissionExecutor:
         owned_client = self.client is None
         client = self.client or httpx.Client(follow_redirects=False, timeout=self.timeout)
         try:
-            response = client.post(intent.destination, data=dict(payload), timeout=self.timeout)
+            # Multipart only when a file part exists: Greenhouse accepts the
+            # namespaced form fields and the resume document in one request.
+            response = client.post(
+                intent.destination,
+                data=dict(fields),
+                files=dict(files) if files else None,
+                timeout=self.timeout,
+            )
         except httpx.TimeoutException:
             completed = service.record_result(attempt.id, SubmissionVerification.unknown("request timeout"))
             return SubmissionExecutionResult(completed.status, completed.id, error="request timeout")
@@ -76,6 +99,8 @@ class GreenhouseSubmissionExecutor:
             if owned_client:
                 client.close()
 
+        files_sent = len(files or {})
+        fields_sent = len(fields)
         status_code = response.status_code
         if 200 <= status_code < 300:
             provider_status = self._provider_status(response)
@@ -87,29 +112,49 @@ class GreenhouseSubmissionExecutor:
                         {"status_code": status_code, "provider_status": provider_status},
                     ),
                 )
-                return SubmissionExecutionResult(completed.status, completed.id, status_code)
+                return SubmissionExecutionResult(completed.status, completed.id, status_code, files_sent=files_sent, fields_sent=fields_sent)
             completed = service.record_result(attempt.id, SubmissionVerification.unknown("confirmation missing"))
-            return SubmissionExecutionResult(completed.status, completed.id, status_code, "confirmation missing")
+            return SubmissionExecutionResult(completed.status, completed.id, status_code, "confirmation missing", files_sent, fields_sent)
 
         if 300 <= status_code < 400:
             completed = service.record_result(
                 attempt.id,
                 SubmissionVerification.unknown("redirect without confirmation"),
             )
-            return SubmissionExecutionResult(completed.status, completed.id, status_code, "redirect without confirmation")
+            return SubmissionExecutionResult(completed.status, completed.id, status_code, "redirect without confirmation", files_sent, fields_sent)
 
         completed = service.record_result(
             attempt.id,
             SubmissionVerification.failed("provider rejected submission"),
         )
-        return SubmissionExecutionResult(completed.status, completed.id, status_code, "provider rejected submission")
+        return SubmissionExecutionResult(completed.status, completed.id, status_code, "provider rejected submission", files_sent, fields_sent)
 
     @staticmethod
     def _provider_status(response: httpx.Response) -> str:
         try:
             body = response.json()
         except ValueError:
-            return ""
+            return _html_confirmation_status(response)
         if not isinstance(body, dict):
             return ""
         return str(body.get("status", "")).casefold().strip()
+
+
+def _html_confirmation_status(response: httpx.Response) -> str:
+    """Recognize a 2xx HTML confirmation page without trusting its markup.
+
+    Real boards answer a successful POST with an HTML confirmation instead of
+    the JSON status used by controlled tests. Only a small allowlist of
+    confirmation phrases counts, and only for a 2xx response: anything else
+    stays unknown so the attempt is never marked ``SUBMITTED`` on a guess.
+    """
+    content_type = str(response.headers.get("content-type", "")).casefold()
+    if "html" not in content_type:
+        return ""
+    try:
+        text = response.text.casefold()
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if any(marker in text for marker in _CONFIRMATION_MARKERS):
+        return "submitted"
+    return ""

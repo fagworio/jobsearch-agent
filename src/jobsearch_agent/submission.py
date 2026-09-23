@@ -13,11 +13,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from pathlib import Path
 import re
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .application import ApplicationDomainError, ApplicationService
+from .forms import detect_file_mime, effective_attachment_path
 from .models import (
     ApplicationEvent,
     ApplicationForm,
@@ -60,6 +62,88 @@ def compute_answers_fingerprint(form: ApplicationForm) -> str:
 
 class SubmissionBoundaryError(ValueError):
     """Raised when a live submission would violate its authorization boundary."""
+
+
+@dataclass(frozen=True)
+class SubmissionPayload:
+    """Wire payload derived from a resolved, validated application form.
+
+    ``fields`` keeps the DOM ``name`` attribute as the key so a provider that
+    expects a namespaced form (for example ``job_application[first_name]``)
+    receives the exact contract its page declares. Values are either a single
+    string or a list for repeated multi-value controls.
+    """
+
+    fields: dict[str, str | list[str]] = field(default_factory=dict)
+    files: dict[str, tuple[str, bytes, str]] = field(default_factory=dict)
+    omitted: list[str] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.fields and not self.files
+
+
+def _payload_value(field) -> object:
+    if field.value not in (None, ""):
+        return field.value
+    return field.answer.answer if field.answer else ""
+
+
+def _is_blank(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip()) or value == []
+
+
+def build_submission_payload(form: ApplicationForm, *, artifact_root: str = "") -> SubmissionPayload:
+    """Translate a resolved ``ApplicationForm`` into an HTTP submission payload.
+
+    Only values that already resolved through the Safety Gate are included: a
+    required field with no value raises instead of silently posting an
+    incomplete application. File fields are read from the controlled artifact
+    root and carried as multipart parts.
+    """
+    root = form.artifact_root or artifact_root
+    fields: dict[str, str | list[str]] = {}
+    files: dict[str, tuple[str, bytes, str]] = {}
+    omitted: list[str] = []
+    for item in sorted(form.fields, key=lambda candidate: candidate.key):
+        if item.disabled:
+            omitted.append(item.key)
+            continue
+        field_type = item.field_type.casefold().strip()
+        if field_type == "file":
+            path_value = effective_attachment_path(item)
+            if not path_value:
+                if item.required:
+                    raise SubmissionBoundaryError(f"required file artifact is missing: {item.key}")
+                omitted.append(item.key)
+                continue
+            path = Path(path_value).expanduser().resolve()
+            if root:
+                try:
+                    path.relative_to(Path(root).expanduser().resolve())
+                except ValueError as exc:
+                    raise SubmissionBoundaryError(f"file artifact is outside the controlled root: {item.key}") from exc
+            if not path.is_file():
+                raise SubmissionBoundaryError(f"file artifact does not exist: {item.key}")
+            files[item.key] = (path.name, path.read_bytes(), detect_file_mime(path))
+            continue
+        value = _payload_value(item)
+        if _is_blank(value):
+            if item.required:
+                raise SubmissionBoundaryError(f"required field has no resolved value: {item.key}")
+            omitted.append(item.key)
+            continue
+        if field_type == "checkbox" and item.semantic_type == "checkbox_multi":
+            selected = value if isinstance(value, list) else [part.strip() for part in str(value).split(",") if part.strip()]
+            if not selected:
+                omitted.append(item.key)
+                continue
+            fields[item.key] = [str(part) for part in selected]
+            continue
+        fields[item.key] = str(value)
+    if not fields and not files:
+        raise SubmissionBoundaryError("submission payload would be empty")
+    return SubmissionPayload(fields, files, omitted)
 
 
 @dataclass(frozen=True)
@@ -152,6 +236,58 @@ def build_review_snapshot(
         resolved_fields=resolved_fields or [],
         manual_questions=manual_questions or [],
     )
+
+
+def review_field_rows(form: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Split a resolved form into reviewable rows and rows needing a human.
+
+    Accepts either an ``ApplicationForm`` or its persisted dict shape so the
+    CLI, the live flow and the review snapshot all describe the same data.
+    """
+    fields = form.get("fields", []) if isinstance(form, dict) else getattr(form, "fields", [])
+    resolved: list[dict[str, object]] = []
+    manual: list[dict[str, object]] = []
+    for field in fields or []:
+        if isinstance(field, dict):
+            key = field.get("key", "")
+            semantic_type = field.get("semantic_type", "unknown")
+            value = field.get("value", "")
+            source = field.get("source", "unknown")
+            answer = field.get("answer")
+        else:
+            key = field.key
+            semantic_type = field.semantic_type
+            value = field.value
+            source = field.source
+            answer = field.answer
+        item: dict[str, object] = {
+            "key": key,
+            "semantic_type": semantic_type,
+            "value": value,
+            "source": source,
+        }
+        if answer:
+            if isinstance(answer, dict):
+                answer_value = answer.get("answer", "")
+                answer_source = answer.get("source", "unknown")
+                supported_by = list(answer.get("supported_by", []))
+                approved = bool(answer.get("approved", False))
+                legal = bool(answer.get("legal", False))
+            else:
+                answer_value = answer.answer
+                answer_source = answer.source
+                supported_by = list(answer.supported_by)
+                approved = answer.approved
+                legal = answer.legal
+            item["answer"] = answer_value
+            item["answer_source"] = answer_source
+            item["supported_by"] = supported_by
+            item["approved"] = approved
+            item["legal"] = legal
+            if legal or not approved or answer_source in {"manual", "unknown"}:
+                manual.append(item)
+        resolved.append(item)
+    return resolved, manual
 
 
 def _expires_at(seconds: int) -> str:

@@ -33,6 +33,27 @@ class SkillRegistry:
     def __init__(self, skills: Iterable[Skill]):
         self.skills = tuple(skills)
         self._by_key = {skill.key: skill for skill in self.skills}
+        self._fuzzy_index = self._build_fuzzy_index()
+
+    def _build_fuzzy_index(self) -> dict[tuple[int, str], list[tuple[str, "Skill"]]]:
+        """Bucket single-word aliases by (normalized length, first character).
+
+        The fuzzy fallback only exists for single-token spelling variants;
+        multi-word variants are listed explicitly and caught by the literal
+        pass. Bucketing by length and first letter turns the scan from
+        text × skills × aliases of WRatio calls into a handful of dict lookups
+        per token, most of which miss.
+        """
+        index: dict[tuple[int, str], list[tuple[str, Skill]]] = {}
+        for skill in self.skills:
+            for alias in (skill.label, *skill.aliases):
+                if " " in alias.strip():
+                    continue
+                alias_norm = normalize(alias)
+                if len(alias_norm) <= 3:
+                    continue
+                index.setdefault((len(alias_norm), alias_norm[0]), []).append((alias_norm, skill))
+        return index
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkillRegistry":
@@ -70,19 +91,47 @@ class SkillRegistry:
 
     def extract(self, text: str, threshold: float = 88.0) -> list[str]:
         lowered = text.lower()
-        found: list[str] = []
+        found: list[Skill] = []
+        pending: list[Skill] = []
         for skill in self.skills:
             aliases = (skill.label, *skill.aliases)
             if any(re.search(rf"(?<![a-z0-9]){re.escape(alias.lower())}(?![a-z0-9])", lowered) for alias in aliases):
-                found.append(skill.label)
+                found.append(skill)
+            else:
+                pending.append(skill)
+        if pending:
+            found.extend(self._fuzzy_pass(lowered, pending, threshold))
+        return [skill.label for skill in self.skills if skill in found]
+
+    def _fuzzy_pass(self, lowered: str, pending: list["Skill"], threshold: float) -> list["Skill"]:
+        """Catch single-token spelling variants without accepting partial hits.
+
+        ``WRatio`` scores a single token against a longer multi-word alias very
+        highly (``"github"`` vs ``"github actions"`` scores 90), which would map
+        an unrelated word onto a skill. Only single tokens are compared, only
+        against single-word aliases, and only when the normalized lengths are
+        comparable; multi-word variants belong in the explicit ``aliases`` list,
+        where the literal pass picks them up.
+        """
+        pending_set = set(pending)
+        matched: set[Skill] = set()
+        for token in re.findall(r"[a-z0-9.+#-]+", lowered):
+            token_norm = normalize(token)
+            length = len(token_norm)
+            if length <= 3:
                 continue
-            # Tenta janelas curtas para variações como “RESTful APIs”.
-            words = re.findall(r"[a-z0-9.+#-]+", lowered)
-            for size in range(1, min(4, len(words)) + 1):
-                if any(len(normalize(alias)) > 3 and len(normalize(" ".join(words[index:index + size]))) > 3 and self._score(normalize(" ".join(words[index:index + size])), normalize(alias)) >= threshold for index in range(len(words) - size + 1) for alias in aliases):
-                    found.append(skill.label)
-                    break
-        return found
+            slack = max(2, length // 3)
+            for candidate_length in range(max(4, length - slack - 1), length + slack + 2):
+                for alias_norm, skill in self._fuzzy_index.get((candidate_length, token_norm[0]), ()):  # noqa: E501
+                    if skill in matched or skill not in pending_set:
+                        continue
+                    if abs(length - candidate_length) > max(2, candidate_length // 3):
+                        continue
+                    if self._score(token_norm, alias_norm) >= threshold:
+                        matched.add(skill)
+                        if len(matched) == len(pending_set):
+                            return [skill for skill in pending if skill in matched]
+        return [skill for skill in pending if skill in matched]
 
     @staticmethod
     def _score(left: str, right: str) -> float:

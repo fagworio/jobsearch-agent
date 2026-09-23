@@ -1,0 +1,79 @@
+# Boards públicos varridos pelo comando `shortlist`.
+#
+# Todos são APIs JSON públicas dos próprios ATS, somente leitura, sem
+# credenciais. Ajuste a lista à vontade: `--provider`/`--board` do CLI
+# sobrescrevem este arquivo.
+boards:
+  greenhouse:
+    - gitlab
+    - databricks
+    - robinhood
+    - stripe
+    - coinbase
+    - dropbox
+    - reddit
+    - discord
+    - figma
+    - vercel
+    - cloudflare
+    - affirm
+    - instacart
+    - airbnb
+    - twitch
+    - lyft
+  ashby:
+    - ramp
+    - openai
+    - linear
+    - vanta
+    - mercury
+    - posthog
+    - sardine
+    - deel
+  lever:
+    - spotify
+    - toptal
+
+# Critérios de seleção. Uma vaga só entra na shortlist se o anúncio foi
+# entendido (>= min_required_skills reconhecidas), pertence à área de atuação
+# do candidato (título), não tem bloqueio de fit e supera min_score.
+criteria:
+  # Abaixo disto o extrator não entendeu o anúncio e o score não é confiável.
+  min_required_skills: 3
+  min_score: 70.0
+  # Evita empilhar várias vagas da mesma empresa.
+  max_per_company: 1
+  # location_mismatch não barra por padrão: muitas vagas remotas vêm com país
+  # específico e o candidato aceita remoto.
+  allow_location_mismatch: true
+  # Termos de título que indicam a área do candidato. Somados aos cargos do
+  # próprio Career Profile.
+  target_terms: []
+  # Disciplinas que não são a área do candidato; barram mesmo com score alto,
+  # a menos que o título também case com um termo alvo.
+  exclude_terms:
+    - backend
+    - back-end
+    - back end
+    - devops
+    - sre
+    - site reliability
+    - database
+    - data engineer
+    - data scientist
+    - machine learning
+    - ml engineer
+    - ai engineer
+    - ios
+    - android
+    - mobile engineer
+    - security engineer
+    - penetration
+    - sales
+    - account executive
+    - marketing
+    - recruiter
+    - talent
+    - finance
+    - legal
+    - support engineer

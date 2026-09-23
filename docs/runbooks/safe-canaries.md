@@ -80,6 +80,46 @@ Critérios:
 - somente confirmação controlada produz `SUBMITTED`;
 - resposta e evidência não persistem corpo arbitrário nem PII.
 
+## Canary 003 — Apply ao vivo (preenchimento real, sem submit)
+
+Objetivo:
+
+```text
+1 vaga pública em ATS suportado (Greenhouse)
+→ apply <job-id>
+→ navegação, preenchimento e upload do currículo
+→ FILLED_REVIEW_REQUIRED
+```
+
+Limites do agente:
+
+- a sessão do browser bloqueia POST/PUT/PATCH/DELETE, WebSocket e submit de formulário;
+- sem `--submit` o comando não escreve na rede em nenhum momento;
+- o submit exige um segundo comando explícito e nunca é automático;
+- um controle de avanço que tente escrita para a execução com
+  `ADVANCE_BLOCKED_BY_NETWORK_POLICY`.
+
+Checklist humano:
+
+- [ ] escolher uma vaga de teste pública e conferir que o ATS é suportado;
+- [ ] executar `apply <job-id>` **sem** `--submit`;
+- [ ] conferir `status`, `advanced_steps`, `form_fingerprint` e `answers_fingerprint` no JSON;
+- [ ] rodar `application review <application-id>` e revisar campos resolvidos e perguntas manuais;
+- [ ] confirmar que nenhuma pergunta jurídica ou sem suporte factual foi respondida;
+- [ ] só então decidir por `apply <job-id> --submit`;
+- [ ] registrar o resultado fora de credenciais e fora do CI.
+
+Evidência aceitável:
+
+```text
+FILLED_REVIEW_REQUIRED
+```
+
+Este canary nunca é executado contra o LinkedIn. A cobertura automatizada do
+repositório usa um servidor HTTP local e um browser real, nunca um empregador
+real: os testes provam navegação, preenchimento, upload multipart e ausência de
+POST, mas não disparam candidaturas reais.
+
 ## Pré-condições comuns
 
 Antes de qualquer canary:

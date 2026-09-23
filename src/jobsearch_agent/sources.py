@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
@@ -52,6 +54,36 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert provider payload values (pandas/numpy/date) into JSON-native data.
+
+    Discovery providers hand back pandas records: ``date_posted`` is a
+    ``datetime.date``, amounts are numpy scalars and missing values are ``NaN``.
+    The raw payload is persisted and printed, so it must be serializable before
+    it reaches the domain.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return None if math.isnan(value) else value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if type(value).__name__ in {"NAType", "NaTType"}:
+        return None
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except (TypeError, ValueError):
+            pass
+    rendered = str(value).strip()
+    return "" if rendered in {"nan", "NaT", "None"} else rendered
+
+
 def _external_id(url: str, payload: dict[str, Any]) -> str:
     for key in ("id", "job_id", "requisition_id", "external_id", "job_url"):
         if payload.get(key):
@@ -87,9 +119,11 @@ def _job(source: str, payload: dict[str, Any], url: str, *, company: str = "") -
         salary=_text(payload.get("salary") or payload.get("compensation")),
         currency=_text(payload.get("currency")),
         url=url,
-        posted_at=_text(payload.get("posted_at") or payload.get("published_at")),
+        posted_at=_text(
+            payload.get("posted_at") or payload.get("published_at") or _json_safe(payload.get("date_posted"))
+        ),
         discovered_at=now_iso(),
-        raw_payload=payload,
+        raw_payload=_json_safe(payload),
         state=JobState.NORMALIZED,
     )
 

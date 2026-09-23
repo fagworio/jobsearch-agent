@@ -85,7 +85,7 @@ def test_greenhouse_executor_posts_once_and_requires_provider_confirmation(tmp_p
             current_resume_sha256="resume-v1",
             current_answers_fingerprint="answers-v1",
             policy=policy,
-            payload={"name": "Candidate", "email": "candidate@example.test"},
+            fields={"name": "Candidate", "email": "candidate@example.test"},
         )
         assert result.status == "SUBMITTED"
         assert result.http_status == 201
@@ -105,7 +105,7 @@ def test_greenhouse_validation_error_becomes_submit_failed(tmp_path: Path):
             current_resume_sha256="resume-v1",
             current_answers_fingerprint="answers-v1",
             policy=policy,
-            payload={"name": "Candidate"},
+            fields={"name": "Candidate"},
         )
         assert result.status == "SUBMIT_FAILED"
         assert result.http_status == 422
@@ -126,7 +126,7 @@ def test_server_error_or_redirect_never_becomes_confirmed(tmp_path: Path, path: 
             current_resume_sha256="resume-v1",
             current_answers_fingerprint="answers-v1",
             policy=policy,
-            payload={"name": "Candidate"},
+            fields={"name": "Candidate"},
         )
         assert result.status == expected_status
         assert result.status != "SUBMITTED"
@@ -145,7 +145,7 @@ def test_timeout_becomes_submit_unknown_and_is_not_retried(tmp_path: Path):
             current_resume_sha256="resume-v1",
             current_answers_fingerprint="answers-v1",
             policy=policy,
-            payload={"name": "Candidate"},
+            fields={"name": "Candidate"},
         )
         assert result.status == "SUBMIT_UNKNOWN"
         with pytest.raises(SubmissionBoundaryError, match="unknown"):
@@ -155,7 +155,7 @@ def test_timeout_becomes_submit_unknown_and_is_not_retried(tmp_path: Path):
                 current_resume_sha256="resume-v1",
                 current_answers_fingerprint="answers-v1",
                 policy=policy,
-                payload={"name": "Candidate"},
+                fields={"name": "Candidate"},
             )
         db.close()
 
@@ -172,7 +172,7 @@ def test_duplicate_request_is_blocked_before_second_network_write(tmp_path: Path
             current_resume_sha256="resume-v1",
             current_answers_fingerprint="answers-v1",
             policy=policy,
-            payload={"name": "Candidate"},
+            fields={"name": "Candidate"},
         )
         assert first.status == "SUBMITTED"
         with pytest.raises(SubmissionBoundaryError, match="duplicate"):
@@ -182,7 +182,7 @@ def test_duplicate_request_is_blocked_before_second_network_write(tmp_path: Path
                 current_resume_sha256="resume-v1",
                 current_answers_fingerprint="answers-v1",
                 policy=policy,
-                payload={"name": "Candidate"},
+                fields={"name": "Candidate"},
             )
         assert len(server.requests) == 1
         db.close()
@@ -209,7 +209,7 @@ def test_unexpected_endpoint_is_blocked_without_request(tmp_path: Path):
                 current_resume_sha256="resume-v1",
                 current_answers_fingerprint="answers-v1",
                 policy=bad_policy,
-                payload={"name": "Candidate"},
+                fields={"name": "Candidate"},
             )
         assert not server.requests
         db.close()

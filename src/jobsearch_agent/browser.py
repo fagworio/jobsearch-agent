@@ -277,14 +277,14 @@ class DryRunBrowserExecutor(BrowserExecutor):
 class PlaywrightFormFiller:
     """Fill only validated controls; this class intentionally has no submit method."""
 
-    def fill(self, session: GuardedBrowserSession, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, audit_dir: str | Path | None = None) -> BrowserExecutionResult:
+    def fill(self, session: GuardedBrowserSession, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, audit_dir: str | Path | None = None, *, allow_review: bool = False) -> BrowserExecutionResult:
         if not isinstance(session, PlaywrightSessionManager) or not session.guarded or not isinstance(session.network_guard, NetworkWriteGuard):
             raise BrowserSessionError("Playwright filler requires a GuardedBrowserSession")
         page = session.page
         if not page.evaluate("() => window.__jobsearchDryRun === true"):
             raise BrowserSessionError("Playwright page is not attached to a dry-run guarded session")
         current_html = page.content()
-        validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")))
+        validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")), allow_review=allow_review)
         if not validation.valid:
             raise BrowserSessionError("refusing stale or invalid form: " + "; ".join(validation.errors))
         fields = {field.key: field for field in context.form.fields}
@@ -363,7 +363,7 @@ class PlaywrightFormFiller:
                     self._persist_audit(page, audit_path, operations, report)
                 return BrowserExecutionResult(plan.application_id, operations, True, "DOM_UNSTABLE", initial_fingerprint, "", False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
             current_html = page.content()
-            current_validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")))
+            current_validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")), allow_review=allow_review)
             if not current_validation.valid:
                 try:
                     current_fingerprint = fingerprint_html(context.form, bindings, current_html, str(getattr(page, "url", "")))

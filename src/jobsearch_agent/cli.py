@@ -7,17 +7,24 @@ import json
 import sys
 from pathlib import Path
 
-from .application import ApplicationDomainError
+from .application import ApplicationDomainError, context_from_dict
 from .config import Settings
 from .greenhouse import GreenhouseSubmissionExecutor
 from .llm import LLMError
 from .linkedin.inspector import LinkedInInspector
 from .models import to_dict
 from .persistence import ApplicationConflict, Database
-from .pipeline import PipelineError, analyze, dry_run_application, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
+from .pipeline import PipelineError, analyze, apply_live, discover, dry_run_application, ingest, ingest_url, precheck_job, prepare, prepare_application, resume_application, run, search
 from .preflight import run_preflight
 from .profile import ProfileError, load_facts, load_preferences, load_profile, validate_facts, validate_profile_readiness
-from .submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService, build_review_snapshot
+from .submission import (
+    LiveNetworkPolicy,
+    SubmissionBoundaryError,
+    SubmissionService,
+    build_review_snapshot,
+    build_submission_payload,
+    review_field_rows,
+)
 from .sources import SourceError
 
 
@@ -73,6 +80,20 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--results-wanted", type=int, default=20)
     search_parser.set_defaults(handler="search")
 
+    discover_parser = sub.add_parser(
+        "discover",
+        help="descobre vagas em APIs públicas de boards de ATS",
+        description="GET somente leitura nas APIs JSON públicas de Greenhouse, Lever e Ashby. Sem credenciais e sem scraping.",
+    )
+    runtime_options(discover_parser)
+    discover_parser.add_argument("--provider", required=True, choices=["greenhouse", "lever", "ashby"])
+    discover_parser.add_argument("--board", action="append", required=True, help="token do board; pode repetir")
+    discover_parser.add_argument("--query", default="", help="filtra por termos no título e na descrição")
+    discover_parser.add_argument("--location", default="")
+    discover_parser.add_argument("--limit", type=int, default=0)
+    discover_parser.add_argument("--timeout", type=float, default=None)
+    discover_parser.set_defaults(handler="discover")
+
     analyze_parser = sub.add_parser("analyze", help="analisa uma vaga persistida")
     runtime_options(analyze_parser)
     analyze_parser.add_argument("job_id")
@@ -116,10 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_submit)
     application_submit.add_argument("application_id")
     application_submit.add_argument("--intent-id", required=True)
-    application_submit.add_argument("--payload-json", type=Path, required=True)
-    application_submit.add_argument("--form-fingerprint", required=True)
-    application_submit.add_argument("--resume-sha256", required=True)
-    application_submit.add_argument("--answers-fingerprint", required=True)
+    application_submit.add_argument("--payload-json", type=Path, help="campos extras de string sobrepostos ao formulário")
+    application_submit.add_argument("--form-fingerprint")
+    application_submit.add_argument("--resume-sha256")
+    application_submit.add_argument("--answers-fingerprint")
     application_submit.add_argument("--timeout", type=float, default=10.0)
     application_submit.set_defaults(handler="application_submit")
 
@@ -158,6 +179,21 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run_parser.add_argument("--html-file", type=Path, required=True, help="snapshot HTML local")
     dry_run_parser.add_argument("--provider", choices=["greenhouse", "linkedin"], required=True)
     dry_run_parser.set_defaults(handler="dry_run")
+
+    apply_parser = sub.add_parser(
+        "apply",
+        help="abre a vaga real, preenche, sobe o currículo e para antes do submit",
+        description="Navega até a URL da vaga com sessão guardada (escrita de rede bloqueada), preenche os campos, sobe o currículo gerado e para. Use --submit para autorizar e executar UM POST.",
+    )
+    runtime_options(apply_parser)
+    apply_parser.add_argument("job_id", help="ID de uma vaga já ingerida (usa a URL da vaga)")
+    apply_parser.add_argument("--no-headless", dest="headless", action="store_false", default=True)
+    apply_parser.add_argument("--no-advance", dest="advance", action="store_false", default=True, help="não clicar em Next/Continue")
+    apply_parser.add_argument("--max-cycles", type=int, default=5)
+    apply_parser.add_argument("--submit", action="store_true", help="após preencher, autoriza e executa UM POST controlado")
+    apply_parser.add_argument("--timeout", type=float, default=10.0)
+    apply_parser.add_argument("--intent-ttl", type=int, default=300, help="validade da autorização em segundos")
+    apply_parser.set_defaults(handler="apply")
 
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
@@ -224,6 +260,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.handler == "search":
             _print(search(settings, args.query, sites=[item.strip() for item in args.sites.split(",") if item.strip()], location=args.location, results_wanted=args.results_wanted))
             return 0
+        if args.handler == "discover":
+            result = discover(
+                settings,
+                args.provider,
+                args.board,
+                query=args.query,
+                location=args.location,
+                limit=args.limit,
+                timeout=args.timeout,
+            )
+            _print(result)
+            return 0 if result["count"] or not result["failures"] else 2
         if args.handler == "analyze":
             _print(analyze(settings, args.job_id, args.language))
             return 0
@@ -235,6 +283,21 @@ def main(argv: list[str] | None = None) -> int:
             result = dry_run_application(settings, args.job_id, args.html_file, args.provider)
             _print(result)
             return 0 if result["status"] == "STOP_BEFORE_SUBMIT" else 2
+        if args.handler == "apply":
+            result = apply_live(
+                settings,
+                args.job_id,
+                headless=args.headless,
+                allow_advance=args.advance,
+                max_cycles=args.max_cycles,
+                submit=args.submit,
+                submit_timeout=args.timeout,
+                intent_ttl_seconds=args.intent_ttl,
+            )
+            _print(result)
+            if args.submit:
+                return 0 if result.get("submission", {}).get("status") == "SUBMITTED" else 2
+            return 0 if result["status"] == "FILLED_REVIEW_REQUIRED" else 2
         if args.handler == "prepare":
             _print(prepare(settings, args.job_id, args.language))
             return 0
@@ -302,53 +365,7 @@ def main(argv: list[str] | None = None) -> int:
                             "review intent requires destination, form fingerprint, resume SHA256 and answers fingerprint"
                         )
                     form = db.get_application_form(application.id)
-                    resolved_fields = []
-                    manual_questions = []
-                    if form:
-                        fields = form.get("fields", []) if isinstance(form, dict) else form.fields
-                        for field in fields:
-                            if isinstance(field, dict):
-                                key = field.get("key", "")
-                                semantic_type = field.get("semantic_type", "unknown")
-                                value = field.get("value", "")
-                                source = field.get("source", "unknown")
-                                answer = field.get("answer")
-                            else:
-                                key = field.key
-                                semantic_type = field.semantic_type
-                                value = field.value
-                                source = field.source
-                                answer = field.answer
-                            item = {
-                                "key": key,
-                                "semantic_type": semantic_type,
-                                "value": value,
-                                "source": source,
-                            }
-                            answer_source = "unknown"
-                            approved = False
-                            legal = False
-                            if answer:
-                                if isinstance(answer, dict):
-                                    answer_value = answer.get("answer", "")
-                                    answer_source = answer.get("source", "unknown")
-                                    supported_by = list(answer.get("supported_by", []))
-                                    approved = bool(answer.get("approved", False))
-                                    legal = bool(answer.get("legal", False))
-                                else:
-                                    answer_value = answer.answer
-                                    answer_source = answer.source
-                                    supported_by = list(answer.supported_by)
-                                    approved = answer.approved
-                                    legal = answer.legal
-                                item["answer"] = answer_value
-                                item["answer_source"] = answer_source
-                                item["supported_by"] = supported_by
-                                item["approved"] = approved
-                                item["legal"] = legal
-                            resolved_fields.append(item)
-                            if answer and (legal or not approved or answer_source in {"manual", "unknown"}):
-                                manual_questions.append(item)
+                    resolved_fields, manual_questions = review_field_rows(form) if form else ([], [])
                     snapshot = build_review_snapshot(
                         application_id=application.id,
                         job_id=application.job_id,
@@ -395,21 +412,41 @@ def main(argv: list[str] | None = None) -> int:
                 intent = db.get_submission_intent(args.intent_id)
                 if not intent or intent.application_id != args.application_id:
                     raise SubmissionBoundaryError("submission intent does not belong to application")
-                payload = json.loads(args.payload_json.read_text(encoding="utf-8"))
-                if not isinstance(payload, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in payload.items()):
-                    raise SubmissionBoundaryError("payload JSON must be an object with string keys and values")
+                application = db.get_application(args.application_id)
+                context = context_from_dict(application.context)
+                form = context.form
+                if form is None:
+                    raise SubmissionBoundaryError("submission requires a persisted application form")
+                built = build_submission_payload(
+                    form,
+                    artifact_root=str(settings.resolve(settings.artifacts_dir) / application.job_id),
+                )
+                fields: dict = dict(built.fields)
+                if args.payload_json is not None:
+                    extra = json.loads(args.payload_json.read_text(encoding="utf-8"))
+                    if not isinstance(extra, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in extra.items()):
+                        raise SubmissionBoundaryError("payload JSON must be an object with string keys and values")
+                    fields.update(extra)
+                live = application.context.get("validation", {}).get("dry_run", {})
+                form_fingerprint = args.form_fingerprint or live.get("form_fingerprint")
+                answers_fingerprint = args.answers_fingerprint or live.get("answers_fingerprint")
+                resume_sha256 = args.resume_sha256 or application.context.get("resume_sha256")
+                if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
+                    raise SubmissionBoundaryError(
+                        "submission requires form fingerprint, answers fingerprint and resume SHA256"
+                    )
                 policy = LiveNetworkPolicy.for_submission("greenhouse", args.application_id, intent.id)
                 result = GreenhouseSubmissionExecutor(db, timeout=args.timeout).submit(
                     intent.id,
-                    current_form_fingerprint=args.form_fingerprint,
-                    current_resume_sha256=args.resume_sha256,
-                    current_answers_fingerprint=args.answers_fingerprint,
+                    current_form_fingerprint=form_fingerprint,
+                    current_resume_sha256=resume_sha256,
+                    current_answers_fingerprint=answers_fingerprint,
                     policy=policy,
-                    payload=payload,
+                    fields=fields,
+                    files=built.files,
                 )
-                application = db.get_application(args.application_id)
                 attempts = db.list_submission_attempts(args.application_id)
-                _print({"result": result, "application": application, "attempts": attempts})
+                _print({"result": result, "application": db.get_application(args.application_id), "attempts": attempts})
                 return 0 if result.status == "SUBMITTED" else 2
             finally:
                 db.close()
