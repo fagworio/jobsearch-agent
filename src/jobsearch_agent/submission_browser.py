@@ -142,12 +142,21 @@ class BrowserSubmitter:
 
         verification, status = self._classify(observed, writes_used)
         if verification is None:
-            # Nada saiu e a página pediu intervenção: nao consome resultado
-            # terminal. A tentativa fica registrada como falha definitiva
-            # porque o guard prova que nenhuma escrita ocorreu.
+            # A pagina exigiu intervencao humana. A falha e definitiva nos dois
+            # casos: sem escrita, nada saiu; com escrita, o servidor recusou
+            # (ex.: 428 e a mensagem pedindo reCAPTCHA). O registro diz qual
+            # dos dois ocorreu, porque a auditoria nao pode afirmar o falso.
+            detail = (
+                "a write left the browser and the server refused it"
+                if writes_used
+                else "no write left the browser"
+            )
             completed = service.record_result(
                 attempt.id,
-                SubmissionVerification.failed("captcha challenge; no write left the browser"),
+                SubmissionVerification.failed(
+                    f"captcha challenge; {detail}",
+                    reason_token="captcha_write_refused" if writes_used else "captcha_no_write",
+                ),
             )
             return BrowserSubmissionOutcome(
                 "NEEDS_CAPTCHA",

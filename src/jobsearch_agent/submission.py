@@ -257,8 +257,13 @@ class SubmissionVerification:
         return cls("confirmed", confirmation_type, evidence or {})
 
     @classmethod
-    def failed(cls, reason: str = "") -> "SubmissionVerification":
-        return cls("failed", "", {"reason": reason} if reason else {})
+    def failed(cls, reason: str = "", reason_token: str = "") -> "SubmissionVerification":
+        evidence: dict[str, object] = {"reason": reason} if reason else {}
+        if reason_token:
+            # Token curto e controlado: sobrevive a redacao e diz POR QUE a
+            # tentativa falhou sem guardar texto arbitrario.
+            evidence["reason_token"] = reason_token
+        return cls("failed", "", evidence)
 
     @classmethod
     def unknown(cls, reason: str = "") -> "SubmissionVerification":
@@ -394,6 +399,8 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
         evidence["status_code"] = status_code
     if "provider_status" in verification.evidence:
         evidence["provider_status"] = _safe_evidence_token(verification.evidence["provider_status"])
+    if "reason_token" in verification.evidence:
+        evidence["reason_token"] = _safe_evidence_token(verification.evidence["reason_token"])
     return evidence
 
 

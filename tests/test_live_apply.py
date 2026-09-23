@@ -967,6 +967,8 @@ def test_browser_submission_stops_on_captcha_without_sending(tmp_path: Path):
     # Falha definitiva (o guard prova que nenhuma escrita ocorreu), portanto
     # retomavel por `application retry-submit`.
     assert db.get_application(application_id).state == ApplicationState.SUBMIT_FAILED
+    attempts = db.list_submission_attempts(application_id)
+    assert "captcha_no_write" in str(attempts[-1])
     db.close()
 
 
