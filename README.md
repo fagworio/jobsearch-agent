@@ -273,7 +273,14 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   caminho que a `LiveNetworkPolicy` já exigia, e se esgota em seguida. Dry-run continua sem nenhuma
   escrita possível; a diferença entre os dois caminhos é a permissão one-shot, não a ausência de
   controle.
-- `apply` só existe para providers com adapter e `LiveNetworkPolicy`. LinkedIn não possui executor
-  live: a política da plataforma proíbe automação de atividade por software de terceiros.
+- `apply` só existe para providers com adapter, `ProviderProfile` e `LiveNetworkPolicy`. Cada
+  provider declara em `providers.py` os hosts que a página carrega, o endpoint de candidatura, os
+  rótulos do controle final e os marcadores de confirmação. Hoje: Greenhouse e Lever. Ashby é
+  reconhecido mas recusado: o formulário dele só existe depois de um POST na API, o que exigiria um
+  modelo de autorização de escrita na fase de inspeção.
+- Greenhouse e Lever usam o mesmo `id="application-form"`; a escolha do adapter prioriza o host da
+  URL e só cai na assinatura de HTML quando o host não é reconhecido.
+- LinkedIn não possui executor live: a política da plataforma proíbe automação de atividade por
+  software de terceiros.
 - A milestone Prepare Application não abre browser nem envia candidaturas.
 - A CLI imprime JSON por padrão para ser consumida pelo Hermes.

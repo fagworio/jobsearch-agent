@@ -15,7 +15,8 @@ from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionMa
 from .config import Settings
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
-from .submission_browser import GreenhouseBrowserSubmitter
+from .providers import apply_url as provider_apply_url, profile_for
+from .submission_browser import BrowserSubmitter
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
@@ -563,10 +564,15 @@ def apply_live(
         resume_sha256 = hashlib.sha256(resume_path.read_bytes()).hexdigest()
 
         upload_writes_used = 0
+        profile = profile_for(adapter.provider)
+        form_url = provider_apply_url(adapter.provider, job.url)
+        resource_hosts = set(profile.resource_hosts) | set(
+            getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url)
+        )
         session = PlaywrightSessionManager(
             headless=headless,
             allowed_hosts=adapter.allowed_hosts(job.url),
-            allowed_resource_hosts=getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url),
+            allowed_resource_hosts=resource_hosts,
         )
         session.start()
         try:
@@ -584,7 +590,7 @@ def apply_live(
                         method="POST",
                         max_writes=1,
                     )
-                    for host in getattr(adapter, "upload_write_origins_for", lambda _url: ())(job.url)
+                    for host in profile.upload_write_origins
                 ])
             orchestrator = LiveApplicationOrchestrator(
                 adapter,
@@ -596,7 +602,7 @@ def apply_live(
                 artifact_root=str(artifact_dir),
                 default_resume=str(resume_path),
             )
-            live = orchestrator.run(session, context, job.url, audit_dir=artifact_dir / "browser")
+            live = orchestrator.run(session, context, form_url, audit_dir=artifact_dir / "browser")
             if session.network_guard is not None:
                 upload_writes_used = session.network_guard.authorized_writes_used
 
@@ -605,7 +611,7 @@ def apply_live(
                 "job_id": job_id,
                 "application_id": application.id,
                 "provider": live.provider or adapter.provider,
-                "url": live.url or job.url,
+                "url": live.url or form_url,
                 "advanced_steps": live.advanced_steps,
                 "form_fingerprint": live.form_fingerprint,
                 "network_writes_allowed": False,
@@ -737,7 +743,7 @@ def _submit_live_in_browser(
     if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
         raise PipelineError("live submission requires form, answers and resume fingerprints")
     resolved_fields, manual_questions = review_field_rows(form)
-    destination = submission_destination(provider, job.company, job.external_id)
+    destination = submission_destination(provider, job.company, job.external_id, job.url)
     submission_service = SubmissionService(db)
     submission_service.save_review_snapshot(
         build_review_snapshot(
@@ -767,7 +773,7 @@ def _submit_live_in_browser(
     )
     submission_service.authorize_submission(intent.id)
     policy = LiveNetworkPolicy.for_submission(provider, application.id, intent.id)
-    outcome = GreenhouseBrowserSubmitter(db, timeout_seconds=timeout).submit(
+    outcome = BrowserSubmitter(db, timeout_seconds=timeout).submit(
         session,
         intent.id,
         current_form_fingerprint=form_fingerprint,

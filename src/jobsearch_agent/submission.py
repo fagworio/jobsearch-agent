@@ -33,6 +33,7 @@ from .models import (
 )
 
 from .persistence import ApplicationConflict, Database
+from .providers import profile_for, submit_destination as _submit_destination
 from .serialization import canonical_json
 
 
@@ -65,19 +66,13 @@ class SubmissionBoundaryError(ValueError):
     """Raised when a live submission would violate its authorization boundary."""
 
 
-def submission_destination(provider: str, board: str, external_id: str) -> str:
-    """Endpoint publico onde o board recebe a candidatura.
+def submission_destination(provider: str, board: str, external_id: str, job_url: str = "") -> str:
+    """Endpoint que recebe a candidatura, conforme o perfil do provider.
 
-    O board moderno do Greenhouse publica esse endereco no proprio payload da
-    pagina como ``submitPath``. Ele vive em ``boards.greenhouse.io`` enquanto o
-    formulario e servido em ``job-boards.greenhouse.io``; a ``LiveNetworkPolicy``
-    autoriza exatamente esta origem e este caminho.
+    ``job_url`` é necessário para providers cujo destino é a própria URL do
+    formulário (Lever). Greenhouse deriva de board + id.
     """
-    if provider == "greenhouse":
-        if not board or not external_id:
-            raise SubmissionBoundaryError("greenhouse submission requires board and job id")
-        return f"https://boards.greenhouse.io/{board}/jobs/{external_id}"
-    raise SubmissionBoundaryError(f"no public submit endpoint known for provider: {provider}")
+    return _submit_destination(provider, job_url, board, external_id)
 
 
 #: Providers que esperam os campos agrupados sob um namespace de formulario.
@@ -90,6 +85,8 @@ def wire_key(provider: str, field_key: str) -> str:
     O board moderno do Greenhouse renderiza os inputs sem atributo ``name``,
     apenas com ``id``. O POST, porem, exige ``job_application[first_name]``:
     enviar as chaves planas devolve "Missing required field: job_application".
+    Lever ja renderiza os nomes de wire (`name`, `email`, `urls[LinkedIn]`) e
+    nao usa namespace.
     """
     namespace = _WIRE_NAMESPACE.get(provider, "")
     if not namespace or field_key.startswith(f"{namespace}["):
@@ -208,15 +205,21 @@ class LiveNetworkPolicy:
 
     @classmethod
     def for_submission(cls, provider: str, application_id: str, submission_intent_id: str) -> "LiveNetworkPolicy":
-        patterns = {
-            "greenhouse": r"^/[^/]+/jobs/[^/]+/?$",
-        }
-        origins = {
-            "greenhouse": "https://boards.greenhouse.io",
-        }
-        if provider not in origins:
+        try:
+            profile = profile_for(provider)
+        except ValueError as exc:
+            raise SubmissionBoundaryError(f"no live network policy for provider: {provider}") from exc
+        if not profile.submit_origin or not profile.submit_path_pattern:
             raise SubmissionBoundaryError(f"no live network policy for provider: {provider}")
-        return cls(provider, origins[provider], patterns[provider], "POST", "SUBMIT", application_id, submission_intent_id)
+        return cls(
+            provider,
+            profile.submit_origin,
+            profile.submit_path_pattern,
+            profile.submit_method,
+            "SUBMIT",
+            application_id,
+            submission_intent_id,
+        )
 
     def validate(self, method: str, url: str, stage: str) -> ValidationResult:
         errors: list[str] = []

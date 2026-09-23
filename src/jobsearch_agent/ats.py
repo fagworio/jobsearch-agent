@@ -213,7 +213,14 @@ class GreenhouseAdapter:
         namespaced_controls = soup.select(
             'form input[name^="job_application["], form select[name^="job_application["], form textarea[name^="job_application["]'
         )
-        return bool((legacy_form and namespaced_controls) or (modern_form and modern_form.select("input, select, textarea")))
+        if legacy_form and namespaced_controls:
+            return True
+        if modern_form is not None and modern_form.select("input, select, textarea"):
+            # O Lever usa o mesmo id="application-form". Sem um sinal adicional
+            # do Greenhouse (controles namespaced ou host greenhouse.io, ja
+            # tratado acima), o formulario e do outro provider.
+            return bool(namespaced_controls)
+        return False
 
     def confidence(self, url: str = "", html: str = "") -> float:
         hostname = (urlparse(url).hostname or "").casefold()
@@ -228,7 +235,7 @@ class GreenhouseAdapter:
             return 1.0
         modern_form = soup.find("form", id="application-form")
         if modern_form and modern_form.select("input, select, textarea"):
-            return 1.0
+            return 1.0 if soup.select('form input[name^="job_application["]') else 0.0
         if soup.select(
             'input[name^="job_application["], select[name^="job_application["], textarea[name^="job_application["]'
         ):
@@ -375,10 +382,102 @@ class GreenhouseAdapter:
         return AdapterInspectionResult(self.provider, self.confidence(url, html), inspected.form, inspected.bindings, warnings, unsupported)
 
 
-ADAPTERS: tuple[ATSAdapter, ...] = (GreenhouseAdapter(),)
+
+#: Nomes de wire que o Lever publica no proprio HTML do formulario.
+_LEVER_SEMANTICS: dict[str, str] = {
+    "name": "full_name",
+    "email": "email",
+    "phone": "phone",
+    "location": "current_location",
+    "selectedlocation": "current_location",
+    "org": "current_company",
+    "urls[linkedin]": "linkedin",
+    "urls[github]": "github",
+    "urls[twitter]": "website",
+    "urls[portfolio]": "portfolio",
+    "urls[website]": "website",
+    "resume": "resume",
+    "coverletter": "cover_letter",
+}
+
+
+class LeverAdapter:
+    """Adapter do formulario HTML classico do Lever.
+
+    Diferente do Greenhouse, o Lever renderiza um ``<form>`` tradicional com
+    ``name`` reais (``name``, ``email``, ``org``, ``urls[LinkedIn]``) e o
+    ``action`` aponta para o proprio ``/apply``.
+    """
+
+    provider = "lever"
+
+    def matches(self, url: str = "", html: str = "") -> bool:
+        hostname = (urlparse(url).hostname or "").casefold()
+        if hostname.endswith("lever.co"):
+            return True
+        soup = BeautifulSoup(html, "html.parser")
+        form = soup.find("form", id="application-form")
+        if form is None:
+            return False
+        return bool(form.select('input[name="resume"], input[name="org"], input[name="email"]'))
+
+    def confidence(self, url: str = "", html: str = "") -> float:
+        hostname = (urlparse(url).hostname or "").casefold()
+        if hostname.endswith("lever.co"):
+            return 1.0
+        return 0.9 if self.matches(url, html) else 0.0
+
+    def allowed_hosts(self, url: str) -> set[str]:
+        hostname = (urlparse(url).hostname or "").casefold()
+        hosts = {hostname} if hostname else set()
+        hosts.update({"jobs.lever.co", "cdn.lever.co"})
+        return hosts
+
+    def locate_application_root(self, html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        if soup.find("form", id="application-form"):
+            return "#application-form"
+        if soup.find("form"):
+            return "form"
+        raise InspectionError("LEVER_APPLICATION_ROOT_NOT_FOUND: no form element")
+
+    def inspect(self, html: str, url: str = "", form_id: str = "application") -> AdapterInspectionResult:
+        if not self.matches(url, html):
+            raise InspectionError("LEVER_SIGNATURE_NOT_FOUND")
+        inspected = ATSInspector().inspect_html(
+            html, url=url, form_id=form_id, form_selector=self.locate_application_root(html)
+        )
+        inspected.form.provider = self.provider
+        inspected.form.source = "lever_adapter"
+        for field in inspected.form.fields:
+            semantic = _LEVER_SEMANTICS.get(field.key.casefold().strip(), "")
+            if semantic:
+                field.semantic_type = semantic
+                field.confidence = 1.0
+                field.source = "lever_name"
+            else:
+                field.confidence = 0.0
+                field.source = "lever_unknown"
+        warnings = [
+            "required field has no high-confidence semantic mapping"
+        ] if any(field.confidence < 0.70 and field.required for field in inspected.form.fields) else []
+        return AdapterInspectionResult(self.provider, self.confidence(url, html), inspected.form, inspected.bindings, warnings, [])
+
+
+ADAPTERS: tuple[ATSAdapter, ...] = (GreenhouseAdapter(), LeverAdapter())
 
 
 def adapter_for(url: str = "", html: str = "") -> ATSAdapter | None:
+    """Escolhe o adapter priorizando o host da URL.
+
+    Greenhouse e Lever usam o mesmo ``id="application-form"``, entao decidir
+    pela assinatura de HTML fazia o adapter do Greenhouse reivindicar o
+    formulario do Lever. O host da URL e o sinal mais forte; a assinatura de
+    HTML fica como fallback para URLs genericas.
+    """
+    for adapter in ADAPTERS:
+        if adapter.matches(url, ""):
+            return adapter
     for adapter in ADAPTERS:
         if adapter.matches(url, html):
             return adapter

@@ -314,6 +314,22 @@ class AnswerKnowledgeBase:
                 if not field.options or self._option_matches(value, field.options):
                     return self._field_answer(field, value, supported_by, "CareerProfile", 1.0, semantic_type)
                 return None
+        if semantic_type == "current_company":
+            # O Lever pergunta "Current company" (name="org"). Deriva do
+            # registro de experiencia mais recente do Career Profile.
+            current = next((item for item in profile.experiences if not item.end_date), None)
+            if current is None and profile.experiences:
+                current = profile.experiences[0]
+            if current and current.company:
+                return self._field_answer(
+                    field,
+                    current.company,
+                    [f"CareerProfile.experiences.{current.id}"],
+                    "CareerProfile",
+                    1.0,
+                    semantic_type,
+                )
+            return None
         if semantic_type == "timezone" and preferences:
             timezone_value = preferences.timezone
             support_path = "CandidatePreferences.timezone"

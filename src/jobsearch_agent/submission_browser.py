@@ -22,6 +22,7 @@ from typing import Any
 from .browser import AuthorizedWrite, BrowserSessionError, GuardedBrowserSession
 from .models import ApplicationForm, now_iso
 from .persistence import Database
+from .providers import ProviderError, profile_for
 from .submission import (
     LiveNetworkPolicy,
     SubmissionBoundaryError,
@@ -60,10 +61,14 @@ CONFIRMATION_MARKERS = (
 CAPTCHA_MARKERS = ("recaptcha challenge", "g-recaptcha", "captcha")
 
 
-class GreenhouseBrowserSubmitter:
-    """Executa o POST de submissão pela aplicação Greenhouse no browser."""
+class BrowserSubmitter:
+    """Executa o POST de submissão pela própria aplicação, no browser.
 
-    provider = "greenhouse"
+    O comportamento varia por provider através de :mod:`providers`: rótulos do
+    controle final, marcadores de confirmação e endpoint autorizado. Ashby
+    carrega o formulário por POST na API, então é recusado aqui em vez de
+    falhar de forma obscura.
+    """
 
     def __init__(self, database: Database, *, timeout_seconds: float = 45.0):
         if timeout_seconds <= 0:
@@ -84,8 +89,20 @@ class GreenhouseBrowserSubmitter:
         intent = self.database.get_submission_intent(intent_id)
         if not intent:
             raise SubmissionBoundaryError(f"submission intent not found: {intent_id}")
-        if intent.provider != self.provider:
-            raise SubmissionBoundaryError(f"Greenhouse browser submitter cannot handle provider: {intent.provider}")
+        try:
+            profile = profile_for(intent.provider)
+        except ProviderError as exc:
+            raise SubmissionBoundaryError(str(exc)) from exc
+        if profile.form_loaded_by_api_write:
+            return BrowserSubmissionOutcome(
+                "UNSUPPORTED_PROVIDER",
+                evidence={"provider": profile.provider},
+                error=(
+                    f"{profile.provider}: o formulario e carregado por POST na API "
+                    f"({profile.notes}), o que exige um modelo de autorizacao de "
+                    "escrita na fase de inspecao; nao suportado ainda"
+                ),
+            )
         page = getattr(session, "page", None)
         if page is None:
             raise BrowserSessionError("browser submission requires a live page")
@@ -114,7 +131,7 @@ class GreenhouseBrowserSubmitter:
             )
         )
         try:
-            observed = self._click_and_observe(session, intent.destination)
+            observed = self._click_and_observe(session, intent.destination, profile)
         finally:
             session.disarm_authorized_write()
 
@@ -169,7 +186,7 @@ class GreenhouseBrowserSubmitter:
             "SUBMIT_UNKNOWN",
         )
 
-    def _click_and_observe(self, session: GuardedBrowserSession, destination: str) -> dict[str, Any]:
+    def _click_and_observe(self, session: GuardedBrowserSession, destination: str, profile=None) -> dict[str, Any]:
         page = session.page
         observed: dict[str, Any] = {"destination": destination, "started_at": now_iso()}
         responses: list[tuple[str, int]] = []
@@ -184,7 +201,7 @@ class GreenhouseBrowserSubmitter:
 
         page.on("response", _on_response)
         try:
-            control = self._submit_control(page)
+            control = self._submit_control(page, getattr(profile, "submit_control_names", ()) or SUBMIT_CONTROL_NAMES)
             observed["submit_control"] = "Submit application" if control is not None else ""
             if control is None:
                 observed["captcha_challenge"] = self._captcha_visible(page)
@@ -195,7 +212,7 @@ class GreenhouseBrowserSubmitter:
             while time.monotonic() < deadline:
                 if responses:
                     break
-                if self._confirmation_visible(page):
+                if self._confirmation_visible(page, getattr(profile, "confirmation_markers", ()) or CONFIRMATION_MARKERS):
                     break
                 if self._captcha_visible(page):
                     break
@@ -203,7 +220,9 @@ class GreenhouseBrowserSubmitter:
             if responses:
                 observed["http_status"] = responses[-1][1]
                 observed["response_url"] = responses[-1][0]
-            observed["confirmation_reached"] = self._confirmation_visible(page)
+            observed["confirmation_reached"] = self._confirmation_visible(
+                page, getattr(profile, "confirmation_markers", ()) or CONFIRMATION_MARKERS
+            )
             observed["captcha_challenge"] = self._captcha_visible(page)
             observed["final_url"] = str(getattr(page, "url", ""))
             observed["page_errors"] = self._page_errors(page)
@@ -215,9 +234,9 @@ class GreenhouseBrowserSubmitter:
         return observed
 
     @staticmethod
-    def _submit_control(page: Any) -> Any | None:
+    def _submit_control(page: Any, names: tuple[str, ...] = SUBMIT_CONTROL_NAMES) -> Any | None:
         """Localiza o controle final: um unico botao, visivel e habilitado."""
-        for name in SUBMIT_CONTROL_NAMES:
+        for name in names:
             candidates = page.get_by_role("button", name=name, exact=True)
             visible = [
                 candidates.nth(index)
@@ -267,7 +286,7 @@ class GreenhouseBrowserSubmitter:
         return messages[:12]
 
     @staticmethod
-    def _confirmation_visible(page: Any) -> bool:
+    def _confirmation_visible(page: Any, markers: tuple[str, ...] = CONFIRMATION_MARKERS) -> bool:
         url = str(getattr(page, "url", "")).casefold()
         if "/confirmation" in url:
             return True
@@ -275,7 +294,7 @@ class GreenhouseBrowserSubmitter:
             text = (page.inner_text("body") or "").casefold()
         except Exception:  # pragma: no cover - defensivo
             return False
-        return any(marker in text for marker in CONFIRMATION_MARKERS)
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _captcha_visible(page: Any) -> bool:
@@ -292,3 +311,7 @@ class GreenhouseBrowserSubmitter:
         except Exception:  # pragma: no cover - defensivo
             return False
         return False
+
+
+#: Nome anterior, mantido para compatibilidade de importacao.
+GreenhouseBrowserSubmitter = BrowserSubmitter
