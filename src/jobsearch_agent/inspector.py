@@ -288,7 +288,16 @@ class ATSInspector:
     def _is_data_control(element: Tag) -> bool:
         if element.name != "input":
             return True
-        return str(element.get("type", "text")).casefold() not in {"hidden", "submit", "button", "reset", "image"}
+        field_type = str(element.get("type", "text")).casefold()
+        if field_type in {"hidden", "submit", "button", "reset", "image"}:
+            return False
+        # Widgets like react-select render an extra internal input used only for
+        # native validation. It carries neither name nor id, so it can be
+        # neither submitted nor addressed; counting it created phantom required
+        # questions that blocked the whole application.
+        if not element.get("name") and not element.get("id"):
+            return False
+        return True
 
     @staticmethod
     def _group_key(element: Tag, index: int) -> str:

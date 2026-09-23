@@ -319,6 +319,10 @@ def _work_authorization_fit(analysis: JobAnalysis, profile: CareerProfile) -> tu
     return 0.0, "work_authorization_mismatch", FitCriterionResult("work_authorization", candidate_values, requirement.countries, FitCriterionStatus.BLOCKER, 0.0, True, requirement.evidence, "job_analysis + candidate_preferences")
 
 
+#: Cobertura obrigatoria minima antes de tratar requisitos ausentes como bloqueio.
+MISSING_REQUIRED_BLOCK_THRESHOLD = 0.5
+
+
 def _ratio(found: Iterable[str], wanted: Iterable[str]) -> float:
     wanted_set = {item.lower() for item in wanted}
     return 1.0 if not wanted_set else len({item.lower() for item in found} & wanted_set) / len(wanted_set)
@@ -347,16 +351,20 @@ def calculate_fit(job: Job, analysis: JobAnalysis, profile: CareerProfile) -> Fi
         blockers.append("language_mismatch")
     if location_blocker:
         blockers.append("location_mismatch")
-    blockers.extend(f"missing_required:{skill}" for skill in missing_required)
+    # Faltar um requisito entre vários é uma lacuna, não uma incompatibilidade.
+    # Só bloqueia quando a cobertura obrigatória cai abaixo do limiar.
+    required_is_blocking = requirements_known and required_match < MISSING_REQUIRED_BLOCK_THRESHOLD
+    if required_is_blocking:
+        blockers.extend(f"missing_required:{skill}" for skill in missing_required)
     criteria: list[FitCriterionResult] = []
     criteria.extend(
         FitCriterionResult(
             f"required_skill:{skill}",
             "matched" if skill in matched else "missing",
             skill,
-            FitCriterionStatus.MATCH if skill in matched else FitCriterionStatus.BLOCKER,
+            FitCriterionStatus.MATCH if skill in matched else FitCriterionStatus.PARTIAL,
             1.0 if skill in matched else 0.0,
-            skill in missing_required,
+            required_is_blocking,
             "Candidate skill registry and job requirements",
             "skill_registry",
         )

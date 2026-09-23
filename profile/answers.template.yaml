@@ -1,0 +1,125 @@
+# Template gerado a partir do formulario real da vaga.
+# Preencha os campos marcados como RESPOSTA SUA, marque approved: true e use
+# com --answers. Nada aqui e inferido: so entra o que voce escrever.
+
+answers:
+- field_key: first_name
+  question: First Name
+  question_key: q-1b836d86806e16bd
+  answer: ''
+  field_type: text
+  semantic_type: first_name
+  options: []
+  needs: ja resolvido pelo perfil
+  - field_key: last_name
+  question: Last Name
+  question_key: q-5b87de02aa741b04
+  answer: ''
+  field_type: text
+  semantic_type: last_name
+  options: []
+  needs: ja resolvido pelo perfil
+  - field_key: email
+  question: Email
+  question_key: q-82244417f956ac7c
+  answer: ''
+  field_type: text
+  semantic_type: email
+  options: []
+  needs: ja resolvido pelo perfil
+  - field_key: question_69187871
+  question: How did you hear about this job?
+  question_key: q-9c081306562132f6
+  answer: ''
+  field_type: text
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: question_69187872
+  question: Please provide the name of your current (or most recent) company
+  question_key: q-db1f9dd2c0904e37
+  answer: In All Media
+  field_type: text
+  semantic_type: unknown
+  options: []
+  needs: derivado do perfil
+  - field_key: question_69187873
+  question: Are you currently authorized to work in the U.S.?
+  question_key: q-e39ec7d34f92e212
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: question_69187874
+  question: Do you now, or will you in the future, require immigration sponsorship to work at Reddit?
+  question_key: q-fee2d71d6e782f4f
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: question_69187875
+  question: By selecting "I agree," I understand that the information I have provided as part of this job application will be processed in accordance with Reddit's Candidate Privacy Policy.
+  question_key: q-18f3b2a0e314b9b1
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '430'
+  question: What gender identity do you most closely identify with?
+  question_key: q-8919a8a4f95dcafc
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '431'
+  question: Are you a person of transgender experience?
+  question_key: q-a6d18eebe79c8943
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '432'
+  question: What sexual orientation do you most closely identify with?
+  question_key: q-368ce6c4e3ec3c50
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '433'
+  question: Do you live with a disability (as outlined by the ADA)?
+  question_key: q-dd1343111437be8e
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '434'
+  question: Are you a veteran/have you served in the military?
+  question_key: q-e8b03a1d8365e65b
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: '436'
+  question: Please select up to 2 ethnicities that you most closely identify with.
+  question_key: q-ffd7fb8dd4caf9d3
+  answer: ''
+  field_type: combobox
+  semantic_type: unknown
+  options: []
+  needs: RESPOSTA SUA
+  - field_key: gdpr_demographic_data_consent_given
+  question: By checking this box, I consent to Reddit collecting, storing, and processing my responses to the demographic data surveys above.
+  question_key: q-04a1465cd5e5d858
+  answer: ''
+  field_type: checkbox
+  semantic_type: checkbox_boolean
+  options: []
+  needs: RESPOSTA SUA
