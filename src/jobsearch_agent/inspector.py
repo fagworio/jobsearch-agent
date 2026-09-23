@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import hashlib
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -170,6 +171,20 @@ def _css_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _id_selector(value: str) -> str:
+    """CSS selector for an id that may not be a valid CSS identifier.
+
+    Greenhouse names its equal-opportunity questions with numeric ids (430,
+    431, ...). An id selector cannot start with a digit, so ``#430`` is a
+    syntax error: soup.select raises, the adapter swallows it and marks the
+    whole form unsupported. The attribute form is always valid.
+    """
+    text = str(value)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", text):
+        return f"#{_css_escape(text)}"
+    return f'[id="{_css_escape(text)}"]'
+
+
 def _key(element: Tag, index: int) -> str:
     return str(element.get("name") or element.get("id") or f"field-{index}")
 
@@ -199,7 +214,7 @@ def _ancestor_locator(element: Tag) -> str:
     current: Tag | None = element
     while current is not None and current.name not in {"[document]", "html"}:
         if current.get("id"):
-            parts.append(f'#{_css_escape(str(current["id"]))}')
+            parts.append(_id_selector(current["id"]))
             break
         siblings = [item for item in current.parent.find_all(current.name, recursive=False)] if current.parent else [current]
         position = next((index + 1 for index, item in enumerate(siblings) if item is current), 1)
@@ -210,13 +225,13 @@ def _ancestor_locator(element: Tag) -> str:
 
 def _base_locator(element: Tag) -> str:
     if element.get("id"):
-        return f'#{_css_escape(str(element["id"]))}'
+        return _id_selector(element["id"])
     return _ancestor_locator(element)
 
 
 def _option_locator(element: Tag, index: int, group_locator: str) -> str:
     if element.get("id"):
-        return f'#{_css_escape(str(element["id"]))}'
+        return _id_selector(element["id"])
     if element.get("name") and element.get("value") is not None:
         return f'{element.name}[name="{_css_escape(str(element["name"]))}"][value="{_css_escape(str(element["value"]))}"]'
     return _ancestor_locator(element)

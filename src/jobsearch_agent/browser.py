@@ -453,12 +453,21 @@ class PlaywrightFormFiller:
             if len(visible_boxes) != 1:
                 raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field.key}")
             options = visible_boxes[0].get_by_role("option")
-            exact_matches = []
+            visible_options: list[tuple[str, Any]] = []
             for index in range(options.count()):
                 option = options.nth(index)
-                label = " ".join((option.inner_text() or "").split()).casefold()
-                if label == expected and option.is_visible():
-                    exact_matches.append(option)
+                if option.is_visible():
+                    visible_options.append((" ".join((option.inner_text() or "").split()).casefold(), option))
+            exact_matches = [option for label, option in visible_options if label == expected]
+            if not exact_matches:
+                # Alguns widgets decoram o rotulo: o seletor de pais do telefone
+                # mostra "Brazil +55" para a resposta "Brazil". Aceita prefixo,
+                # mas so quando houver exatamente um candidato.
+                exact_matches = [
+                    option
+                    for label, option in visible_options
+                    if label.startswith(expected) or expected.startswith(label)
+                ]
             if len(exact_matches) != 1:
                 if not exact_matches:
                     raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")

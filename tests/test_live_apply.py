@@ -33,6 +33,7 @@ from jobsearch_agent.submission import (
     SubmissionService,
     build_review_snapshot,
     build_submission_payload,
+    submission_destination,
 )
 from tests.submission_server import SubmissionTestServer
 
@@ -592,7 +593,9 @@ def test_apply_live_with_submit_authorizes_and_posts_once_with_the_resume(tmp_pa
         snapshot = db.get_review_snapshot(application.id)
         assert snapshot is not None
         assert snapshot.form_fingerprint == "fp-live"
-        assert snapshot.destination == URL
+        # O POST vai para o submitPath publicado pelo board, nao para a pagina
+        # do formulario (job-boards), que a LiveNetworkPolicy recusaria.
+        assert snapshot.destination == submission_destination("greenhouse", "Acme", "live-glue")
         assert db.get_submission_intent(result["submission"]["intent_id"]).status == "SUBMITTED"
     finally:
         db.close()

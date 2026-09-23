@@ -127,8 +127,28 @@ class AnswerKnowledgeBase:
             return ApplicationAnswer(answer.question_key, question, answer.answer, list(answer.supported_by), "approved_semantic", scored[0][0], True, answer.legal, answer.semantic_type)
         return self._resolve_profile(question, profile, preferences)
 
+    def _exact_answer(self, question: str) -> ApplicationAnswer | None:
+        normalized = _normalize(question)
+        return next(
+            (
+                answer
+                for answer in self.answers
+                if _normalize(answer.question) == normalized or answer.question_key == question_key(question)
+            ),
+            None,
+        )
+
     def resolve_field(self, field: ApplicationField, profile: CareerProfile, preferences: CandidatePreferences | None = None) -> ApplicationAnswer | None:
         """Resolve a field using semantic type and options before text matching."""
+        # Uma resposta aprovada que casa exatamente com a pergunta nao e inferencia
+        # semantica: e o texto que o candidato aprovou. Vale mesmo quando o
+        # adapter nao reconheceu o campo (confidence 0.0), que e o caso de toda
+        # pergunta customizada de um board real.
+        exact = self._exact_answer(field.label)
+        if exact:
+            if field.options and not self._option_matches(exact.answer, field.options):
+                return None
+            return replace(exact, semantic_type=field.semantic_type, field_key=field.key)
         if field.confidence < AUTO_FILL_CONFIDENCE:
             return None
         semantic_type = field.semantic_type

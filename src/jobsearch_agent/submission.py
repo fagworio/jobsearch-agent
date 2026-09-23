@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+from typing import Any, Mapping
 import re
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -64,6 +65,38 @@ class SubmissionBoundaryError(ValueError):
     """Raised when a live submission would violate its authorization boundary."""
 
 
+def submission_destination(provider: str, board: str, external_id: str) -> str:
+    """Endpoint publico onde o board recebe a candidatura.
+
+    O board moderno do Greenhouse publica esse endereco no proprio payload da
+    pagina como ``submitPath``. Ele vive em ``boards.greenhouse.io`` enquanto o
+    formulario e servido em ``job-boards.greenhouse.io``; a ``LiveNetworkPolicy``
+    autoriza exatamente esta origem e este caminho.
+    """
+    if provider == "greenhouse":
+        if not board or not external_id:
+            raise SubmissionBoundaryError("greenhouse submission requires board and job id")
+        return f"https://boards.greenhouse.io/{board}/jobs/{external_id}"
+    raise SubmissionBoundaryError(f"no public submit endpoint known for provider: {provider}")
+
+
+#: Providers que esperam os campos agrupados sob um namespace de formulario.
+_WIRE_NAMESPACE = {"greenhouse": "job_application"}
+
+
+def wire_key(provider: str, field_key: str) -> str:
+    """Nome que o formulario espera no corpo do POST.
+
+    O board moderno do Greenhouse renderiza os inputs sem atributo ``name``,
+    apenas com ``id``. O POST, porem, exige ``job_application[first_name]``:
+    enviar as chaves planas devolve "Missing required field: job_application".
+    """
+    namespace = _WIRE_NAMESPACE.get(provider, "")
+    if not namespace or field_key.startswith(f"{namespace}["):
+        return field_key
+    return f"{namespace}[{field_key}]"
+
+
 @dataclass(frozen=True)
 class SubmissionPayload:
     """Wire payload derived from a resolved, validated application form.
@@ -93,13 +126,22 @@ def _is_blank(value: object) -> bool:
     return value is None or (isinstance(value, str) and not value.strip()) or value == []
 
 
-def build_submission_payload(form: ApplicationForm, *, artifact_root: str = "") -> SubmissionPayload:
+def build_submission_payload(
+    form: ApplicationForm,
+    *,
+    artifact_root: str = "",
+    extra_files: Mapping[str, str] | None = None,
+) -> SubmissionPayload:
     """Translate a resolved ``ApplicationForm`` into an HTTP submission payload.
 
     Only values that already resolved through the Safety Gate are included: a
     required field with no value raises instead of silently posting an
     incomplete application. File fields are read from the controlled artifact
     root and carried as multipart parts.
+
+    ``extra_files`` carries artifacts attached in an earlier inspection cycle.
+    O widget de upload do Greenhouse remove o input depois do envio, entao o
+    formulario final pode nao conter mais o campo de curriculo.
     """
     root = form.artifact_root or artifact_root
     fields: dict[str, str | list[str]] = {}
@@ -125,7 +167,7 @@ def build_submission_payload(form: ApplicationForm, *, artifact_root: str = "") 
                     raise SubmissionBoundaryError(f"file artifact is outside the controlled root: {item.key}") from exc
             if not path.is_file():
                 raise SubmissionBoundaryError(f"file artifact does not exist: {item.key}")
-            files[item.key] = (path.name, path.read_bytes(), detect_file_mime(path))
+            files[wire_key(form.provider, item.key)] = (path.name, path.read_bytes(), detect_file_mime(path))
             continue
         value = _payload_value(item)
         if _is_blank(value):
@@ -138,9 +180,17 @@ def build_submission_payload(form: ApplicationForm, *, artifact_root: str = "") 
             if not selected:
                 omitted.append(item.key)
                 continue
-            fields[item.key] = [str(part) for part in selected]
+            fields[wire_key(form.provider, item.key)] = [str(part) for part in selected]
             continue
-        fields[item.key] = str(value)
+        fields[wire_key(form.provider, item.key)] = str(value)
+    for key, path_value in (extra_files or {}).items():
+        wire = wire_key(form.provider, key)
+        if wire in files or not path_value:
+            continue
+        path = Path(path_value).expanduser().resolve()
+        if not path.is_file():
+            continue
+        files[wire] = (path.name, path.read_bytes(), detect_file_mime(path))
     if not fields and not files:
         raise SubmissionBoundaryError("submission payload would be empty")
     return SubmissionPayload(fields, files, omitted)

@@ -34,6 +34,7 @@ from .submission import (
     build_submission_payload,
     compute_answers_fingerprint,
     review_field_rows,
+    submission_destination,
 )
 
 
@@ -593,6 +594,7 @@ def apply_live(
                     provider=adapter.provider,
                     timeout=submit_timeout,
                     ttl_seconds=intent_ttl_seconds,
+                    attachments=live.attachments,
                 )
                 response["application_state"] = db.get_application(application.id).state.value
         append_event(
@@ -641,6 +643,7 @@ def _submit_live(
     provider: str,
     timeout: float,
     ttl_seconds: int,
+    attachments: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Authorize and perform the single submission for a filled application."""
     validation = application.context.get("validation", {})
@@ -651,6 +654,7 @@ def _submit_live(
     if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
         raise PipelineError("live submission requires form, answers and resume fingerprints")
     resolved_fields, manual_questions = review_field_rows(form)
+    destination = submission_destination(provider, job.company, job.external_id)
     submission_service = SubmissionService(db)
     submission_service.save_review_snapshot(
         build_review_snapshot(
@@ -659,7 +663,7 @@ def _submit_live(
             company=job.company,
             title=job.title,
             provider=provider,
-            destination=job.url,
+            destination=destination,
             resume_filename="resume.pdf",
             resume_sha256=resume_sha256,
             form_fingerprint=form_fingerprint,
@@ -672,14 +676,18 @@ def _submit_live(
         application_id=application.id,
         job_id=application.job_id,
         provider=provider,
-        destination=job.url,
+        destination=destination,
         form_fingerprint=form_fingerprint,
         resume_sha256=resume_sha256,
         answers_fingerprint=answers_fingerprint,
         expires_in_seconds=ttl_seconds,
     )
     submission_service.authorize_submission(intent.id)
-    payload = build_submission_payload(form, artifact_root=str(artifact_dir))
+    payload = build_submission_payload(
+        form,
+        artifact_root=str(artifact_dir),
+        extra_files=attachments,
+    )
     policy = LiveNetworkPolicy.for_submission(provider, application.id, intent.id)
     execution = GreenhouseSubmissionExecutor(db, timeout=timeout).submit(
         intent.id,

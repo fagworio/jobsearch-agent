@@ -220,6 +220,10 @@ class LiveApplicationResult:
     bindings: FormBindings | None = None
     form_fingerprint: str = ""
     advanced_steps: int = 0
+    #: field_key -> caminho do artefato, acumulado entre ciclos. O widget de
+    #: upload do Greenhouse remove o input depois do envio, entao a ultima
+    #: inspecao pode nao conter mais o campo; o anexo continua valido.
+    attachments: dict[str, str] = field(default_factory=dict)
     error: str = ""
 
 
@@ -281,6 +285,7 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
         history: list[DryRunCycle] = []
         seen: set[str] = set()
         advanced_steps = 0
+        attachments: dict[str, str] = {}
         previous_form = context.form
         try:
             for cycle in range(1, self.max_cycles + 1):
@@ -293,6 +298,9 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
                 self._carry_approved_answers(previous_form, inspected.form, list(context.answers))
                 context.form = inspected.form
                 self._apply_artifact_defaults(inspected.form)
+                for candidate in inspected.form.fields:
+                    if candidate.attachment_path:
+                        attachments[candidate.key] = candidate.attachment_path
                 self._resolve_fields(context)
                 fingerprint = compute_form_fingerprint(inspected.form, inspected.bindings)
                 if fingerprint in seen:
@@ -386,6 +394,7 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
                     bindings=inspected.bindings,
                     form_fingerprint=fingerprint,
                     advanced_steps=advanced_steps,
+                    attachments=attachments,
                 )
         except Exception as exc:  # browser or runtime failure: never fail open
             return LiveApplicationResult("ERROR", url=str(getattr(page, "url", url)), cycles=history, error=str(exc))

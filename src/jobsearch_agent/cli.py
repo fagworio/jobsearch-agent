@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--facts", default=None)
     parser.add_argument("--real-profile", action="store_true", help="recusa fixtures demo")
     parser.add_argument("--preferences", default=None)
-    parser.add_argument("--answers", default="profile/answers.yaml")
+    parser.add_argument("--answers", default=None)
     parser.add_argument("--application-policy", default="profile/application_policy.yaml")
     parser.add_argument("--language", choices=["pt-BR", "en-US"], default=None)
     sub = parser.add_subparsers(dest="command")
