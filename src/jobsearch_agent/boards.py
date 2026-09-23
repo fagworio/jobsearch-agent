@@ -8,6 +8,7 @@ módulo não escreve nada: apenas faz GET e normaliza para o domínio ``Job``.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -76,17 +77,25 @@ def _board_url(provider: str, board: str) -> str:
 
 
 def _text_from_html(value: Any) -> str:
+    """HTML -> texto, desescapando entidades antes de remover tags.
+
+    O campo ``content`` do Greenhouse vem com o HTML escapado (``&lt;p&gt;``).
+    Sem desescapar, a descricao guardava markup literal e os titulos de secao
+    ficavam separados do conteudo: um "Nice-to-have skills" virava frase
+    propria e as skills abaixo eram classificadas como obrigatorias.
+    """
     raw = _text(value)
     if not raw:
         return ""
-    if "<" not in raw:
+    if "<" not in raw and "&lt;" not in raw and "&#" not in raw:
         return raw
+    unescaped = html.unescape(raw)
     try:  # pragma: no cover - exercised when bs4 is installed
         from bs4 import BeautifulSoup
 
-        return re.sub(r"\s+", " ", BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)).strip()
+        return re.sub(r"\s+", " ", BeautifulSoup(unescaped, "html.parser").get_text(" ", strip=True)).strip()
     except ImportError:  # pragma: no cover
-        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescaped)).strip()
 
 
 def _greenhouse(record: dict[str, Any], board: str) -> tuple[dict[str, Any], str]:

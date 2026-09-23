@@ -137,12 +137,37 @@ def _extract_work_authorization_requirement(description: str) -> WorkAuthorizati
     return WorkAuthorizationRequirement(True, countries, sponsorship, sentence, "deterministic")
 
 
+#: Marcadores de que uma skill listada e opcional, nao obrigatoria.
+_PREFERRED_MARKERS = (
+    "preferred",
+    "nice to have",
+    "bonus",
+    "a plus",
+    "optional",
+    "desirable",
+    "advantage",
+    "good to have",
+)
+
+
+def _has_preferred_marker(text: str) -> bool:
+    """Reconhece marcadores de opcionalidade em qualquer pontuacao.
+
+    A Canonical escreve "Nice-to-have skills"; a checagem anterior procurava
+    "nice to have" com espacos e por isso classificava Docker e Kubernetes como
+    requisitos obrigatorios, bloqueando candidatos qualificados. A normalizacao
+    transforma hifen, barra e virgula em espaco antes de comparar.
+    """
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.casefold())
+    return any(marker in normalized for marker in _PREFERRED_MARKERS)
+
+
 def analyze_requirements(job: Job, provider: LLMProvider | None = None) -> JobAnalysis:
     description = job.description or ""
     language = detect_language(f"{job.title} {description}")
     skills = _terms(f"{job.title} {description}")
     sentences = _sentences(description)
-    preferred = [skill for skill in skills if any("preferred" in sentence.lower() or "nice to have" in sentence.lower() or "bonus" in sentence.lower() for sentence in sentences if skill.lower() in sentence.lower())]
+    preferred = [skill for skill in skills if any(_has_preferred_marker(sentence) for sentence in sentences if skill.lower() in sentence.lower())]
     required = [skill for skill in skills if skill not in preferred and re.search(rf"(required|must|strong|advanced|experience).*{re.escape(skill)}|{re.escape(skill)}.*(required|must|experience)", description, re.I)]
     required = required or [skill for skill in skills if skill not in preferred]
     years = ""
@@ -252,8 +277,14 @@ def _language_fit(analysis: JobAnalysis, profile: CareerProfile) -> tuple[float,
     if language not in {"en", "pt"}:
         return 0.5, False, [FitCriterionResult("primary_language", "unknown", "unknown", FitCriterionStatus.UNKNOWN, 0.5, False, "Language detection was inconclusive.", "language_detector")]
 
-    checks: list[tuple[str, float, float, bool, str]] = [(language, _profile_language_level(profile, language), _required_language_level(analysis, language), True, f"Primary job language: {analysis.language.locale}")]
-    checks.extend((requirement.language, _profile_language_level(profile, requirement.language), LANGUAGE_LEVELS.get(requirement.minimum_level.lower(), 0.6), requirement.required, requirement.evidence) for requirement in analysis.language_requirements)
+    explicit = list(analysis.language_requirements)
+    checks: list[tuple[str, float, float, bool, str]] = []
+    # Quando o anuncio declara o requisito de idioma, ele e a fonte da verdade:
+    # reavaliar o idioma primario por palavra-chave criava uma checagem mais
+    # rigida e obrigatoria que anulava o "required=False" declarado.
+    if not any(requirement.language == language for requirement in explicit):
+        checks.append((language, _profile_language_level(profile, language), _required_language_level(analysis, language), True, f"Primary job language: {analysis.language.locale}"))
+    checks.extend((requirement.language, _profile_language_level(profile, requirement.language), LANGUAGE_LEVELS.get(requirement.minimum_level.lower(), 0.6), requirement.required, requirement.evidence) for requirement in explicit)
     values: list[float] = []
     blockers = False
     for required_language, candidate, required, required_flag, evidence in checks:
