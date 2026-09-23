@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import time
@@ -16,7 +17,7 @@ from urllib.parse import urlparse
 from .execution import ExecutionPlan, validate_execution_context
 from .inspector import FormBindings, fingerprint_html
 from .models import ApplicationContext, ValidationResult
-from .qa import DECLINE_MARKERS, DECLINE_SOURCE
+from .qa import AFFIRM_MARKERS, AFFIRM_SOURCE, DECLINE_MARKERS, DECLINE_SOURCE
 
 
 class BrowserSessionError(RuntimeError):
@@ -434,8 +435,14 @@ class PlaywrightFormFiller:
             expected = " ".join(str(value).split()).casefold()
             if not expected:
                 raise BrowserSessionError(f"combobox value is empty: {field.key}")
+            # Consentimento e recusa nao sao valores pesquisaveis: o rotulo real
+            # e a opcao do ATS ("Yes", "Acknowledge/Confirm", "Decline to
+            # self-identify"). Digitar o texto da resposta no filtro do
+            # combobox zeraria a lista de opcoes.
+            intent = str(getattr(getattr(field, "answer", None), "source", ""))
+            pick_from_list = intent in {AFFIRM_SOURCE, DECLINE_SOURCE}
             locator.click()
-            if binding.autocomplete in {"list", "both"}:
+            if binding.autocomplete in {"list", "both"} and not pick_from_list:
                 locator.fill(str(value))
             DOMStabilityGuard().wait(page, pending_read_count)
             controls = str(locator.get_attribute("aria-controls") or locator.get_attribute("aria-owns") or "").split()
@@ -459,14 +466,28 @@ class PlaywrightFormFiller:
                 option = options.nth(index)
                 if option.is_visible():
                     visible_options.append((" ".join((option.inner_text() or "").split()).casefold(), option))
-            if str(getattr(getattr(field, "answer", None), "source", "")) == DECLINE_SOURCE:
+            def _marker_text(value: str) -> str:
+                # Rotulos como "I don't wish to answer" precisam ser normalizados
+                # antes de comparar com os marcadores (sem apostrofo).
+                return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+            answer_source = intent
+            if answer_source == AFFIRM_SOURCE:
+                # Aceite: o rotulo da opcao varia por ATS ("Yes",
+                # "Acknowledge/Confirm", "I accept").
+                exact_matches = [
+                    option
+                    for label, option in visible_options
+                    if any(marker in _marker_text(label) for marker in AFFIRM_MARKERS)
+                ]
+            elif answer_source == DECLINE_SOURCE:
                 # Autodeclaracao recusada: escolhe a opcao de recusa do proprio
                 # ATS, que varia de rotulo entre boards ("I don't wish to
                 # answer", "Decline to self-identify", ...).
                 exact_matches = [
                     option
                     for label, option in visible_options
-                    if any(marker in label for marker in DECLINE_MARKERS)
+                    if any(marker in _marker_text(label) for marker in DECLINE_MARKERS)
                 ]
             else:
                 exact_matches = [option for label, option in visible_options if label == expected]

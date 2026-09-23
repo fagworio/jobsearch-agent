@@ -108,17 +108,24 @@ def load_answers(path: str | Path) -> list[ApplicationAnswer]:
 
 
 #: Marcadores de opcao que recusam a autodeclaracao, por ATS.
+#: Comparados sobre o rotulo normalizado (pontuacao vira espaco), portanto
+#: escritos sem apostrofo. Cobrem os rotulos reais do Greenhouse:
+#: "I don't wish to answer", "I do not want to answer", "Decline To Self Identify".
 DECLINE_MARKERS = (
     "decline",
-    "don t wish to answer",
-    "do not wish to answer",
+    "self identify",
+    "wish to answer",
+    "want to answer",
     "prefer not",
     "not to answer",
     "no answer",
-    "i don t wish",
 )
 
 DECLINE_SOURCE = "decline_self_identification"
+
+#: Rotulos de aceite variam por ATS ("Yes", "Acknowledge/Confirm", "I accept").
+AFFIRM_SOURCE = "affirm_consent"
+AFFIRM_MARKERS = ("i agree", "agree", "acknowledge", "confirm", "accept", "i consent", "yes")
 
 
 @dataclass(frozen=True)
@@ -224,7 +231,10 @@ class AnswerKnowledgeBase:
                 continue
             if field.options and not self._option_matches(value, field.options):
                 continue
-            return self._field_answer(field, value, [f"answer_policy:{rule.name}"], "AnswerPolicy", 1.0, field.semantic_type)
+            source = "AnswerPolicy"
+            if rule.answer and any(marker in _normalize(rule.answer) for marker in ("agree", "consent", "accept")):
+                source = AFFIRM_SOURCE
+            return self._field_answer(field, value, [f"answer_policy:{rule.name}"], source, 1.0, field.semantic_type)
         return None
 
     def _exact_answer(self, question: str) -> ApplicationAnswer | None:
@@ -248,6 +258,10 @@ class AnswerKnowledgeBase:
         if exact:
             if field.options and not self._option_matches(exact.answer, field.options):
                 return None
+            # Uma resposta de aceite ("I agree") vale em qualquer ATS, cujo
+            # rotulo varia ("Yes", "Acknowledge/Confirm", "I accept").
+            if any(marker in _normalize(exact.answer) for marker in ("agree", "consent", "accept")):
+                exact = replace(exact, source=AFFIRM_SOURCE)
             return replace(exact, semantic_type=field.semantic_type, field_key=field.key)
         # Politica reutilizavel: cobre perguntas que se repetem entre vagas com
         # redacoes diferentes, inclusive as que o adapter nao reconhece.
