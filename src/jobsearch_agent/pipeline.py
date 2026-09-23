@@ -130,6 +130,26 @@ def discover(
     }
 
 
+def _answer_base(settings: Settings) -> AnswerKnowledgeBase:
+    """Biblioteca reutilizavel + respostas especificas da vaga.
+
+    `--answers` aponta para o arquivo da vaga e substitui o caminho padrao, o
+    que antes descartava a biblioteca e as regras reutilizaveis. As duas fontes
+    sao somadas: a da vaga primeiro (vence no casamento exato), a biblioteca
+    depois, para que as regras por significado continuem valendo.
+    """
+    paths = [settings.resolve(settings.answers_path)]
+    library = settings.root / "profile/answers.local.yaml"
+    if library.is_file() and library not in paths:
+        paths.append(library)
+    answers = []
+    rules = []
+    for path in paths:
+        answers.extend(load_answers(path))
+        rules.extend(load_rules(path))
+    return AnswerKnowledgeBase(answers, rules)
+
+
 def _load_profile_data(settings: Settings):
     profile = load_profile(settings.resolve(settings.profile_path))
     facts = load_facts(settings.resolve(settings.facts_path))
@@ -321,8 +341,7 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
         if application.state == ApplicationState.DRAFT:
             application = service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
         policy = load_application_policy(settings.resolve(settings.application_policy_path))
-        answers_path = settings.resolve(settings.answers_path)
-        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
+        answers = _answer_base(settings)
         context = ApplicationContext(
             application_id=application.id,
             job_id=job_id,
@@ -422,8 +441,7 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
             if field.field_type.casefold() == "file" and field.semantic_type == "resume" and default_resume.is_file():
                 field.attachment_path = str(default_resume)
         context.form = form
-        answers_path = settings.resolve(settings.answers_path)
-        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
+        answers = _answer_base(settings)
         for field in form.fields:
             field.answer = answers.resolve_field(field, profile, preferences)
         readiness = evaluate_safety_gate(context)
@@ -522,8 +540,7 @@ def apply_live(
         profile, _facts = _load_profile_data(settings)
         preferences = profile.candidate_preferences
         policy = load_application_policy(settings.resolve(settings.application_policy_path))
-        answers_path = settings.resolve(settings.answers_path)
-        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
+        answers = _answer_base(settings)
 
         service = ApplicationService(db)
         application = service.create_for_job(job_id)
