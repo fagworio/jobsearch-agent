@@ -39,6 +39,26 @@ class ATSAdapter(Protocol):
 
     def confidence(self, url: str = "", html: str = "") -> float: ...
 
+    #: Recursos de terceiros que o board carrega e que sao leitura pura. Sem o
+    #: script do reCAPTCHA Enterprise a pagina nao completa performAssessment()
+    #: e o submit nunca dispara. Isto NAO resolve nem contorna desafio: apenas
+    #: deixa a propria pagina executar o fluxo normal dela.
+    resource_hosts = (
+        "www.recaptcha.net",
+        "recaptcha.net",
+        "www.google.com",
+        "apis.google.com",
+        "accounts.google.com",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+        "recruiting.cdn.greenhouse.io",
+        "my.greenhouse.io",
+        "www.dropbox.com",
+    )
+
+    def resource_allowed_hosts(self, url: str) -> set[str]:
+        return set(self.resource_hosts)
+
     def allowed_hosts(self, url: str) -> set[str]: ...
 
     def locate_application_root(self, html: str) -> str: ...
@@ -203,6 +223,26 @@ class GreenhouseAdapter:
         ):
             return 0.95
         return 0.0
+
+    #: Recursos de terceiros que o board carrega e que sao leitura pura. Sem o
+    #: script do reCAPTCHA Enterprise a pagina nao completa performAssessment()
+    #: e o submit nunca dispara. Isto NAO resolve nem contorna desafio: apenas
+    #: deixa a propria pagina executar o fluxo normal dela.
+    resource_hosts = (
+        "www.recaptcha.net",
+        "recaptcha.net",
+        "www.google.com",
+        "apis.google.com",
+        "accounts.google.com",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+        "recruiting.cdn.greenhouse.io",
+        "my.greenhouse.io",
+        "www.dropbox.com",
+    )
+
+    def resource_allowed_hosts(self, url: str) -> set[str]:
+        return set(self.resource_hosts)
 
     def allowed_hosts(self, url: str) -> set[str]:
         hostname = (urlparse(url).hostname or "").casefold()

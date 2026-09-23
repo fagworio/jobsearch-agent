@@ -562,7 +562,11 @@ def apply_live(
         )
         resume_sha256 = hashlib.sha256(resume_path.read_bytes()).hexdigest()
 
-        session = PlaywrightSessionManager(headless=headless, allowed_hosts=adapter.allowed_hosts(job.url))
+        session = PlaywrightSessionManager(
+            headless=headless,
+            allowed_hosts=adapter.allowed_hosts(job.url),
+            allowed_resource_hosts=getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url),
+        )
         session.start()
         try:
             orchestrator = LiveApplicationOrchestrator(

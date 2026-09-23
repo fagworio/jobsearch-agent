@@ -619,9 +619,12 @@ class PlaywrightFormFiller:
 class PlaywrightSessionManager:
     """Small optional session wrapper; intentionally has no submit operation."""
 
-    def __init__(self, headless: bool = True, allowed_hosts: set[str] | None = None):
+    def __init__(self, headless: bool = True, allowed_hosts: set[str] | None = None, allowed_resource_hosts: set[str] | None = None):
         self.headless = headless
         self.allowed_hosts = allowed_hosts
+        #: Hosts de terceiros que a propria pagina carrega (Google reCAPTCHA,
+        #: fontes, CDN). Valem apenas para LEITURA: escrita continua sob o guard.
+        self.allowed_resource_hosts = allowed_resource_hosts
         self._playwright = None
         self.browser = None
         self.context = None
@@ -654,7 +657,14 @@ class PlaywrightSessionManager:
             else:
                 route.abort("blockedbyclient")
             return
-        validation = validate_navigation_url(request_url, self.allowed_hosts, resource=True)
+        # _guard_route avalia os recursos que a pagina carrega. Hosts de
+        # terceiros (Google reCAPTCHA, fontes, CDN) entram como LEITURA: sem o
+        # script do reCAPTCHA a pagina nao completa performAssessment() e o
+        # submit nunca dispara. Escrita continua sob o NetworkWriteGuard.
+        policy_hosts = self.allowed_hosts
+        if self.allowed_resource_hosts:
+            policy_hosts = set(self.allowed_hosts or set()) | set(self.allowed_resource_hosts)
+        validation = validate_navigation_url(request_url, policy_hosts, resource=True)
         if not validation.valid:
             if self.network_guard:
                 origin, path_hash = _audit_network_target(request_url)
