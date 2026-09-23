@@ -579,8 +579,11 @@ def test_apply_live_with_submit_authorizes_and_posts_once_with_the_resume(tmp_pa
     assert result["submission"]["status"] == "SUBMITTED"
     assert result["submission"]["files_sent"] == 1
     assert result["application_state"] == ApplicationState.SUBMITTED.value
-    assert len(submitted) == 1
-    request = submitted[0]
+    # O handshake faz um GET na pagina do formulario antes do POST.
+    posted = [request for request in submitted if request.method == "POST"]
+    assert len(posted) == 1
+    assert any(request.method == "GET" for request in submitted)
+    request = posted[0]
     assert "multipart/form-data" in request.headers["content-type"]
     assert b'name="job_application[resume]"' in request.content
     assert b'filename="resume.pdf"' in request.content
@@ -624,3 +627,58 @@ def test_cli_exposes_apply_and_reports_a_missing_job(tmp_path: Path, capsys):
     assert result == 2
     output = json.loads(capsys.readouterr().out)
     assert "not found" in output["error"]
+
+
+def test_submission_without_the_handshake_is_rejected_by_the_endpoint(tmp_path: Path):
+    """Sem o token anti-CSRF o board recusa; e o handshake que o obtem."""
+    with SubmissionTestServer() as server:
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "csrf-missing")
+        destination = server.url("/submit/needs-token")
+        intent, policy = _authorized_intent(db, application_id, destination, "/submit/needs-token")
+        result = GreenhouseSubmissionExecutor(db).submit(
+            intent.id,
+            current_form_fingerprint="form-v1",
+            current_resume_sha256="resume-v1",
+            current_answers_fingerprint="answers-v1",
+            policy=policy,
+            fields={"job_application[email]": "candidate@example.test"},
+        )
+        assert result.status == "SUBMIT_FAILED"
+        assert result.http_status == 400
+        db.close()
+
+
+def test_submission_handshake_collects_the_csrf_token_and_succeeds(tmp_path: Path):
+    with SubmissionTestServer() as server:
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "csrf-ok")
+        destination = server.url("/submit/needs-token")
+        intent, policy = _authorized_intent(db, application_id, destination, "/submit/needs-token")
+        result = GreenhouseSubmissionExecutor(db).submit(
+            intent.id,
+            current_form_fingerprint="form-v1",
+            current_resume_sha256="resume-v1",
+            current_answers_fingerprint="answers-v1",
+            policy=policy,
+            fields={"job_application[email]": "candidate@example.test"},
+            session_url=server.url("/job-with-token"),
+        )
+        assert result.status == "SUBMITTED"
+        assert result.http_status == 201
+        # o token foi enviado junto com os campos do formulario
+        body = server.requests[-1].body
+        assert b"tok-abc123" in body
+        db.close()
+
+
+def test_csrf_field_extraction_covers_the_common_markups():
+    from jobsearch_agent.greenhouse import csrf_field
+
+    assert csrf_field('<meta name="csrf-token" content="abc123">') == ("csrf-token", "abc123")
+    assert csrf_field('<meta content="xyz" name="csrf-token">') == ("csrf-token", "xyz")
+    assert csrf_field('<input name="authenticity_token" value="tok9">') == ("authenticity_token", "tok9")
+    assert csrf_field('<input value="tok9" name="authenticity_token">') == ("authenticity_token", "tok9")
+    assert csrf_field('{"csrfToken":"jwt-token"}') == ("authenticity_token", "jwt-token")
+    assert csrf_field("&lt;meta name=&quot;csrf-token&quot; content=&quot;esc&amp;aped&quot;&gt;") == ("csrf-token", "esc&aped")
+    assert csrf_field("<html>no token here</html>") == ("", "")

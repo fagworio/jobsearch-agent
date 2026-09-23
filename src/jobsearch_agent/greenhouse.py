@@ -8,12 +8,38 @@ network policy, and persist the attempt before this class sends a request.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html as html_module
+import re
 from typing import Mapping, Sequence
 
 import httpx
 
 from .persistence import Database
 from .submission import LiveNetworkPolicy, SubmissionBoundaryError, SubmissionService, SubmissionVerification
+
+
+_CSRF_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("csrf-token", re.compile(r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)', re.I)),
+    ("csrf-token", re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']csrf-token["\']', re.I)),
+    ("authenticity_token", re.compile(r'<input[^>]+name=["\']authenticity_token["\'][^>]+value=["\']([^"\']+)', re.I)),
+    ("authenticity_token", re.compile(r'<input[^>]+value=["\']([^"\']+)["\'][^>]+name=["\']authenticity_token["\']', re.I)),
+    ("authenticity_token", re.compile(r'"csrfToken"\s*:\s*"([^"]+)"')),
+    ("authenticity_token", re.compile(r'"authenticity_token"\s*:\s*"([^"]+)"')),
+)
+
+
+def csrf_field(markup: str) -> tuple[str, str]:
+    """Extrai o campo anti-CSRF do HTML, se o board publicar um.
+
+    O HTML pode vir escapado (``&lt;meta ...&gt;``), entao desescapa antes de
+    casar; a comparacao e feita sobre texto normal.
+    """
+    text = html_module.unescape(markup or "")
+    for name, pattern in _CSRF_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return name, match.group(1)
+    return "", ""
 
 
 _CONFIRMATION_MARKERS = (
@@ -59,6 +85,7 @@ class GreenhouseSubmissionExecutor:
         policy: LiveNetworkPolicy,
         fields: Mapping[str, str | Sequence[str]],
         files: Mapping[str, tuple[str, bytes, str]] | None = None,
+        session_url: str = "",
     ) -> SubmissionExecutionResult:
         intent = self.database.get_submission_intent(intent_id)
         if not intent:
@@ -80,12 +107,24 @@ class GreenhouseSubmissionExecutor:
         response: httpx.Response | None = None
         owned_client = self.client is None
         client = self.client or httpx.Client(follow_redirects=False, timeout=self.timeout)
+        payload = dict(fields)
         try:
+            # Handshake: o form real carrega um token anti-CSRF e cookies de
+            # sessao. Sem eles o endpoint devolve 400 Bad Request. O cliente
+            # guarda os cookies entre as duas chamadas.
+            if session_url:
+                try:
+                    handshake = client.get(session_url, timeout=self.timeout)
+                    token_name, token_value = csrf_field(handshake.text)
+                    if token_name and token_value:
+                        payload[token_name] = token_value
+                except httpx.HTTPError:
+                    pass
             # Multipart only when a file part exists: Greenhouse accepts the
             # namespaced form fields and the resume document in one request.
             response = client.post(
                 intent.destination,
-                data=dict(fields),
+                data=payload,
                 files=dict(files) if files else None,
                 timeout=self.timeout,
             )

@@ -75,6 +75,13 @@ class SubmissionTestServer:
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
+            def do_GET(self) -> None:  # noqa: N802 - stdlib protocol name
+                if self.path == "/job-with-token":
+                    payload = b'<html><head><meta name="csrf-token" content="tok-abc123"></head><body>form</body></html>'
+                    self._respond(_Response(200, payload, "text/html; charset=utf-8"))
+                    return
+                self._respond(_Response(404, b"", "text/plain"))
+
             def do_POST(self) -> None:  # noqa: N802 - stdlib protocol name
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length)
@@ -91,6 +98,13 @@ class SubmissionTestServer:
                     response = json_response(201, {"status": "submitted"})
                 elif self.path == "/submit/success":
                     response = json_response(201, {"status": "submitted"})
+                elif self.path == "/job-with-token":
+                    body = b'<html><head><meta name="csrf-token" content="tok-abc123"></head><body>form</body></html>'
+                    response = _Response(200, body, "text/html; charset=utf-8")
+                elif self.path == "/submit/needs-token":
+                    # Recusa sem o token que o handshake deve colher em /job-with-token.
+                    ok = b"tok-abc123" in body
+                    response = json_response(201 if ok else 400, {"status": "submitted" if ok else "bad_request"})
                 elif self.path == "/submit/multipart":
                     # A real board rejects an application that carries no resume part.
                     ok = record.is_multipart and any("resume" in name for name in record.file_parts)

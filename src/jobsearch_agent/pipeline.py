@@ -22,7 +22,7 @@ from .observability import append_event
 from .orchestrator import LiveApplicationOrchestrator
 from .persistence import Database
 from .profile import PROFILE_OPTIONAL_PATHS, PROFILE_REQUIRED_PATHS, load_facts, load_preferences, load_profile, validate_facts as validate_profile_facts, validate_profile_readiness
-from .qa import AnswerKnowledgeBase, load_answers
+from .qa import AnswerKnowledgeBase, load_answers, load_rules
 from .resume import generate_resume, render_docx, render_pdf_from_docx, render_text, select_fact_ids, validate_ats, validate_facts as validate_resume_facts
 from .schemas import validate_contract
 from .serialization import canonical_json
@@ -321,7 +321,8 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
         if application.state == ApplicationState.DRAFT:
             application = service.transition(application.id, ApplicationState.PREPARING, "application_preparing")
         policy = load_application_policy(settings.resolve(settings.application_policy_path))
-        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+        answers_path = settings.resolve(settings.answers_path)
+        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
         context = ApplicationContext(
             application_id=application.id,
             job_id=job_id,
@@ -421,7 +422,8 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
             if field.field_type.casefold() == "file" and field.semantic_type == "resume" and default_resume.is_file():
                 field.attachment_path = str(default_resume)
         context.form = form
-        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+        answers_path = settings.resolve(settings.answers_path)
+        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
         for field in form.fields:
             field.answer = answers.resolve_field(field, profile, preferences)
         readiness = evaluate_safety_gate(context)
@@ -520,7 +522,8 @@ def apply_live(
         profile, _facts = _load_profile_data(settings)
         preferences = profile.candidate_preferences
         policy = load_application_policy(settings.resolve(settings.application_policy_path))
-        answers = AnswerKnowledgeBase(load_answers(settings.resolve(settings.answers_path)))
+        answers_path = settings.resolve(settings.answers_path)
+        answers = AnswerKnowledgeBase(load_answers(answers_path), load_rules(answers_path))
 
         service = ApplicationService(db)
         application = service.create_for_job(job_id)
@@ -697,6 +700,7 @@ def _submit_live(
         policy=policy,
         fields=payload.fields,
         files=payload.files,
+        session_url=job.url,
     )
     return {
         "intent_id": intent.id,

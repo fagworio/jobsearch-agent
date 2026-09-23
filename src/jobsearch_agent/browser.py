@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from .execution import ExecutionPlan, validate_execution_context
 from .inspector import FormBindings, fingerprint_html
 from .models import ApplicationContext, ValidationResult
+from .qa import DECLINE_MARKERS, DECLINE_SOURCE
 
 
 class BrowserSessionError(RuntimeError):
@@ -458,16 +459,26 @@ class PlaywrightFormFiller:
                 option = options.nth(index)
                 if option.is_visible():
                     visible_options.append((" ".join((option.inner_text() or "").split()).casefold(), option))
-            exact_matches = [option for label, option in visible_options if label == expected]
-            if not exact_matches:
-                # Alguns widgets decoram o rotulo: o seletor de pais do telefone
-                # mostra "Brazil +55" para a resposta "Brazil". Aceita prefixo,
-                # mas so quando houver exatamente um candidato.
+            if str(getattr(getattr(field, "answer", None), "source", "")) == DECLINE_SOURCE:
+                # Autodeclaracao recusada: escolhe a opcao de recusa do proprio
+                # ATS, que varia de rotulo entre boards ("I don't wish to
+                # answer", "Decline to self-identify", ...).
                 exact_matches = [
                     option
                     for label, option in visible_options
-                    if label.startswith(expected) or expected.startswith(label)
+                    if any(marker in label for marker in DECLINE_MARKERS)
                 ]
+            else:
+                exact_matches = [option for label, option in visible_options if label == expected]
+                if not exact_matches:
+                    # Alguns widgets decoram o rotulo: o seletor de pais do
+                    # telefone mostra "Brazil +55" para a resposta "Brazil".
+                    # Aceita prefixo, mas so com exatamente um candidato.
+                    exact_matches = [
+                        option
+                        for label, option in visible_options
+                        if label.startswith(expected) or expected.startswith(label)
+                    ]
             if len(exact_matches) != 1:
                 if not exact_matches:
                     raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")

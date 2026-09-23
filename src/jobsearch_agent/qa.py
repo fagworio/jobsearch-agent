@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import difflib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import re
 import unicodedata
@@ -106,9 +106,72 @@ def load_answers(path: str | Path) -> list[ApplicationAnswer]:
     return result
 
 
+
+#: Marcadores de opcao que recusam a autodeclaracao, por ATS.
+DECLINE_MARKERS = (
+    "decline",
+    "don t wish to answer",
+    "do not wish to answer",
+    "prefer not",
+    "not to answer",
+    "no answer",
+    "i don t wish",
+)
+
+DECLINE_SOURCE = "decline_self_identification"
+
+
+@dataclass(frozen=True)
+class AnswerRule:
+    """Resposta reutilizavel casada pelo significado da pergunta.
+
+    Campos se repetem entre vagas com redacoes diferentes ("Email", "E-mail
+    address", "Your email"). Uma regra casa por trecho normalizado e resolve a
+    partir do perfil, das preferencias ou de um valor literal, para nao exigir
+    uma resposta nova a cada formulario.
+    """
+
+    name: str
+    match: tuple[str, ...]
+    answer: str = ""
+    source: str = ""
+    decline: bool = False
+
+    def matches(self, label: str) -> bool:
+        normalized = _normalize(label)
+        return any(_normalize(term) in normalized for term in self.match)
+
+
+def load_rules(path: str | Path) -> list[AnswerRule]:
+    source = Path(path)
+    if not source.exists():
+        return []
+    raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    entries = raw.get("rules", []) if isinstance(raw, dict) else []
+    rules: list[AnswerRule] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        match = entry.get("match") or []
+        if isinstance(match, str):
+            match = [match]
+        match = tuple(str(item) for item in match if str(item).strip())
+        if not match:
+            continue
+        rules.append(AnswerRule(
+            name=str(entry.get("name", "")),
+            match=match,
+            answer=str(entry.get("answer", "")),
+            source=str(entry.get("from", "")),
+            decline=bool(entry.get("decline", False)),
+        ))
+    return rules
+
+
 class AnswerKnowledgeBase:
-    def __init__(self, answers: list[ApplicationAnswer]):
+    def __init__(self, answers: list[ApplicationAnswer], rules: list[AnswerRule] | None = None):
         self.answers = [answer for answer in answers if answer.approved and answer.answer]
+        self.rules = list(rules or [])
 
     def resolve(self, question: str, profile: CareerProfile, preferences: CandidatePreferences | None = None) -> ApplicationAnswer | None:
         normalized = _normalize(question)
@@ -126,6 +189,43 @@ class AnswerKnowledgeBase:
             answer = scored[0][1]
             return ApplicationAnswer(answer.question_key, question, answer.answer, list(answer.supported_by), "approved_semantic", scored[0][0], True, answer.legal, answer.semantic_type)
         return self._resolve_profile(question, profile, preferences)
+
+    def _resolve_rule(self, field: ApplicationField, profile: CareerProfile, preferences: CandidatePreferences | None) -> ApplicationAnswer | None:
+        """Aplica a politica reutilizavel casada pelo significado da pergunta."""
+        for rule in self.rules:
+            if not rule.matches(field.label):
+                continue
+            if rule.decline:
+                return self._field_answer(
+                    field,
+                    "Decline to self-identify",
+                    [f"answer_policy:{rule.name}"],
+                    DECLINE_SOURCE,
+                    1.0,
+                    field.semantic_type,
+                )
+            value = ""
+            if rule.source == "identity.email":
+                value = str(profile.identity.get("email", ""))
+            elif rule.source == "identity.country":
+                value = str(profile.identity.get("country", ""))
+            elif rule.source == "identity.phone":
+                value = str(profile.identity.get("phone", ""))
+            elif rule.source == "work_authorization":
+                country = _field_country(field)
+                authorized = {_normalize(item) for item in (preferences.work_authorization if preferences else [])}
+                value = "Yes" if country and _normalize(country) in authorized else "No"
+            elif rule.source == "requires_sponsorship":
+                wants = bool(preferences) and preferences.requires_sponsorship == "yes"
+                value = "Yes" if wants else "No"
+            elif rule.answer:
+                value = rule.answer
+            if not value:
+                continue
+            if field.options and not self._option_matches(value, field.options):
+                continue
+            return self._field_answer(field, value, [f"answer_policy:{rule.name}"], "AnswerPolicy", 1.0, field.semantic_type)
+        return None
 
     def _exact_answer(self, question: str) -> ApplicationAnswer | None:
         normalized = _normalize(question)
@@ -149,6 +249,11 @@ class AnswerKnowledgeBase:
             if field.options and not self._option_matches(exact.answer, field.options):
                 return None
             return replace(exact, semantic_type=field.semantic_type, field_key=field.key)
+        # Politica reutilizavel: cobre perguntas que se repetem entre vagas com
+        # redacoes diferentes, inclusive as que o adapter nao reconhece.
+        ruled = self._resolve_rule(field, profile, preferences)
+        if ruled:
+            return ruled
         if field.confidence < AUTO_FILL_CONFIDENCE:
             return None
         semantic_type = field.semantic_type
