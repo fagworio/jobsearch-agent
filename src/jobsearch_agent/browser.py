@@ -733,9 +733,13 @@ class PlaywrightSessionManager:
 
     def arm_authorized_write(self, permit: AuthorizedWrite) -> None:
         """Autoriza exatamente uma escrita do browser nesta sessao."""
+        self.arm_writes([permit])
+
+    def arm_writes(self, permits: list[AuthorizedWrite]) -> None:
+        """Autoriza escritas especificas do browser, cada uma com seu orcamento."""
         if not self.guarded or self.network_guard is None:
             raise BrowserSessionError("cannot authorize a write on an unguarded session")
-        self.network_guard.arm_write(permit)
+        self.network_guard.arm_writes(list(permits))
 
     def disarm_authorized_write(self) -> None:
         if self.network_guard is not None:

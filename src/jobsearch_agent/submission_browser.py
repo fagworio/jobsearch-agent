@@ -142,7 +142,7 @@ class GreenhouseBrowserSubmitter:
         return BrowserSubmissionOutcome(status, completed.id, observed.get("http_status"), observed)
 
     def _classify(self, observed: dict[str, Any], writes_used: int):
-        if observed.get("captcha_challenge"):
+        if observed.get("captcha_challenge") or self._captcha_demanded(observed):
             return None, "NEEDS_CAPTCHA"
         status_code = observed.get("http_status")
         confirmed = bool(observed.get("confirmation_reached"))
@@ -227,6 +227,19 @@ class GreenhouseBrowserSubmitter:
             if len(visible) == 1:
                 return visible[0]
         return None
+
+    @staticmethod
+    def _captcha_demanded(observed: dict[str, Any]) -> bool:
+        """O servidor pediu explicitamente um CAPTCHA.
+
+        O reCAPTCHA Enterprise e invisivel: nao ha iframe de desafio, mas o
+        endpoint responde 428 com "Please complete the reCAPTCHA". Nao
+        resolvemos nem contornamos — apenas reportamos que precisa de humano.
+        """
+        haystack = " ".join(str(item) for item in (observed.get("page_errors") or [])).casefold()
+        if "recaptcha" in haystack or "captcha" in haystack:
+            return True
+        return int(observed.get("http_status") or 0) == 428
 
     @staticmethod
     def _page_errors(page: Any) -> list[str]:

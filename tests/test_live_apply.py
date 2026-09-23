@@ -988,3 +988,23 @@ def test_classification_of_the_browser_outcome():
 
     verification, status = classifier(submitter, {"captcha_challenge": True}, 0)
     assert status == "NEEDS_CAPTCHA" and verification is None
+
+
+def test_classification_treats_a_server_captcha_demand_as_needs_captcha():
+    """O reCAPTCHA Enterprise e invisivel: o 428 com a mensagem e o sinal."""
+    from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
+
+    submitter = GreenhouseBrowserSubmitter.__new__(GreenhouseBrowserSubmitter)
+    classifier = GreenhouseBrowserSubmitter.__dict__["_classify"]
+
+    demand = {"http_status": 428, "page_errors": ["Please complete the reCAPTCHA and resubmit your application."]}
+    verification, status = classifier(submitter, demand, 1)
+    assert status == "NEEDS_CAPTCHA" and verification is None
+
+    only_message = {"http_status": 400, "page_errors": ["Please complete the reCAPTCHA."]}
+    assert classifier(submitter, only_message, 1)[1] == "NEEDS_CAPTCHA"
+
+    # Uma rejeicao comum continua sendo falha definitiva, nao CAPTCHA.
+    plain = {"http_status": 422, "page_errors": ["Resume/CV is required."]}
+    verification, status = classifier(submitter, plain, 1)
+    assert status == "SUBMIT_FAILED"

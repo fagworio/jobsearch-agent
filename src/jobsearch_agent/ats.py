@@ -54,6 +54,9 @@ class ATSAdapter(Protocol):
         "recruiting.cdn.greenhouse.io",
         "my.greenhouse.io",
         "www.dropbox.com",
+        # Storage do board. A rota precisa permitir o host para a requisicao
+        # chegar ao NetworkWriteGuard; la o POST so passa com permissao.
+        "*.s3.amazonaws.com",
     )
 
     #: Storage do board, para onde o curriculo e enviado por POST (xhr). O
@@ -247,6 +250,9 @@ class GreenhouseAdapter:
         "recruiting.cdn.greenhouse.io",
         "my.greenhouse.io",
         "www.dropbox.com",
+        # Storage do board. A rota precisa permitir o host para a requisicao
+        # chegar ao NetworkWriteGuard; la o POST so passa com permissao.
+        "*.s3.amazonaws.com",
     )
 
     #: Storage do board, para onde o curriculo e enviado por POST (xhr). O
