@@ -19,6 +19,7 @@ Descobertas por inspeção real das páginas:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 
 class ProviderError(ValueError):
@@ -94,7 +95,14 @@ PROFILES: dict[str, ProviderProfile] = {
         submit_origin="https://jobs.lever.co",
         submit_path_pattern=r"^/[^/]+/[0-9a-fA-F-]{8,}/apply/?$",
         submit_control_names=("SUBMIT APPLICATION", "Submit Application", "Submit application"),
-        confirmation_markers=("thank you for applying", "application submitted", "posting", "thanks for applying"),
+        # Nunca um marcador generico como "posting": a pagina de uma vaga
+        # contem "job posting" e um POST 2xx + esse texto marcaria SUBMITTED.
+        confirmation_markers=(
+            "thank you for applying",
+            "thanks for applying",
+            "application submitted",
+            "application received",
+        ),
         apply_path_suffix="/apply",
         notes="Formulário HTML clássico; action aponta para o próprio /apply.",
     ),
@@ -127,6 +135,25 @@ PROFILES: dict[str, ProviderProfile] = {
 }
 
 
+#: Sufixos de host que identificam o provider sem depender de um adapter.
+PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
+    "greenhouse": ("greenhouse.io",),
+    "lever": ("lever.co",),
+    "ashby": ("ashbyhq.com",),
+}
+
+
+def provider_for_url(url: str) -> str:
+    """Provider identificado pelo host, ou "" se desconhecido."""
+    host = (urlsplit(url).hostname or "").casefold()
+    if not host:
+        return ""
+    for provider, suffixes in PROVIDER_HOSTS.items():
+        if any(host == suffix or host.endswith("." + suffix) for suffix in suffixes):
+            return provider
+    return ""
+
+
 def supported_providers() -> list[str]:
     return sorted(PROFILES)
 
@@ -139,17 +166,30 @@ def profile_for(provider: str) -> ProviderProfile:
 
 
 def apply_url(provider: str, job_url: str) -> str:
-    """URL do formulário de candidatura para a vaga."""
+    """URL do formulário de candidatura para a vaga.
+
+    Usa ``urlsplit`` para nao corromper query string ou fragmento:
+    ``.../uuid?lever-source=linkedin`` vira ``.../uuid/apply?lever-source=linkedin``.
+    """
     profile = profile_for(provider)
     if not profile.apply_path_suffix:
         return job_url
-    base = job_url.rstrip("/")
-    if base.casefold().endswith(profile.apply_path_suffix):
-        return base
-    return base + profile.apply_path_suffix
+    parts = urlsplit(job_url)
+    path = parts.path.rstrip("/")
+    if path.casefold().endswith(profile.apply_path_suffix):
+        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, path + profile.apply_path_suffix, parts.query, parts.fragment)
+    )
 
 
-def submit_destination(provider: str, job_url: str, board: str, external_id: str) -> str:
+def submit_destination(
+    provider: str,
+    job_url: str,
+    board: str,
+    external_id: str,
+    form_action: str = "",
+) -> str:
     """Endpoint que recebe o POST da candidatura.
 
     Lever publica o destino no próprio ``action`` do formulário (a URL
@@ -161,5 +201,7 @@ def submit_destination(provider: str, job_url: str, board: str, external_id: str
             raise ProviderError("greenhouse submission requires board and job id")
         return f"{profile.submit_origin}/{board}/jobs/{external_id}"
     if provider == "lever":
-        return apply_url(provider, job_url)
+        # O formulario declara o destino exato no `action`; so reconstruimos
+        # quando ele nao vier.
+        return form_action or apply_url(provider, job_url)
     raise ProviderError(f"no public submit endpoint known for provider: {provider}")

@@ -66,13 +66,19 @@ class SubmissionBoundaryError(ValueError):
     """Raised when a live submission would violate its authorization boundary."""
 
 
-def submission_destination(provider: str, board: str, external_id: str, job_url: str = "") -> str:
+def submission_destination(
+    provider: str,
+    board: str,
+    external_id: str,
+    job_url: str = "",
+    form_action: str = "",
+) -> str:
     """Endpoint que recebe a candidatura, conforme o perfil do provider.
 
     ``job_url`` é necessário para providers cujo destino é a própria URL do
     formulário (Lever). Greenhouse deriva de board + id.
     """
-    return _submit_destination(provider, job_url, board, external_id)
+    return _submit_destination(provider, job_url, board, external_id, form_action)
 
 
 #: Providers que esperam os campos agrupados sob um namespace de formulario.

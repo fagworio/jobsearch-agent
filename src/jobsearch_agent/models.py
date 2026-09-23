@@ -430,6 +430,10 @@ class ApplicationForm:
     steps: list[str] = field(default_factory=list)
     artifact_root: str = ""
     capability_issues: list[FormCapabilityIssue] = field(default_factory=list)
+    #: O que o proprio formulario declara. O Lever publica o destino exato no
+    #: `action`; usar isso elimina a suposicao de reconstruir a URL.
+    action: str = ""
+    method: str = "POST"
 
 
 @domain_dataclass

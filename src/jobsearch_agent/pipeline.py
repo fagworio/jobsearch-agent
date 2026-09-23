@@ -15,7 +15,7 @@ from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionMa
 from .config import Settings
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
-from .providers import apply_url as provider_apply_url, profile_for
+from .providers import apply_url as provider_apply_url, profile_for, provider_for_url
 from .submission_browser import BrowserSubmitter
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .llm import OpenAICompatibleProvider
@@ -513,8 +513,9 @@ def apply_live(
 
     The browser runs inside the same guarded session used by the dry run: every
     network write is blocked, so this flow can fill and upload but can never
-    submit. ``submit=True`` performs the separate, explicitly authorized HTTP
-    submission against the persisted review snapshot after the fill succeeded.
+    submit. ``submit=True`` keeps the same browser session open and lets the
+    board's own application perform the POST, after an explicitly authorized
+    one-shot write; there is no separate HTTP client rebuild.
     """
     prepared = prepare(settings, job_id)
     artifact_dir = Path(prepared["artifacts"])
@@ -538,9 +539,24 @@ def apply_live(
             raise PipelineError(f"job has no application URL: {job_id}")
         adapter = adapter_for(job.url, "")
         if adapter is None:
+            # Sem adapter, mas com provider reconhecido pelo host: recusa
+            # explicita em vez de erro generico. O Ashby carrega o formulario
+            # por POST na API, entao nem a inspecao dispensa escrita.
+            known = provider_for_url(job.url)
+            if known:
+                known_profile = profile_for(known)
+                if known_profile.form_loaded_by_api_write:
+                    return {
+                        "status": "UNSUPPORTED_PROVIDER",
+                        "reason": "INSPECTION_REQUIRES_WRITE",
+                        "provider": known,
+                        "job_id": job_id,
+                        "browser_started": False,
+                        "detail": known_profile.notes,
+                    }
             raise PipelineError(f"no supported ATS adapter for live apply: {job.url}")
-        profile, _facts = _load_profile_data(settings)
-        preferences = profile.candidate_preferences
+        candidate_profile, _facts = _load_profile_data(settings)
+        preferences = candidate_profile.candidate_preferences
         policy = load_application_policy(settings.resolve(settings.application_policy_path))
         answers = _answer_base(settings)
 
@@ -564,9 +580,9 @@ def apply_live(
         resume_sha256 = hashlib.sha256(resume_path.read_bytes()).hexdigest()
 
         upload_writes_used = 0
-        profile = profile_for(adapter.provider)
+        provider_profile = profile_for(adapter.provider)
         form_url = provider_apply_url(adapter.provider, job.url)
-        resource_hosts = set(profile.resource_hosts) | set(
+        resource_hosts = set(provider_profile.resource_hosts) | set(
             getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url)
         )
         session = PlaywrightSessionManager(
@@ -590,11 +606,11 @@ def apply_live(
                         method="POST",
                         max_writes=1,
                     )
-                    for host in profile.upload_write_origins
+                    for host in provider_profile.upload_write_origins
                 ])
             orchestrator = LiveApplicationOrchestrator(
                 adapter,
-                profile,
+                candidate_profile,
                 preferences,
                 answers,
                 max_cycles=max_cycles,
@@ -614,7 +630,11 @@ def apply_live(
                 "url": live.url or form_url,
                 "advanced_steps": live.advanced_steps,
                 "form_fingerprint": live.form_fingerprint,
-                "network_writes_allowed": False,
+                # Telemetria explicita: o guard segue ativo; o que muda entre
+                # dry-run e submissao autorizada e a politica de escrita.
+                "network_guard_active": True,
+                "write_policy": "authorized_one_shot" if submit else "deny_all",
+                "upload_writes_used": upload_writes_used,
                 "error": live.error,
             }
             if live.form is not None:
@@ -743,7 +763,13 @@ def _submit_live_in_browser(
     if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
         raise PipelineError("live submission requires form, answers and resume fingerprints")
     resolved_fields, manual_questions = review_field_rows(form)
-    destination = submission_destination(provider, job.company, job.external_id, job.url)
+    destination = submission_destination(
+        provider,
+        job.company,
+        job.external_id,
+        job.url,
+        form_action=str(getattr(form, "action", "") or ""),
+    )
     submission_service = SubmissionService(db)
     submission_service.save_review_snapshot(
         build_review_snapshot(

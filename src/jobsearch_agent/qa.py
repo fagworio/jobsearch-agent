@@ -75,6 +75,20 @@ def is_legal_question(question: str) -> bool:
     return any(term in normalized for term in LEGAL_TERMS)
 
 
+def _current_experience(profile: CareerProfile):
+    """Experiencia atual: entre as abertas, a de maior inicio.
+
+    Assumir "primeiro item da lista" so funcionaria se o YAML estivesse
+    ordenado por acaso. A comparacao e lexicografica sobre a data textual, o
+    que basta para o formato ISO usado no perfil.
+    """
+    open_roles = [item for item in profile.experiences if not item.end_date]
+    pool = open_roles or list(profile.experiences)
+    if not pool:
+        return None
+    return max(pool, key=lambda item: (item.start_date or "", item.end_date or ""))
+
+
 def load_answers(path: str | Path) -> list[ApplicationAnswer]:
     source = Path(path)
     if not source.exists():
@@ -315,11 +329,8 @@ class AnswerKnowledgeBase:
                     return self._field_answer(field, value, supported_by, "CareerProfile", 1.0, semantic_type)
                 return None
         if semantic_type == "current_company":
-            # O Lever pergunta "Current company" (name="org"). Deriva do
-            # registro de experiencia mais recente do Career Profile.
-            current = next((item for item in profile.experiences if not item.end_date), None)
-            if current is None and profile.experiences:
-                current = profile.experiences[0]
+            # O Lever pergunta "Current company" (name="org").
+            current = _current_experience(profile)
             if current and current.company:
                 return self._field_answer(
                     field,

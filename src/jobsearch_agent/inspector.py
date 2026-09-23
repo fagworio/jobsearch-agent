@@ -279,7 +279,14 @@ class ATSInspector:
             bindings.append(self._binding(field_key, field_type, group, options))
 
         provider = detect_provider(url, html)
-        form = ApplicationForm(form_id=form_id, provider=provider, fields=fields, source="dom_inspector")
+        form = ApplicationForm(
+            form_id=form_id,
+            provider=provider,
+            fields=fields,
+            source="dom_inspector",
+            action=str(root.get("action") or "") if root.name == "form" else "",
+            method=str(root.get("method") or "POST").upper() if root.name == "form" else "POST",
+        )
         root_locator = _base_locator(root) if root.name == "form" else ""
         return InspectedForm(form, FormBindings(form_id, bindings, root_locator))
 

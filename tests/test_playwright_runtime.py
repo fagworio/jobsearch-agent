@@ -347,3 +347,132 @@ def test_live_orchestrator_fills_and_uploads_a_real_page_without_submitting(tmp_
         manager.close()
         server.shutdown()
         thread.join(timeout=2)
+
+
+def test_apply_live_runs_the_real_orchestrator_with_a_candidate_profile(tmp_path: Path, monkeypatch):
+    """Integração real do pipeline, SEM stub de orchestrator.
+
+    Um P0 anterior trocou o CareerProfile por um ProviderProfile na chamada do
+    `LiveApplicationOrchestrator`. Os testes com `StubOrchestrator` aceitavam
+    `*_args`, então nada quebrava. Aqui o orchestrator é o real: ele usa
+    `profile.demo`, `profile.experiences` e `profile.candidate_preferences`, e
+    falharia imediatamente se recebesse o objeto errado.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    from jobsearch_agent import pipeline
+    from jobsearch_agent.config import Settings
+    from jobsearch_agent.models import Job
+    from jobsearch_agent.persistence import Database
+    from jobsearch_agent.profile import load_profile
+    from jobsearch_agent.sources import canonical_job_key
+
+    root = Path(__file__).parents[1]
+    form_html = """<!doctype html>
+    <form id="application-form" method="post" action="/apply">
+      <label for="name">Full name</label><input id="name" name="name" required>
+      <label for="email">Email</label><input id="email" name="email" type="email" required>
+      <label for="resume">Resume</label><input id="resume" name="resume" type="file">
+      <button type="submit">SUBMIT APPLICATION</button>
+    </form>"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = form_html.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    origin = f"http://127.0.0.1:{server.server_port}"
+
+    class LoopbackSession(PlaywrightSessionManager):
+        def _guard_route(self, route):
+            if str(route.request.url).startswith(origin):
+                if self.network_guard.inspect(route.request):
+                    self.network_guard.begin_read(route.request)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+        def open(self, url):
+            self.page.goto(url, wait_until="domcontentloaded")
+
+    # perfil de candidato real (fixture) marcado como nao-demo
+    profile_path = tmp_path / "career_profile.yaml"
+    profile_path.write_text(
+        (root / "profile/career_profile.yaml").read_text().replace("demo: true", "demo: false"),
+        encoding="utf-8",
+    )
+    # Unico seam alem do loopback: a identidade do provider. Num host local nao
+    # ha como reconhecer o ATS pela URL; o orchestrator continua sendo o real.
+    from jobsearch_agent.ats import LeverAdapter
+
+    real_adapter_for = pipeline.adapter_for
+    monkeypatch.setattr(
+        pipeline,
+        "adapter_for",
+        lambda url, html="": LeverAdapter() if "127.0.0.1" in url else real_adapter_for(url, html),
+    )
+    monkeypatch.setattr(pipeline, "PlaywrightSessionManager", LoopbackSession)
+
+    settings = Settings.from_args(
+        root,
+        db=str(tmp_path / "jobs.db"),
+        artifacts=str(tmp_path / "artifacts"),
+        profile=str(profile_path),
+        facts=str(root / "profile/locked_facts.yaml"),
+        answers=str(root / "profile/answers.yaml"),
+        application_policy=str(root / "profile/application_policy.yaml"),
+    )
+
+    artifact_dir = tmp_path / "artifacts" / "job-lever-local"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with (artifact_dir / "resume.pdf").open("wb") as handle:
+        writer.write(handle)
+
+    def fake_prepare(_settings, _job_id, language_override=None):
+        return {
+            "fit": {"blockers": []},
+            "resume": {"id": "resume-local"},
+            "validation": {"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
+            "artifacts": str(artifact_dir),
+        }
+
+    monkeypatch.setattr(pipeline, "prepare", fake_prepare)
+
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        job = Job(
+            id="job-lever-local",
+            source="lever",
+            external_id="local-1",
+            company="acme",
+            title="Frontend Engineer",
+            description="Build web apps.",
+            url=origin + "/apply",
+        )
+        db.save_job(job, canonical_job_key(job), {})
+    finally:
+        db.close()
+
+    result = pipeline.apply_live(settings, "job-lever-local")
+    server.shutdown()
+
+    # Sem excecao e com status de dominio: o orchestrator real rodou.
+    assert result["status"] == "FILLED_REVIEW_REQUIRED", result.get("error")
+    assert result["network_guard_active"] is True
+    assert result["write_policy"] == "deny_all"
+    assert result["upload_writes_used"] == 0
+    assert load_profile(profile_path).demo is False

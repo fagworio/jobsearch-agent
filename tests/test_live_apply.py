@@ -663,7 +663,9 @@ def test_apply_live_fills_persists_the_form_and_stops_before_submit(tmp_path: Pa
     assert result["status"] == "FILLED_REVIEW_REQUIRED"
     assert result["application_state"] == ApplicationState.REVIEW_REACHED.value
     assert result["advanced_steps"] == 1
-    assert result["network_writes_allowed"] is False
+    assert result["network_guard_active"] is True
+    assert result["write_policy"] == "deny_all"
+    assert result["upload_writes_used"] == 0
     assert submitted == [], "apply without --submit must never post"
 
     db = Database(settings.resolve(settings.db_path))
