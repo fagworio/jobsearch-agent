@@ -41,6 +41,7 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
         policy=ApplicationPolicy(autonomy={"fill_forms": "review", "submit": "manual"}),
     )
     application.context = to_dict(context)
+    application.context["resume_sha256"] = "resume-sha-v1"
     db.save_application(application)
     db.close()
 
@@ -71,6 +72,7 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
     }
     db = Database(db_path)
     assert db.get_application(application.id).state == ApplicationState.REVIEW_REACHED
+    assert db.get_application(application.id).context["resume_sha256"] == "resume-sha-v1"
     assert db.list_application_events(application.id)[-1].event == "dry_run_review_reached"
     db.close()
 

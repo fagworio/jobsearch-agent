@@ -388,7 +388,10 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
             "status": execution.status,
         }
         db.save_application_form(application_id, form)
+        resume_sha256 = application.context.get("resume_sha256", "")
         application.context = to_dict(context)
+        if resume_sha256:
+            application.context["resume_sha256"] = resume_sha256
         db.save_application(application)
         transition_event = "dry_run_fill_only_no_state_transition"
         if application.state == ApplicationState.READY_FOR_REVIEW:
