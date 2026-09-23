@@ -476,3 +476,23 @@ def test_apply_live_runs_the_real_orchestrator_with_a_candidate_profile(tmp_path
     assert result["write_policy"] == "deny_all"
     assert result["upload_writes_used"] == 0
     assert load_profile(profile_path).demo is False
+
+    # O fixture declara action="/apply" (relativo). O destino derivado dele
+    # precisa sair absoluto: e exatamente o caminho que o submit percorre e
+    # que nao era exercitado com submit=False.
+    from urllib.parse import urlsplit
+
+    from jobsearch_agent.submission import submission_destination
+
+    db = Database(settings.resolve(settings.db_path))
+    try:
+        stored = db.get_application_form(result["application_id"])
+    finally:
+        db.close()
+    assert stored["action"] == "/apply"
+    assert stored["method"] == "POST"
+    destination = submission_destination(
+        "lever", "acme", "local-1", origin + "/apply", stored["action"]
+    )
+    parts = urlsplit(destination)
+    assert parts.scheme == "http" and parts.netloc, destination

@@ -384,6 +384,11 @@ def _path_hash(url: str) -> str:
 
 _SAFE_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
+#: Estados de auditoria do dominio. Diferente de `provider_status`, que vem do
+#: fornecedor e so passa por saneamento, estes sao nossos e devem ser um
+#: conjunto fechado: um valor novo exige decisao explicita.
+SAFE_REASON_TOKENS = frozenset({"captcha_no_write", "captcha_write_refused"})
+
 
 def _safe_evidence_token(value: object) -> str:
     text = str(value)
@@ -399,8 +404,11 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
         evidence["status_code"] = status_code
     if "provider_status" in verification.evidence:
         evidence["provider_status"] = _safe_evidence_token(verification.evidence["provider_status"])
-    if "reason_token" in verification.evidence:
-        evidence["reason_token"] = _safe_evidence_token(verification.evidence["reason_token"])
+    reason_token = verification.evidence.get("reason_token")
+    if reason_token is not None and reason_token not in SAFE_REASON_TOKENS:
+        raise SubmissionBoundaryError(f"unsupported failure reason token: {reason_token}")
+    if reason_token:
+        evidence["reason_token"] = reason_token
     return evidence
 
 

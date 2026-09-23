@@ -19,7 +19,7 @@ Descobertas por inspeção real das páginas:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 
 class ProviderError(ValueError):
@@ -201,7 +201,14 @@ def submit_destination(
             raise ProviderError("greenhouse submission requires board and job id")
         return f"{profile.submit_origin}/{board}/jobs/{external_id}"
     if provider == "lever":
-        # O formulario declara o destino exato no `action`; so reconstruimos
-        # quando ele nao vier.
-        return form_action or apply_url(provider, job_url)
+        # O formulario declara o destino exato no `action`. Ele pode vir
+        # relativo (`/apply`): sem resolver contra a URL da pagina, o valor
+        # chegaria literal em `create_intent`, que exige URL absoluta.
+        base = apply_url(provider, job_url)
+        if form_action:
+            resolved = urljoin(base, form_action)
+            parts = urlsplit(resolved)
+            if parts.scheme and parts.netloc:
+                return resolved
+        return base
     raise ProviderError(f"no public submit endpoint known for provider: {provider}")

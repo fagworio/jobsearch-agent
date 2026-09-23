@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import pytest
 
 from jobsearch_agent.ats import ADAPTERS, LeverAdapter, adapter_for
@@ -113,3 +115,50 @@ def test_lever_payload_keys_are_not_namespaced():
     )
     payload = build_submission_payload(form)
     assert payload.fields == {"email": "a@b.test"}
+
+
+# --- action declarado pelo formulario ----------------------------------------
+
+
+def test_relative_form_action_resolves_to_an_absolute_destination():
+    """`action="/apply"` nao pode chegar literal em create_intent."""
+    job = "https://jobs.lever.co/acme/uuid"
+    resolved = submit_destination("lever", job, "acme", "uuid", "/apply")
+    parts = urlsplit(resolved)
+    assert parts.scheme == "https" and parts.netloc == "jobs.lever.co"
+    # `path-relative` fica no mesmo nivel da pagina.
+    assert submit_destination("lever", job, "acme", "uuid", "apply") == job + "/apply"
+    # absoluto e respeitado como veio
+    absolute = "https://jobs.lever.co/acme/uuid/apply"
+    assert submit_destination("lever", job, "acme", "uuid", absolute) == absolute
+    # sem action, reconstroi
+    assert submit_destination("lever", job, "acme", "uuid", "") == job + "/apply"
+
+
+def test_form_action_and_method_survive_a_persistence_round_trip():
+    from jobsearch_agent.application import context_from_dict
+    from jobsearch_agent.models import to_dict
+
+    original = ApplicationForm(
+        form_id="application-form",
+        provider="lever",
+        fields=[ApplicationField(key="email", label="Email", value="a@b.test")],
+        action="https://jobs.lever.co/acme/uuid/apply",
+        method="POST",
+    )
+    stored = to_dict(original)
+    assert stored["action"] == "https://jobs.lever.co/acme/uuid/apply"
+
+    reloaded = context_from_dict({"form": stored}).form
+    assert reloaded.action == original.action
+    assert reloaded.method == original.method
+    # e o destino derivado continua correto apos o reload
+    assert submit_destination("lever", "https://jobs.lever.co/acme/uuid", "acme", "uuid", reloaded.action) == original.action
+
+
+def test_reason_token_is_a_closed_set_of_domain_states():
+    from jobsearch_agent.submission import SubmissionBoundaryError, _redacted_evidence, SubmissionVerification
+
+    assert _redacted_evidence(SubmissionVerification.failed("x", reason_token="captcha_no_write"))["reason_token"] == "captcha_no_write"
+    with pytest.raises(SubmissionBoundaryError, match="unsupported failure reason token"):
+        _redacted_evidence(SubmissionVerification.failed("x", reason_token="anything_else"))

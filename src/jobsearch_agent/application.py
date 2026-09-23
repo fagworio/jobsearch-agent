@@ -89,7 +89,19 @@ def context_from_dict(data: dict[str, Any]) -> ApplicationContext:
             answer = ApplicationAnswer(**answer_data) if isinstance(answer_data, dict) else None
             fields.append(ApplicationField(**{key: value for key, value in raw_field.items() if key in {"key", "label", "field_type", "semantic_type", "required", "options", "value", "confidence", "source", "step", "attachment_path", "accepted_types", "multiple", "disabled", "semantic_context"}}, answer=answer))
         issues = [FormCapabilityIssue(**item) for item in form_data.get("capability_issues", []) if isinstance(item, dict)]
-        form = ApplicationForm(str(form_data.get("form_id", "")), str(form_data.get("provider", "generic")), fields, str(form_data.get("source", "fixture")), [str(item) for item in form_data.get("steps", [])], str(form_data.get("artifact_root", "")), issues)
+        form = ApplicationForm(
+            form_id=str(form_data.get("form_id", "")),
+            provider=str(form_data.get("provider", "generic")),
+            fields=fields,
+            source=str(form_data.get("source", "fixture")),
+            steps=[str(item) for item in form_data.get("steps", [])],
+            artifact_root=str(form_data.get("artifact_root", "")),
+            capability_issues=issues,
+            # Sem estes dois, o destino declarado pelo formulario se perdia ao
+            # recarregar a Application (retry, resume, processo reiniciado).
+            action=str(form_data.get("action", "")),
+            method=str(form_data.get("method", "POST")),
+        )
     answers = [ApplicationAnswer(**item) for item in data.get("answers", []) if isinstance(item, dict)]
     return ApplicationContext(
         application_id=str(data.get("application_id", "")),
