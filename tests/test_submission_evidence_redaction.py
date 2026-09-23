@@ -38,6 +38,8 @@ def test_submission_evidence_redacts_untrusted_tokens_and_redirect_queries(tmp_p
             destination=intent.destination,
             resume_filename="resume.pdf",
             resume_sha256=intent.resume_sha256,
+            form_fingerprint=intent.form_fingerprint,
+            answers_fingerprint=intent.answers_fingerprint,
         )
     )
     submission.authorize_submission(intent.id)

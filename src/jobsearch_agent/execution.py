@@ -148,14 +148,15 @@ def validate_execution_plan(plan: ExecutionPlan) -> ValidationResult:
     return ValidationResult(not errors, "OK" if not errors else "INVALID_EXECUTION_PLAN", errors)
 
 
-def build_execution_plan(context: ApplicationContext, bindings: FormBindings) -> ExecutionPlan:
+def build_execution_plan(context: ApplicationContext, bindings: FormBindings, *, allow_review: bool = False) -> ExecutionPlan:
     if context.form is None:
         raise ExecutionPlanError("cannot build execution plan before form inspection")
     binding_result = validate_form_bindings(context.form, bindings)
     if not binding_result.valid:
         raise ExecutionPlanError("cannot build execution plan with invalid bindings: " + "; ".join(binding_result.errors))
     readiness = evaluate_safety_gate(context)
-    if not readiness.ready_to_apply:
+    review_ready = allow_review and readiness.decision.value == "READY_FOR_REVIEW" and not readiness.blockers
+    if not readiness.ready_to_apply and not review_ready:
         raise ExecutionPlanError("cannot build execution plan before Safety Gate approval: " + "; ".join(readiness.blockers or [readiness.decision.value]))
     form_validation = validate_application_form(context.form)
     if not form_validation.valid:
@@ -180,10 +181,19 @@ def build_execution_plan(context: ApplicationContext, bindings: FormBindings) ->
     return plan
 
 
-def validate_execution_context(context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None, current_url: str = "") -> ValidationResult:
+def validate_execution_context(
+    context: ApplicationContext,
+    plan: ExecutionPlan,
+    bindings: FormBindings,
+    current_html: str | None = None,
+    current_url: str = "",
+    *,
+    allow_review: bool = False,
+) -> ValidationResult:
     """Public defense-in-depth check used at the browser boundary."""
     readiness = evaluate_safety_gate(context)
-    if not readiness.ready_to_apply:
+    review_ready = allow_review and readiness.decision.value == "READY_FOR_REVIEW" and not readiness.blockers
+    if not readiness.ready_to_apply and not review_ready:
         return ValidationResult(False, "SAFETY_GATE_BLOCKED", readiness.blockers or [readiness.decision.value])
     structural = validate_execution_plan(plan)
     if not structural.valid:

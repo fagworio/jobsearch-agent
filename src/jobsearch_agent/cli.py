@@ -287,22 +287,54 @@ def main(argv: list[str] | None = None) -> int:
                     raise ApplicationDomainError(f"application not found: {args.application_id}")
                 snapshot = db.get_review_snapshot(application.id)
                 supplied = [args.destination, args.form_fingerprint, args.resume_sha256, args.answers_fingerprint]
-                if any(value is not None for value in supplied):
-                    if not all(value is not None for value in supplied):
-                        raise SubmissionBoundaryError("review intent requires destination, form fingerprint, resume SHA256 and answers fingerprint")
+                if snapshot is None or any(value is not None for value in supplied):
                     job = db.get_job(application.job_id)
                     if not job:
                         raise ApplicationDomainError(f"job not found: {application.job_id}")
                     provider = args.provider or job.source
+                    dry_run = application.context.get("validation", {}).get("dry_run", {})
+                    destination = args.destination or job.url
+                    form_fingerprint = args.form_fingerprint or dry_run.get("form_fingerprint")
+                    resume_sha256 = args.resume_sha256 or application.context.get("resume_sha256")
+                    answers_fingerprint = args.answers_fingerprint or dry_run.get("answers_fingerprint")
+                    if not all((destination, form_fingerprint, resume_sha256, answers_fingerprint)):
+                        raise SubmissionBoundaryError(
+                            "review intent requires destination, form fingerprint, resume SHA256 and answers fingerprint"
+                        )
+                    form = db.get_application_form(application.id)
+                    resolved_fields = []
+                    manual_questions = []
+                    if form:
+                        for field in form.fields:
+                            answer = field.answer
+                            item = {
+                                "key": field.key,
+                                "semantic_type": field.semantic_type,
+                                "value": field.value,
+                                "source": field.source,
+                            }
+                            if answer:
+                                item["answer"] = answer.answer
+                                item["answer_source"] = answer.source
+                                item["supported_by"] = list(answer.supported_by)
+                                item["approved"] = answer.approved
+                                item["legal"] = answer.legal
+                            resolved_fields.append(item)
+                            if answer and (answer.legal or not answer.approved or answer.source in {"manual", "unknown"}):
+                                manual_questions.append(item)
                     snapshot = build_review_snapshot(
                         application_id=application.id,
                         job_id=application.job_id,
                         company=job.company,
                         title=job.title,
                         provider=provider,
-                        destination=args.destination,
+                        destination=destination,
                         resume_filename=args.resume_filename,
-                        resume_sha256=args.resume_sha256,
+                        resume_sha256=resume_sha256,
+                        form_fingerprint=form_fingerprint,
+                        answers_fingerprint=answers_fingerprint,
+                        resolved_fields=resolved_fields,
+                        manual_questions=manual_questions,
                     )
                     service = SubmissionService(db)
                     service.save_review_snapshot(snapshot)
@@ -310,10 +342,10 @@ def main(argv: list[str] | None = None) -> int:
                         application_id=application.id,
                         job_id=application.job_id,
                         provider=provider,
-                        destination=args.destination,
-                        form_fingerprint=args.form_fingerprint,
-                        resume_sha256=args.resume_sha256,
-                        answers_fingerprint=args.answers_fingerprint,
+                        destination=destination,
+                        form_fingerprint=form_fingerprint,
+                        resume_sha256=resume_sha256,
+                        answers_fingerprint=answers_fingerprint,
                         expires_in_seconds=args.expires_in,
                     )
                 else:

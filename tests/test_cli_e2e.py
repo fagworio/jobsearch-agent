@@ -81,6 +81,8 @@ def test_cli_review_persists_snapshot_before_authorize(tmp_path, capsys):
     review_output = json.loads(capsys.readouterr().out)
     intent_id = review_output["submission_intent"]["id"]
     assert review_output["review_snapshot"]["destination"].endswith("/cli-review")
+    assert review_output["review_snapshot"]["form_fingerprint"] == "form-v1"
+    assert review_output["review_snapshot"]["answers_fingerprint"] == "answers-v1"
 
     authorize_result = main([
         "application", "authorize-submit", intent_id,

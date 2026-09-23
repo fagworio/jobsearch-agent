@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,7 @@ from .resume import generate_resume, render_docx, render_pdf_from_docx, render_t
 from .schemas import validate_contract
 from .serialization import canonical_json
 from .sources import JOBSPY, canonical_job_key, fetch_payload, normalize_payload
+from .submission import compute_answers_fingerprint
 
 
 class PipelineError(RuntimeError):
@@ -278,6 +280,9 @@ def prepare_application(settings: Settings, job_id: str, language_override: str 
         # form fields are populated only by a future ATS adapter.
         _ = answers
         application.context = to_dict(context)
+        resume_path = Path(prepared["artifacts"]) / "resume.pdf"
+        if resume_path.is_file():
+            application.context["resume_sha256"] = hashlib.sha256(resume_path.read_bytes()).hexdigest()
         db.save_application(application)
         service.transition(application.id, ApplicationState.MATERIALS_READY, "materials_ready", {"resume_valid": bool(prepared["validation"].get("valid"))})
         readiness = evaluate_safety_gate(context)
@@ -316,7 +321,12 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
         application = db.get_application(application_id)
         if not application:
             raise PipelineError(f"application not found: {application_id}")
-        if application.state not in {ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REACHED}:
+        state_before_dry_run = application.state.value
+        if application.state not in {
+            ApplicationState.READY_FOR_REVIEW,
+            ApplicationState.READY_TO_APPLY,
+            ApplicationState.REVIEW_REACHED,
+        }:
             return {
                 "status": "APPLICATION_STATE_BLOCKED",
                 "application_id": application_id,
@@ -359,21 +369,36 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
         for field in form.fields:
             field.answer = answers.resolve_field(field, profile, preferences)
         readiness = evaluate_safety_gate(context)
-        if not readiness.ready_to_apply:
+        review_ready = readiness.decision.value == "READY_FOR_REVIEW" and not readiness.blockers
+        if not readiness.ready_to_apply and not review_ready:
             return {
                 "status": readiness.decision.value,
                 "application_id": application_id,
                 "readiness": readiness,
                 "network_access": "none",
             }
-        plan = build_execution_plan(context, bindings)
+        plan = build_execution_plan(context, bindings, allow_review=True)
         # The LinkedIn offline inspector owns the snapshot semantics; passing
         # no second HTML snapshot avoids reinterpreting it through generic ATS
         # adapters while keeping plan/context validation active.
-        execution = DryRunBrowserExecutor().execute(context, plan, bindings, None)
+        execution = DryRunBrowserExecutor().execute(context, plan, bindings, None, allow_review=True)
+        context.validation["dry_run"] = {
+            "form_fingerprint": plan.form_fingerprint,
+            "answers_fingerprint": compute_answers_fingerprint(form),
+            "status": execution.status,
+        }
         db.save_application_form(application_id, form)
         application.context = to_dict(context)
         db.save_application(application)
+        transition_event = "dry_run_fill_only_no_state_transition"
+        if application.state == ApplicationState.READY_FOR_REVIEW:
+            transition_event = "dry_run_review_reached"
+            application = ApplicationService(db).transition(
+                application.id,
+                ApplicationState.REVIEW_REACHED,
+                "dry_run_review_reached",
+                {"network_access": "none", "submission_attempted": False},
+            )
         return {
             "status": "STOP_BEFORE_SUBMIT",
             "application_id": application_id,
@@ -381,6 +406,11 @@ def dry_run_application(settings: Settings, application_id: str, html_file: str 
             "readiness": to_dict(readiness),
             "plan": to_dict(plan),
             "execution": to_dict(execution),
+            "state_transition": {
+                "from": state_before_dry_run,
+                "to": application.state.value,
+                "event": transition_event,
+            },
             "network_access": "none",
         }
     finally:

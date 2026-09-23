@@ -54,6 +54,8 @@ def _intent(service: SubmissionService, application_id: str, *, save_snapshot: b
                 destination=intent.destination,
                 resume_filename="resume.pdf",
                 resume_sha256=intent.resume_sha256,
+                form_fingerprint=intent.form_fingerprint,
+                answers_fingerprint=intent.answers_fingerprint,
             )
         )
     return intent
@@ -72,6 +74,8 @@ def test_submission_intent_is_bound_to_review_snapshot_and_requires_authorizatio
         destination="https://boards.greenhouse.io/acme/jobs/123",
         resume_filename="resume.pdf",
         resume_sha256="resume-v1",
+        form_fingerprint="form-v1",
+        answers_fingerprint="answers-v1",
         resolved_fields=[{"key": "name", "value": "Candidate"}],
         manual_questions=[{"key": "sponsorship", "status": "approved"}],
     )
@@ -120,6 +124,37 @@ def test_authorization_rejects_mismatched_review_snapshot(tmp_path: Path):
             destination="https://boards.greenhouse.io/acme/jobs/other",
             resume_filename="resume.pdf",
             resume_sha256="resume-v1",
+            form_fingerprint="form-v1",
+            answers_fingerprint="answers-v1",
+        )
+    )
+    with pytest.raises(SubmissionBoundaryError, match="does not match"):
+        service.authorize_submission(intent.id)
+    db.close()
+
+
+@pytest.mark.parametrize("field", ["form_fingerprint", "answers_fingerprint"])
+def test_authorization_rejects_snapshot_with_unreviewed_material(field: str, tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db)
+    service = SubmissionService(db)
+    intent = _intent(service, application_id, save_snapshot=False)
+    values = {
+        "form_fingerprint": intent.form_fingerprint,
+        "answers_fingerprint": intent.answers_fingerprint,
+    }
+    values[field] = "changed-after-review"
+    service.save_review_snapshot(
+        build_review_snapshot(
+            application_id=application_id,
+            job_id=intent.job_id,
+            company="Acme",
+            title="Engineer",
+            provider=intent.provider,
+            destination=intent.destination,
+            resume_filename="resume.pdf",
+            resume_sha256=intent.resume_sha256,
+            **values,
         )
     )
     with pytest.raises(SubmissionBoundaryError, match="does not match"):

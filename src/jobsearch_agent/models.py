@@ -330,6 +330,8 @@ class ReviewSnapshot:
     destination: str
     resume_filename: str
     resume_sha256: str
+    form_fingerprint: str = ""
+    answers_fingerprint: str = ""
     resolved_fields: list[dict[str, Any]] = field(default_factory=list)
     manual_questions: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)

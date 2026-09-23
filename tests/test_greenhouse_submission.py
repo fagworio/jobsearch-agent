@@ -56,6 +56,8 @@ def _intent(db: Database, application_id: str, destination: str, path: str):
             destination=destination,
             resume_filename="resume.pdf",
             resume_sha256=intent.resume_sha256,
+            form_fingerprint=intent.form_fingerprint,
+            answers_fingerprint=intent.answers_fingerprint,
         )
     )
     service.authorize_submission(intent.id)

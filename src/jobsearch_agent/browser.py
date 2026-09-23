@@ -238,15 +238,31 @@ def write_dry_run_report(path: str | Path, report: DryRunAuditReport) -> None:
 class BrowserExecutor:
     """Minimal executor contract; intentionally exposes no submit operation."""
 
-    def execute(self, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> BrowserExecutionResult:
+    def execute(
+        self,
+        context: ApplicationContext,
+        plan: ExecutionPlan,
+        bindings: FormBindings,
+        current_html: str | None = None,
+        *,
+        allow_review: bool = False,
+    ) -> BrowserExecutionResult:
         raise NotImplementedError
 
 
 class DryRunBrowserExecutor(BrowserExecutor):
     """Record browser operations without opening a browser or sending data."""
 
-    def execute(self, context: ApplicationContext, plan: ExecutionPlan, bindings: FormBindings, current_html: str | None = None) -> BrowserExecutionResult:
-        validation = validate_execution_context(context, plan, bindings, current_html)
+    def execute(
+        self,
+        context: ApplicationContext,
+        plan: ExecutionPlan,
+        bindings: FormBindings,
+        current_html: str | None = None,
+        *,
+        allow_review: bool = False,
+    ) -> BrowserExecutionResult:
+        validation = validate_execution_context(context, plan, bindings, current_html, allow_review=allow_review)
         if not validation.valid:
             raise BrowserSessionError("refusing invalid execution plan: " + "; ".join(validation.errors))
         operations = []

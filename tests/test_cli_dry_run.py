@@ -32,13 +32,13 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
     application = service.create_for_job(job.id)
     application = service.transition(application.id, ApplicationState.PREPARING, "prepare")
     application = service.transition(application.id, ApplicationState.MATERIALS_READY, "materials")
-    application = service.transition(application.id, ApplicationState.READY_TO_APPLY, "ready")
+    application = service.transition(application.id, ApplicationState.READY_FOR_REVIEW, "ready")
     context = ApplicationContext(
         application_id=application.id,
         job_id=job.id,
         fit={"blockers": []},
         validation={"valid": True, "facts": {"valid": True}, "ats": {"valid": True}},
-        policy=ApplicationPolicy(autonomy={"fill_forms": "auto", "submit": "manual"}),
+        policy=ApplicationPolicy(autonomy={"fill_forms": "review", "submit": "manual"}),
     )
     application.context = to_dict(context)
     db.save_application(application)
@@ -64,6 +64,15 @@ def test_dry_run_application_cli_path_uses_local_html_and_stops_before_submit(tm
     assert result["execution"]["stopped_before_submit"] is True
     assert result["execution"]["submission_attempted"] is False
     assert result["network_access"] == "none"
+    assert result["state_transition"] == {
+        "from": "READY_FOR_REVIEW",
+        "to": "REVIEW_REACHED",
+        "event": "dry_run_review_reached",
+    }
+    db = Database(db_path)
+    assert db.get_application(application.id).state == ApplicationState.REVIEW_REACHED
+    assert db.list_application_events(application.id)[-1].event == "dry_run_review_reached"
+    db.close()
 
 
 def test_dry_run_refuses_application_outside_ready_states(tmp_path: Path):

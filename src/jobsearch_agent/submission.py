@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import re
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -19,6 +20,7 @@ from uuid import uuid4
 from .application import ApplicationDomainError, ApplicationService
 from .models import (
     ApplicationEvent,
+    ApplicationForm,
     ApplicationState,
     ReviewSnapshot,
     SubmissionAttempt,
@@ -26,8 +28,34 @@ from .models import (
     ValidationResult,
     now_iso,
 )
+
 from .persistence import ApplicationConflict, Database
 from .serialization import canonical_json
+
+
+def compute_answers_fingerprint(form: ApplicationForm) -> str:
+    """Hash the resolved answer material that a reviewer sees."""
+    payload = []
+    for item in sorted(form.fields, key=lambda field: field.key):
+        answer = item.answer
+        payload.append(
+            {
+                "key": item.key,
+                "value": item.value,
+                "attachment_path": item.attachment_path,
+                "answer": {
+                    "answer": answer.answer,
+                    "source": answer.source,
+                    "supported_by": sorted(answer.supported_by),
+                    "approved": answer.approved,
+                    "legal": answer.legal,
+                }
+                if answer
+                else None,
+            }
+        )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class SubmissionBoundaryError(ValueError):
@@ -104,6 +132,8 @@ def build_review_snapshot(
     destination: str,
     resume_filename: str,
     resume_sha256: str,
+    form_fingerprint: str,
+    answers_fingerprint: str,
     resolved_fields: list[dict[str, object]] | None = None,
     manual_questions: list[dict[str, object]] | None = None,
 ) -> ReviewSnapshot:
@@ -117,6 +147,8 @@ def build_review_snapshot(
         destination=destination,
         resume_filename=resume_filename,
         resume_sha256=resume_sha256,
+        form_fingerprint=form_fingerprint,
+        answers_fingerprint=answers_fingerprint,
         resolved_fields=resolved_fields or [],
         manual_questions=manual_questions or [],
     )
@@ -199,6 +231,8 @@ class SubmissionService:
             raise SubmissionBoundaryError("submission destination must be HTTPS, except controlled loopback tests")
         if expires_in_seconds <= 0:
             raise SubmissionBoundaryError("submission intent expiration must be positive")
+        if not all((form_fingerprint, resume_sha256, answers_fingerprint)):
+            raise SubmissionBoundaryError("submission intent requires form, resume and answers fingerprints")
         intent = SubmissionIntent(
             id=_intent_id(application_id, job_id, provider, destination, form_fingerprint, resume_sha256, answers_fingerprint),
             application_id=application_id,
@@ -241,6 +275,8 @@ class SubmissionService:
             or snapshot.provider != intent.provider
             or snapshot.destination != intent.destination
             or snapshot.resume_sha256 != intent.resume_sha256
+            or snapshot.form_fingerprint != intent.form_fingerprint
+            or snapshot.answers_fingerprint != intent.answers_fingerprint
         ):
             raise SubmissionBoundaryError("review snapshot does not match submission intent")
         intent.status = "AUTHORIZED"
