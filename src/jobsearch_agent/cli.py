@@ -305,22 +305,49 @@ def main(argv: list[str] | None = None) -> int:
                     resolved_fields = []
                     manual_questions = []
                     if form:
-                        for field in form.fields:
-                            answer = field.answer
+                        fields = form.get("fields", []) if isinstance(form, dict) else form.fields
+                        for field in fields:
+                            if isinstance(field, dict):
+                                key = field.get("key", "")
+                                semantic_type = field.get("semantic_type", "unknown")
+                                value = field.get("value", "")
+                                source = field.get("source", "unknown")
+                                answer = field.get("answer")
+                            else:
+                                key = field.key
+                                semantic_type = field.semantic_type
+                                value = field.value
+                                source = field.source
+                                answer = field.answer
                             item = {
-                                "key": field.key,
-                                "semantic_type": field.semantic_type,
-                                "value": field.value,
-                                "source": field.source,
+                                "key": key,
+                                "semantic_type": semantic_type,
+                                "value": value,
+                                "source": source,
                             }
+                            answer_source = "unknown"
+                            approved = False
+                            legal = False
                             if answer:
-                                item["answer"] = answer.answer
-                                item["answer_source"] = answer.source
-                                item["supported_by"] = list(answer.supported_by)
-                                item["approved"] = answer.approved
-                                item["legal"] = answer.legal
+                                if isinstance(answer, dict):
+                                    answer_value = answer.get("answer", "")
+                                    answer_source = answer.get("source", "unknown")
+                                    supported_by = list(answer.get("supported_by", []))
+                                    approved = bool(answer.get("approved", False))
+                                    legal = bool(answer.get("legal", False))
+                                else:
+                                    answer_value = answer.answer
+                                    answer_source = answer.source
+                                    supported_by = list(answer.supported_by)
+                                    approved = answer.approved
+                                    legal = answer.legal
+                                item["answer"] = answer_value
+                                item["answer_source"] = answer_source
+                                item["supported_by"] = supported_by
+                                item["approved"] = approved
+                                item["legal"] = legal
                             resolved_fields.append(item)
-                            if answer and (answer.legal or not answer.approved or answer.source in {"manual", "unknown"}):
+                            if answer and (legal or not approved or answer_source in {"manual", "unknown"}):
                                 manual_questions.append(item)
                     snapshot = build_review_snapshot(
                         application_id=application.id,

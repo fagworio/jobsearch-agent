@@ -66,6 +66,26 @@ def test_cli_review_persists_snapshot_before_authorize(tmp_path, capsys):
     service.transition(application.id, ApplicationState.PREPARING, "prepare")
     service.transition(application.id, ApplicationState.MATERIALS_READY, "materials")
     service.transition(application.id, ApplicationState.READY_TO_APPLY, "ready")
+    db.save_application_form(
+        application.id,
+        {
+            "fields": [
+                {
+                    "key": "name",
+                    "semantic_type": "name",
+                    "value": "Candidate",
+                    "source": "profile",
+                    "answer": {
+                        "answer": "Candidate",
+                        "source": "profile",
+                        "supported_by": ["fact-name"],
+                        "approved": True,
+                        "legal": False,
+                    },
+                }
+            ]
+        },
+    )
     db.close()
 
     review_result = main([
@@ -83,6 +103,7 @@ def test_cli_review_persists_snapshot_before_authorize(tmp_path, capsys):
     assert review_output["review_snapshot"]["destination"].endswith("/cli-review")
     assert review_output["review_snapshot"]["form_fingerprint"] == "form-v1"
     assert review_output["review_snapshot"]["answers_fingerprint"] == "answers-v1"
+    assert len(review_output["review_snapshot"]["resolved_fields"]) == 1
 
     authorize_result = main([
         "application", "authorize-submit", intent_id,
