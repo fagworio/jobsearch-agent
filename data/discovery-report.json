@@ -1,0 +1,37 @@
+{
+  "discovered": 4986,
+  "persisted": 4986,
+  "per_provider": {
+    "greenhouse": 3725,
+    "ashby": 1142,
+    "lever": 119
+  },
+  "per_company_top": {
+    "databricks": 884,
+    "openai": 823,
+    "stripe": 687,
+    "cloudflare": 389,
+    "coinbase": 216,
+    "gitlab": 201,
+    "affirm": 197,
+    "lyft": 175,
+    "robinhood": 161,
+    "airbnb": 160,
+    "figma": 159,
+    "reddit": 154,
+    "ramp": 151,
+    "instacart": 111,
+    "vercel": 89
+  },
+  "funnel": {
+    "OFF_TARGET_ROLE": 198,
+    "INSUFFICIENT_REQUIREMENTS": 2666,
+    "FIT_BLOCKED": 379,
+    "LOCATION_UNSUPPORTED": 1703,
+    "SENIORITY_MISMATCH": 40
+  },
+  "shortlisted": 0,
+  "shortlist": [],
+  "submissions": 0,
+  "note": "Nenhuma candidatura foi enviada. shortlist vazia com os criterios estritos."
+}

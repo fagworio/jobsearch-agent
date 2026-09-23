@@ -37,16 +37,31 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-záéíóúãõç0-9][a-záéíóúãõç0-9+.#-]*", text.lower())
 
 
+def _same_lexical_family(token: str, other: str) -> bool:
+    """True when one token is a simple inflection of the other.
+
+    Só aceita diferença de prefixo (plural, flexão), nunca um conceito novo:
+    theme/themes, plugin/plugins, class/classes, database/databases. A regra
+    anterior exigia 7 caracteres, então plurais de palavras curtas eram
+    tratados como fato inventado e invalidavam o currículo inteiro.
+    """
+    if token == other:
+        return True
+    shorter, longer = (token, other) if len(token) <= len(other) else (other, token)
+    if len(shorter) >= 4 and longer.startswith(shorter) and len(longer) - len(shorter) <= 3:
+        return True
+    # develop/developed/developing compartilham a raiz sem serem prefixo um do outro.
+    if len(token) >= 7 and len(other) >= 7 and token[:6] == other[:6]:
+        return True
+    return False
+
+
 def _token_supported(token: str, corpus_tokens: set[str]) -> bool:
     if token in STOPWORDS or len(token) <= 2:
         return True
     if token in corpus_tokens:
         return True
-    # Permite flexões simples sem liberar novos conceitos: developer/developed,
-    # integrations/integration e equivalentes compartilham raiz lexical.
-    if len(token) >= 7 and any(len(other) >= 7 and token[:6] == other[:6] for other in corpus_tokens):
-        return True
-    return False
+    return any(_same_lexical_family(token, other) for other in corpus_tokens)
 
 
 def rank_fact_ids(job: Job, strategy: ResumeStrategy, profile: CareerProfile, facts: dict[str, Fact]) -> list[str]:
