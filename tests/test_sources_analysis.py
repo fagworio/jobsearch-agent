@@ -228,3 +228,21 @@ def test_fit_scores_a_matching_stack_above_an_unrelated_one():
     unrelated_fit = calculate_fit(unrelated, analyze_requirements(unrelated), profile)
     assert matching_fit.score > unrelated_fit.score
     assert "missing_required:Kubernetes" in unrelated_fit.blockers
+
+
+def test_short_skill_tokens_never_fuzzy_match_by_substring():
+    """`normalize("C#")` e "c", e similaridade parcial casaria "c" com "css"."""
+    from jobsearch_agent.analysis import _skill_keys, _skill_matches
+    from jobsearch_agent.profile import load_profile
+
+    profile = load_profile(ROOT / "profile/career_profile.local.yaml")
+    keys = _skill_keys(profile)
+    # Tecnologias ausentes nao podem aparecer como presentes.
+    assert _skill_matches("C#", keys) is False
+    assert _skill_matches(".NET", keys) is False
+    assert _skill_matches("Java", keys) is False
+    assert _skill_matches("Python", keys) is False
+    assert _skill_matches("Go", keys) is False
+    # As reais continuam casando.
+    for present in ("CSS", "React", "Angular", "TypeScript", "PHP", "Node.js"):
+        assert _skill_matches(present, keys) is True, present

@@ -87,7 +87,15 @@ class SkillRegistry:
         right_skill = self.resolve(right, threshold)
         if left_skill and right_skill:
             return left_skill.key == right_skill.key
-        return self._score(normalize(left), normalize(right)) >= threshold
+        left_norm = normalize(left)
+        right_norm = normalize(right)
+        # Formas muito curtas nao podem usar fuzzy: `normalize("C#")` e "c", e
+        # a similaridade parcial casa "c" com "css", "custom-plugins" e
+        # qualquer outra coisa. Isso marcava C# como presente no perfil de um
+        # desenvolvedor frontend e inflava o fit de vagas .NET.
+        if len(left_norm) <= 2 or len(right_norm) <= 2:
+            return left_norm == right_norm
+        return self._score(left_norm, right_norm) >= threshold
 
     def extract(self, text: str, threshold: float = 88.0) -> list[str]:
         lowered = text.lower()
