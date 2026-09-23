@@ -64,9 +64,17 @@ class AuthorizedWrite:
     def covers(self, method: str, url: str) -> bool:
         if method.upper() != self.method.upper():
             return False
-        if _origin_of(url) != self.origin.rstrip("/"):
+        parsed = urlparse(url)
+        if self.origin.startswith("*."):
+            # Padrao de host: usado para o storage do board, cujo bucket varia
+            # por regiao (ex.: *.s3.amazonaws.com).
+            suffix = self.origin[2:].casefold()
+            host = (parsed.hostname or "").casefold()
+            if not (host == suffix or host.endswith("." + suffix)):
+                return False
+        elif _origin_of(url) != self.origin.rstrip("/"):
             return False
-        return re.fullmatch(self.path_pattern, urlparse(url).path) is not None
+        return re.fullmatch(self.path_pattern, parsed.path) is not None
 
 
 
@@ -79,32 +87,45 @@ class NetworkWriteGuard:
         self.allowed_hosts = allowed_hosts
         self.events: list[NetworkRequestEvent] = []
         self._pending_reads: set[int] = set()
-        self._authorized_write: AuthorizedWrite | None = None
-        self._authorized_writes_used = 0
+        self._authorized_writes: list[AuthorizedWrite] = []
+        self._authorized_usage: list[int] = []
 
     @property
     def authorized_write(self) -> AuthorizedWrite | None:
-        return self._authorized_write
+        return self._authorized_writes[0] if self._authorized_writes else None
 
     @property
     def authorized_writes_used(self) -> int:
-        return self._authorized_writes_used
+        return sum(self._authorized_usage)
 
     @property
     def authorized_writes_remaining(self) -> int:
-        if self._authorized_write is None:
+        if not self._authorized_writes:
             return 0
-        return max(self._authorized_write.max_writes - self._authorized_writes_used, 0)
+        return sum(
+            max(permit.max_writes - used, 0)
+            for permit, used in zip(self._authorized_writes, self._authorized_usage)
+        )
 
     def arm_write(self, permit: AuthorizedWrite) -> None:
-        """Autoriza uma escrita especifica; todo o resto segue bloqueado."""
-        if permit.max_writes < 1:
-            raise ValueError("authorized write must allow at least one request")
-        self._authorized_write = permit
-        self._authorized_writes_used = 0
+        self.arm_writes([permit])
+
+    def arm_writes(self, permits: list[AuthorizedWrite]) -> None:
+        """Autoriza escritas especificas; todo o resto segue bloqueado.
+
+        Cada permissao tem orcamento proprio e independente: a subida do
+        curriculo e o POST de submissao sao escritas distintas, ambas
+        necessarias, e nenhuma delas libera qualquer outra escrita.
+        """
+        for permit in permits:
+            if permit.max_writes < 1:
+                raise ValueError("authorized write must allow at least one request")
+        self._authorized_writes = list(permits)
+        self._authorized_usage = [0] * len(permits)
 
     def disarm_write(self) -> None:
-        self._authorized_write = None
+        """Revoga as permissoes mantendo o registro de uso (auditoria)."""
+        self._authorized_writes = []
 
     @property
     def blocked_writes(self) -> list[NetworkRequestEvent]:
@@ -132,14 +153,16 @@ class NetworkWriteGuard:
             return False
         if method not in self.READ_METHODS:
             url = str(getattr(request, "url", ""))
-            permit = self._authorized_write
-            if permit is not None and self._authorized_writes_used < permit.max_writes and permit.covers(method, url):
-                self._authorized_writes_used += 1
-                self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, "authorized submission write"))
-                return True
+            for position, permit in enumerate(self._authorized_writes):
+                if self._authorized_usage[position] >= permit.max_writes:
+                    continue
+                if permit.covers(method, url):
+                    self._authorized_usage[position] += 1
+                    self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, "authorized submission write"))
+                    return True
             reason = (
                 "write method blocked in dry-run"
-                if permit is None
+                if not self._authorized_writes
                 else "write is not covered by the authorized submission permit"
             )
             self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, reason))

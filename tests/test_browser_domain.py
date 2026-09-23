@@ -528,3 +528,31 @@ def test_option_matching_ignores_punctuation_on_either_side():
     assert choose_option_index(["Acknowledge/Confirm"], "acknowledge confirm") == 0
     # Prefixo continua valendo apos normalizar.
     assert choose_option_index(["Brazil +55", "Canada +1"], "brazil") == 0
+
+
+def test_two_scoped_permits_have_independent_budgets():
+    """Subida do curriculo (S3) e POST de submissao sao escritas distintas."""
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_writes([
+        _permit(origin="*.s3.amazonaws.com", path_pattern=r"^/.*$"),
+        _permit(origin="https://boards.greenhouse.io", path_pattern=r"^/[^/]+/jobs/[^/]+/?$"),
+    ])
+    upload = _Request("POST", "https://grnhse-prod-jben-us-east-1.s3.amazonaws.com/upload")
+    assert guard.inspect(upload) is True
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is True
+    # Cada permissao esgota sozinha e nenhuma libera a outra.
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is False
+    assert guard.inspect(upload) is False
+    assert guard.inspect(_Request("POST", "https://evil.example/upload")) is False
+    assert guard.authorized_writes_used == 2
+
+
+def test_write_usage_survives_disarming_for_audit():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+    guard.inspect(_Request("POST", SUBMIT_URL))
+    guard.disarm_write()
+    # As permissoes foram revogadas, mas o registro do que foi autorizado fica.
+    assert guard.authorized_write is None
+    assert guard.authorized_writes_remaining == 0
+    assert guard.authorized_writes_used == 1

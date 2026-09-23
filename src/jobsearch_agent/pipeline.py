@@ -11,7 +11,7 @@ from typing import Any
 from .analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
 from .ats import GreenhouseAdapter, adapter_for
-from .browser import DryRunBrowserExecutor, PlaywrightSessionManager
+from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
 from .config import Settings
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
@@ -562,6 +562,7 @@ def apply_live(
         )
         resume_sha256 = hashlib.sha256(resume_path.read_bytes()).hexdigest()
 
+        upload_writes_used = 0
         session = PlaywrightSessionManager(
             headless=headless,
             allowed_hosts=adapter.allowed_hosts(job.url),
@@ -569,6 +570,22 @@ def apply_live(
         )
         session.start()
         try:
+            if submit:
+                # A subida do curriculo e um POST para o storage do board e
+                # precisa acontecer durante o preenchimento. Fica limitada a
+                # origem de storage, com um unico envio; sem --submit nenhuma
+                # escrita e autorizada e o comportamento dry-run se mantem.
+                session.arm_writes([
+                    AuthorizedWrite(
+                        application_id=application.id,
+                        submission_intent_id="",
+                        origin=host,
+                        path_pattern=r"^/.*$",
+                        method="POST",
+                        max_writes=1,
+                    )
+                    for host in getattr(adapter, "upload_write_origins_for", lambda _url: ())(job.url)
+                ])
             orchestrator = LiveApplicationOrchestrator(
                 adapter,
                 profile,
@@ -580,6 +597,8 @@ def apply_live(
                 default_resume=str(resume_path),
             )
             live = orchestrator.run(session, context, job.url, audit_dir=artifact_dir / "browser")
+            if session.network_guard is not None:
+                upload_writes_used = session.network_guard.authorized_writes_used
 
             response: dict[str, Any] = {
                 "status": live.status,
@@ -631,6 +650,7 @@ def apply_live(
                             ttl_seconds=intent_ttl_seconds,
                             attachments=live.attachments,
                         )
+                        response["submission"]["upload_writes_used"] = upload_writes_used
                         response["application_state"] = db.get_application(application.id).state.value
         finally:
             session.close()

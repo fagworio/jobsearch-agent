@@ -503,6 +503,9 @@ class FakeGuardedSession:
     def arm_authorized_write(self, permit) -> None:
         self.network_guard.arm_write(permit)
 
+    def arm_writes(self, permits) -> None:
+        self.network_guard.arm_writes(list(permits))
+
     def disarm_authorized_write(self) -> None:
         self.network_guard.disarm_write()
 

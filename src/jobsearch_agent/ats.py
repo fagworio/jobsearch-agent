@@ -56,8 +56,16 @@ class ATSAdapter(Protocol):
         "www.dropbox.com",
     )
 
+    #: Storage do board, para onde o curriculo e enviado por POST (xhr). O
+    #: bucket varia por regiao, dai o padrao de host. So e autorizado durante
+    #: uma submissao autorizada, com orcamento proprio.
+    upload_write_origins = ("*.s3.amazonaws.com",)
+
     def resource_allowed_hosts(self, url: str) -> set[str]:
         return set(self.resource_hosts)
+
+    def upload_write_origins_for(self, url: str) -> tuple[str, ...]:
+        return self.upload_write_origins
 
     def allowed_hosts(self, url: str) -> set[str]: ...
 
@@ -241,8 +249,16 @@ class GreenhouseAdapter:
         "www.dropbox.com",
     )
 
+    #: Storage do board, para onde o curriculo e enviado por POST (xhr). O
+    #: bucket varia por regiao, dai o padrao de host. So e autorizado durante
+    #: uma submissao autorizada, com orcamento proprio.
+    upload_write_origins = ("*.s3.amazonaws.com",)
+
     def resource_allowed_hosts(self, url: str) -> set[str]:
         return set(self.resource_hosts)
+
+    def upload_write_origins_for(self, url: str) -> tuple[str, ...]:
+        return self.upload_write_origins
 
     def allowed_hosts(self, url: str) -> set[str]:
         hostname = (urlparse(url).hostname or "").casefold()

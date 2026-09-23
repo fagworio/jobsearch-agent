@@ -206,6 +206,7 @@ class GreenhouseBrowserSubmitter:
             observed["confirmation_reached"] = self._confirmation_visible(page)
             observed["captcha_challenge"] = self._captcha_visible(page)
             observed["final_url"] = str(getattr(page, "url", ""))
+            observed["page_errors"] = self._page_errors(page)
         finally:
             try:
                 page.remove_listener("response", _on_response)
@@ -226,6 +227,31 @@ class GreenhouseBrowserSubmitter:
             if len(visible) == 1:
                 return visible[0]
         return None
+
+    @staticmethod
+    def _page_errors(page: Any) -> list[str]:
+        """Mensagens de validacao que a propria pagina mostra apos o clique.
+
+        Sem isso, "nenhuma escrita saiu" nao diz se o formulario foi recusado
+        pelo cliente ou se o handler sequer rodou.
+        """
+        messages: list[str] = []
+        for selector in ("[role=alert]", "[aria-invalid=true]", ".error", "[class*=error]"):
+            try:
+                found = page.locator(selector)
+            except Exception:  # pragma: no cover - defensivo
+                continue
+            for index in range(min(found.count(), 12)):
+                try:
+                    item = found.nth(index)
+                    if not item.is_visible():
+                        continue
+                    text = " ".join((item.inner_text() or "").split())
+                    if text and text not in messages:
+                        messages.append(text[:160])
+                except Exception:  # pragma: no cover - defensivo
+                    continue
+        return messages[:12]
 
     @staticmethod
     def _confirmation_visible(page: Any) -> bool:
