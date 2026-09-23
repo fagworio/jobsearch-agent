@@ -379,10 +379,19 @@ def choose_option_index(labels: list[str], expected: str, intent: str = "") -> i
     elif intent == DECLINE_SOURCE:
         matches = [index for index, label in enumerate(labels) if any(marker in _marker_text(label) for marker in DECLINE_MARKERS)]
     else:
+        # Normaliza os DOIS lados: o rotulo real pode ter pontuacao que a
+        # resposta nao tem, e vice-versa ("Brazilian Grading System (0-19)").
+        expected_norm = _marker_text(expected)
         normalized = [_marker_text(label) for label in labels]
-        matches = [index for index, label in enumerate(normalized) if label == expected]
+        if not expected_norm:
+            raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION")
+        matches = [index for index, label in enumerate(normalized) if label == expected_norm]
         if not matches:
-            matches = [index for index, label in enumerate(normalized) if label.startswith(expected) or expected.startswith(label)]
+            matches = [
+                index
+                for index, label in enumerate(normalized)
+                if label.startswith(expected_norm) or expected_norm.startswith(label)
+            ]
     if len(matches) == 1:
         return matches[0]
     raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION" if not matches else "AMBIGUOUS_COMBOBOX_OPTION")

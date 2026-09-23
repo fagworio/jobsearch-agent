@@ -519,3 +519,12 @@ def test_websocket_is_never_authorized_even_with_a_permit():
     guard = NetworkWriteGuard({"boards.greenhouse.io"})
     guard.arm_write(_permit())
     assert guard.inspect(_Request("GET", SUBMIT_URL, resource_type="websocket")) is False
+
+
+def test_option_matching_ignores_punctuation_on_either_side():
+    """Regressao: o rotulo real tem parenteses que a resposta nao tem."""
+    assert choose_option_index(["Brazilian Grading System (0-19)", "GPA (4.0 Scale)"], "brazilian grading system (0-19)") == 0
+    assert choose_option_index(["Brazilian Grading System (0-19)", "GPA (4.0 Scale)"], "Brazilian Grading System 0 19") == 0
+    assert choose_option_index(["Acknowledge/Confirm"], "acknowledge confirm") == 0
+    # Prefixo continua valendo apos normalizar.
+    assert choose_option_index(["Brazil +55", "Canada +1"], "brazil") == 0
