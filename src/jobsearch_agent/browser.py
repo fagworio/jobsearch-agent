@@ -34,6 +34,42 @@ class NetworkRequestEvent:
     reason: str = ""
 
 
+def _origin_of(url: str) -> str:
+    """Origem normalizada (esquema + host + porta nao padrao)."""
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return ""
+    origin = f"{parsed.scheme.casefold()}://{parsed.hostname.casefold()}"
+    if parsed.port is not None and parsed.port not in {80, 443}:
+        origin += f":{parsed.port}"
+    return origin
+
+
+@dataclass(frozen=True)
+class AuthorizedWrite:
+    """Permissao one-shot para UMA escrita especifica do browser.
+
+    Substitui "desligar o guard": a sessao continua bloqueando toda escrita,
+    exceto o POST exato que a SubmissionIntent autorizou. Depois de consumida,
+    ``max_writes`` esgota e o guard volta a bloquear.
+    """
+
+    application_id: str
+    submission_intent_id: str
+    origin: str
+    path_pattern: str
+    method: str = "POST"
+    max_writes: int = 1
+
+    def covers(self, method: str, url: str) -> bool:
+        if method.upper() != self.method.upper():
+            return False
+        if _origin_of(url) != self.origin.rstrip("/"):
+            return False
+        return re.fullmatch(self.path_pattern, urlparse(url).path) is not None
+
+
+
 class NetworkWriteGuard:
     """Deny all browser write requests during a dry-run session."""
 
@@ -43,6 +79,32 @@ class NetworkWriteGuard:
         self.allowed_hosts = allowed_hosts
         self.events: list[NetworkRequestEvent] = []
         self._pending_reads: set[int] = set()
+        self._authorized_write: AuthorizedWrite | None = None
+        self._authorized_writes_used = 0
+
+    @property
+    def authorized_write(self) -> AuthorizedWrite | None:
+        return self._authorized_write
+
+    @property
+    def authorized_writes_used(self) -> int:
+        return self._authorized_writes_used
+
+    @property
+    def authorized_writes_remaining(self) -> int:
+        if self._authorized_write is None:
+            return 0
+        return max(self._authorized_write.max_writes - self._authorized_writes_used, 0)
+
+    def arm_write(self, permit: AuthorizedWrite) -> None:
+        """Autoriza uma escrita especifica; todo o resto segue bloqueado."""
+        if permit.max_writes < 1:
+            raise ValueError("authorized write must allow at least one request")
+        self._authorized_write = permit
+        self._authorized_writes_used = 0
+
+    def disarm_write(self) -> None:
+        self._authorized_write = None
 
     @property
     def blocked_writes(self) -> list[NetworkRequestEvent]:
@@ -69,7 +131,18 @@ class NetworkWriteGuard:
             self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, "websocket blocked in dry-run"))
             return False
         if method not in self.READ_METHODS:
-            self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, "write method blocked in dry-run"))
+            url = str(getattr(request, "url", ""))
+            permit = self._authorized_write
+            if permit is not None and self._authorized_writes_used < permit.max_writes and permit.covers(method, url):
+                self._authorized_writes_used += 1
+                self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, "authorized submission write"))
+                return True
+            reason = (
+                "write method blocked in dry-run"
+                if permit is None
+                else "write is not covered by the authorized submission permit"
+            )
+            self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, reason))
             return False
         self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True))
         return True
@@ -276,6 +349,45 @@ class DryRunBrowserExecutor(BrowserExecutor):
         return BrowserExecutionResult(plan.application_id, operations, stopped_before_submit=True)
 
 
+class OptionSelectionError(ValueError):
+    """Motivo tipado de por que uma opcao de combobox nao pode ser escolhida."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def _marker_text(value: str) -> str:
+    """Normaliza o rotulo antes de comparar com marcadores.
+
+    "I don't wish to answer" precisa virar "i don t wish to answer" para casar
+    com os marcadores, que sao escritos sem apostrofo.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+
+
+def choose_option_index(labels: list[str], expected: str, intent: str = "") -> int:
+    """Indice da opcao a selecionar. Funcao pura, sem browser.
+
+    Consentimento e recusa nao sao pesquisaveis pelo texto da resposta: o rotulo
+    real e a opcao do proprio ATS ("Yes", "Acknowledge/Confirm", "Decline To
+    Self Identify"). Para os demais valores tenta igualdade e, se falhar,
+    prefixo — o seletor de pais do telefone mostra "Brazil +55" para "Brazil".
+    """
+    if intent == AFFIRM_SOURCE:
+        matches = [index for index, label in enumerate(labels) if any(marker in _marker_text(label) for marker in AFFIRM_MARKERS)]
+    elif intent == DECLINE_SOURCE:
+        matches = [index for index, label in enumerate(labels) if any(marker in _marker_text(label) for marker in DECLINE_MARKERS)]
+    else:
+        normalized = [_marker_text(label) for label in labels]
+        matches = [index for index, label in enumerate(normalized) if label == expected]
+        if not matches:
+            matches = [index for index, label in enumerate(normalized) if label.startswith(expected) or expected.startswith(label)]
+    if len(matches) == 1:
+        return matches[0]
+    raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION" if not matches else "AMBIGUOUS_COMBOBOX_OPTION")
+
+
 class PlaywrightFormFiller:
     """Fill only validated controls; this class intentionally has no submit method."""
 
@@ -466,45 +578,11 @@ class PlaywrightFormFiller:
                 option = options.nth(index)
                 if option.is_visible():
                     visible_options.append((" ".join((option.inner_text() or "").split()).casefold(), option))
-            def _marker_text(value: str) -> str:
-                # Rotulos como "I don't wish to answer" precisam ser normalizados
-                # antes de comparar com os marcadores (sem apostrofo).
-                return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
-
-            answer_source = intent
-            if answer_source == AFFIRM_SOURCE:
-                # Aceite: o rotulo da opcao varia por ATS ("Yes",
-                # "Acknowledge/Confirm", "I accept").
-                exact_matches = [
-                    option
-                    for label, option in visible_options
-                    if any(marker in _marker_text(label) for marker in AFFIRM_MARKERS)
-                ]
-            elif answer_source == DECLINE_SOURCE:
-                # Autodeclaracao recusada: escolhe a opcao de recusa do proprio
-                # ATS, que varia de rotulo entre boards ("I don't wish to
-                # answer", "Decline to self-identify", ...).
-                exact_matches = [
-                    option
-                    for label, option in visible_options
-                    if any(marker in _marker_text(label) for marker in DECLINE_MARKERS)
-                ]
-            else:
-                exact_matches = [option for label, option in visible_options if label == expected]
-                if not exact_matches:
-                    # Alguns widgets decoram o rotulo: o seletor de pais do
-                    # telefone mostra "Brazil +55" para a resposta "Brazil".
-                    # Aceita prefixo, mas so com exatamente um candidato.
-                    exact_matches = [
-                        option
-                        for label, option in visible_options
-                        if label.startswith(expected) or expected.startswith(label)
-                    ]
-            if len(exact_matches) != 1:
-                if not exact_matches:
-                    raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")
-                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_OPTION: {field.key}")
-            exact_matches[0].click()
+            try:
+                chosen = choose_option_index([label for label, _ in visible_options], expected, intent)
+            except OptionSelectionError as exc:
+                raise BrowserSessionError(f"{exc.code}: {field.key}") from None
+            visible_options[chosen][1].click()
         elif field_type == "radio":
             option_locator = binding.option_locators.get(str(value))
             if not option_locator:
@@ -610,6 +688,16 @@ class PlaywrightSessionManager:
         self.context.on("requestfailed", self._finish_read_request)
         self.page = self.context.new_page()
         self.guarded = True
+
+    def arm_authorized_write(self, permit: AuthorizedWrite) -> None:
+        """Autoriza exatamente uma escrita do browser nesta sessao."""
+        if not self.guarded or self.network_guard is None:
+            raise BrowserSessionError("cannot authorize a write on an unguarded session")
+        self.network_guard.arm_write(permit)
+
+    def disarm_authorized_write(self) -> None:
+        if self.network_guard is not None:
+            self.network_guard.disarm_write()
 
     def open(self, url: str) -> None:
         if self.page is None:

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
-from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, NetworkWriteGuard, PlaywrightFormFiller, PlaywrightSessionManager, validate_navigation_url
+from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, NetworkWriteGuard, OptionSelectionError, PlaywrightFormFiller, PlaywrightSessionManager, choose_option_index, validate_navigation_url
 from jobsearch_agent.execution import DryRunExecutionPlan, ExecutionAction, ExecutionPlan, ExecutionPlanError, LiveApplicationPlan, build_execution_plan, validate_live_application_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
 from jobsearch_agent.inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectionError, validate_bindings_against_html
@@ -365,3 +365,157 @@ def test_playwright_filler_stops_when_dom_changes_after_action():
     result = PlaywrightFormFiller().fill(_FakeGuardedSession(page), context, plan, inspected.bindings)
     assert result.status == "FORM_CHANGED"
     assert len(result.operations) == 1
+
+
+# --- escolha de opcao em combobox (funcao pura, sem browser) ------------------
+
+
+def test_affirm_intent_maps_to_the_real_ats_label():
+    """A resposta e "I agree"; as opcoes do ATS sao Yes/Acknowledge."""
+    from jobsearch_agent.qa import AFFIRM_SOURCE
+
+    assert choose_option_index(["No", "Yes"], "i agree", AFFIRM_SOURCE) == 1
+    assert choose_option_index(["Acknowledge/Confirm", "Decline"], "i agree", AFFIRM_SOURCE) == 0
+    assert choose_option_index(["No", "I accept"], "i agree", AFFIRM_SOURCE) == 1
+    assert choose_option_index(["Cancel", "I consent"], "i agree", AFFIRM_SOURCE) == 1
+
+
+def test_decline_intent_maps_to_every_real_decline_label():
+    from jobsearch_agent.qa import DECLINE_SOURCE
+
+    assert choose_option_index(["Agender", "Male", "I don't wish to answer"], "decline to self-identify", DECLINE_SOURCE) == 2
+    assert choose_option_index(["Yes", "No", "Decline To Self Identify"], "decline to self-identify", DECLINE_SOURCE) == 2
+    assert choose_option_index(["Yes, I have a disability", "No, I do not", "I do not want to answer"], "decline to self-identify", DECLINE_SOURCE) == 2
+
+
+def test_decline_never_matches_the_opposite_statement():
+    """Marcador parcial casaria com "I wish to answer", que e o oposto."""
+    from jobsearch_agent.qa import DECLINE_SOURCE
+
+    with pytest.raises(OptionSelectionError) as exc:
+        choose_option_index(["I wish to answer", "I want to answer"], "decline to self-identify", DECLINE_SOURCE)
+    assert exc.value.code == "OPTION_NOT_FOUND_COMBOBOX_OPTION"
+
+
+def test_ambiguous_intent_match_is_refused_not_guessed():
+    from jobsearch_agent.qa import AFFIRM_SOURCE, DECLINE_SOURCE
+
+    with pytest.raises(OptionSelectionError) as affirm:
+        choose_option_index(["Yes", "I agree"], "i agree", AFFIRM_SOURCE)
+    assert affirm.value.code == "AMBIGUOUS_COMBOBOX_OPTION"
+
+    with pytest.raises(OptionSelectionError) as decline:
+        choose_option_index(["Decline to self-identify", "I don't wish to answer"], "x", DECLINE_SOURCE)
+    assert decline.value.code == "AMBIGUOUS_COMBOBOX_OPTION"
+
+
+def test_plain_value_matches_exactly_then_by_prefix():
+    assert choose_option_index(["Brazil", "Canada"], "brazil") == 0
+    # O seletor de pais do telefone decora o rotulo com o DDI.
+    assert choose_option_index(["United States +1", "Brazil +55"], "brazil") == 1
+    # Prefixo ambiguo nao e escolhido.
+    with pytest.raises(OptionSelectionError) as exc:
+        choose_option_index(["Brazil +55", "Brazil +554"], "brazil")
+    assert exc.value.code == "AMBIGUOUS_COMBOBOX_OPTION"
+
+
+def test_missing_option_is_reported_with_the_documented_code():
+    with pytest.raises(OptionSelectionError) as exc:
+        choose_option_index(["Yes", "No"], "maybe")
+    assert exc.value.code == "OPTION_NOT_FOUND_COMBOBOX_OPTION"
+
+
+def test_marker_comparison_ignores_apostrophes_and_case():
+    from jobsearch_agent.qa import DECLINE_SOURCE
+
+    assert choose_option_index(["I DON'T WISH TO ANSWER"], "x", DECLINE_SOURCE) == 0
+    assert choose_option_index(["i do not want to answer"], "x", DECLINE_SOURCE) == 0
+
+
+# --- escrita autorizada one-shot ----------------------------------------------
+
+
+class _Request:
+    def __init__(self, method: str, url: str, resource_type: str = "fetch") -> None:
+        self.method = method
+        self.url = url
+        self.resource_type = resource_type
+
+
+SUBMIT_URL = "https://boards.greenhouse.io/canonical/jobs/5150422"
+
+
+def _permit(**overrides):
+    from jobsearch_agent.browser import AuthorizedWrite
+
+    values = {
+        "application_id": "application-1",
+        "submission_intent_id": "intent-1",
+        "origin": "https://boards.greenhouse.io",
+        "path_pattern": r"^/[^/]+/jobs/[^/]+/?$",
+        "method": "POST",
+        "max_writes": 1,
+    }
+    values.update(overrides)
+    return AuthorizedWrite(**values)
+
+
+def test_write_is_blocked_while_no_permit_is_armed():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is False
+    assert guard.blocked_writes
+    assert guard.authorized_writes_remaining == 0
+
+
+def test_armed_permit_allows_exactly_one_matching_write():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+    assert guard.authorized_writes_remaining == 1
+
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is True
+    assert guard.authorized_writes_remaining == 0
+
+    # A segunda escrita nao esta mais coberta.
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is False
+    assert len(guard.blocked_writes) == 1
+
+
+def test_permit_does_not_cover_a_different_origin_path_or_method():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+
+    assert guard.inspect(_Request("POST", "https://evil.example/canonical/jobs/1")) is False
+    assert guard.inspect(_Request("POST", "https://boards.greenhouse.io/other/endpoint")) is False
+    assert guard.inspect(_Request("PUT", SUBMIT_URL)) is False
+    assert guard.inspect(_Request("DELETE", SUBMIT_URL)) is False
+    # A permissao segue intacta: nenhuma delas a consumiu.
+    assert guard.authorized_writes_remaining == 1
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is True
+
+
+def test_reads_stay_allowed_with_a_permit_armed_and_are_not_consumed():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+    assert guard.inspect(_Request("GET", SUBMIT_URL)) is True
+    assert guard.inspect(_Request("OPTIONS", SUBMIT_URL)) is True
+    assert guard.authorized_writes_remaining == 1
+
+
+def test_disarming_restores_the_full_block():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+    guard.disarm_write()
+    assert guard.inspect(_Request("POST", SUBMIT_URL)) is False
+    assert guard.authorized_write is None
+
+
+def test_permit_rejects_a_non_positive_write_budget():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    with pytest.raises(ValueError, match="at least one request"):
+        guard.arm_write(_permit(max_writes=0))
+
+
+def test_websocket_is_never_authorized_even_with_a_permit():
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    guard.arm_write(_permit())
+    assert guard.inspect(_Request("GET", SUBMIT_URL, resource_type="websocket")) is False

@@ -399,6 +399,114 @@ def test_ambiguous_html_page_stays_unknown(tmp_path: Path):
         db.close()
 
 
+# --- browser falso para submissao (usa o NetworkWriteGuard real) --------------
+
+
+class _FakeResponse:
+    def __init__(self, url: str, status: int) -> None:
+        self.url = url
+        self.status = status
+
+
+class _RecordingRequest:
+    def __init__(self, method: str, url: str) -> None:
+        self.method = method
+        self.url = url
+        self.resource_type = "fetch"
+
+
+class _FakeButton:
+    def __init__(self, on_click) -> None:
+        self._on_click = on_click
+
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def click(self) -> None:
+        self._on_click()
+
+
+class _FakeLocatorList:
+    def __init__(self, items) -> None:
+        self._items = list(items)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def nth(self, index: int):
+        return self._items[index]
+
+
+class FakeSubmitPage:
+    """Pagina minima capaz de disparar o POST pelo guard real."""
+
+    def __init__(self, guard, destination: str, *, status: int = 201, confirmed: bool = True, captcha: bool = False) -> None:
+        from jobsearch_agent.browser import _origin_of
+
+        self._guard = guard
+        self._destination = destination
+        self._status = status
+        self._confirmed = confirmed
+        self._captcha = captcha
+        self._listeners: list[tuple[str, object]] = []
+        self._clicks = 0
+        self.url = _origin_of(destination) + "/canonical/jobs/5150422"
+
+    def on(self, event: str, handler) -> None:
+        self._listeners.append((event, handler))
+
+    def remove_listener(self, event: str, handler) -> None:
+        self._listeners = [item for item in self._listeners if item != (event, handler)]
+
+    def get_by_role(self, role: str, name: str = "", exact: bool = False):
+        if role == "button" and name == "Submit application":
+            return _FakeLocatorList([_FakeButton(self._submit)])
+        return _FakeLocatorList([])
+
+    def locator(self, selector: str):
+        return _FakeLocatorList([])
+
+    @property
+    def frames(self) -> list:
+        if self._captcha:
+            return [type("_Frame", (), {"url": "https://www.recaptcha.net/recaptcha/enterprise/challenge"})()]
+        return []
+
+    def inner_text(self, _selector: str) -> str:
+        return "Thank you for applying" if self._confirmed else "Form"
+
+    def wait_for_timeout(self, _ms: int) -> None:
+        return
+
+    def _submit(self) -> None:
+        self._clicks += 1
+        if self._captcha:
+            return  # desafio apresentado: nenhuma escrita sai do browser
+        if not self._guard.inspect(_RecordingRequest("POST", self._destination)):
+            return  # bloqueado pelo guard: nenhuma resposta e observada
+        for event, handler in self._listeners:
+            if event == "response":
+                handler(_FakeResponse(self._destination, self._status))
+        if self._confirmed:
+            self.url = self._destination.rsplit("/jobs/", 1)[0] + "/jobs/5150422/confirmation"
+
+
+class FakeGuardedSession:
+    def __init__(self, guard, page) -> None:
+        self.network_guard = guard
+        self.page = page
+        self.guarded = True
+
+    def arm_authorized_write(self, permit) -> None:
+        self.network_guard.arm_write(permit)
+
+    def disarm_authorized_write(self) -> None:
+        self.network_guard.disarm_write()
+
+
 # --- apply_live wiring --------------------------------------------------------
 
 
@@ -452,13 +560,15 @@ def _install_live_stubs(monkeypatch, tmp_path: Path, settings, *, submitted: lis
     from jobsearch_agent.application import evaluate_safety_gate
     from jobsearch_agent.orchestrator import LiveApplicationResult
 
-    class FakeSession:
-        page = None
-        network_guard = None
-        guarded = True
+    from jobsearch_agent.browser import NetworkWriteGuard
 
+    destination = submission_destination("greenhouse", "Acme", "live-glue")
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    submit_page = FakeSubmitPage(guard, destination)
+
+    class FakeSession(FakeGuardedSession):
         def __init__(self, **_kwargs) -> None:
-            pass
+            super().__init__(guard, submit_page)
 
         def start(self) -> None:
             pass
@@ -468,6 +578,9 @@ def _install_live_stubs(monkeypatch, tmp_path: Path, settings, *, submitted: lis
 
         def open(self, _url: str) -> None:
             pass
+
+    _install_live_stubs.submit_page = submit_page  # type: ignore[attr-defined]
+    _install_live_stubs.guard = guard  # type: ignore[attr-defined]
 
     artifact_root = settings.resolve(settings.artifacts_dir)
     # The real prepare() writes the resume before the orchestrator runs.
@@ -577,17 +690,14 @@ def test_apply_live_with_submit_authorizes_and_posts_once_with_the_resume(tmp_pa
 
     assert result["status"] == "FILLED_REVIEW_REQUIRED"
     assert result["submission"]["status"] == "SUBMITTED"
-    assert result["submission"]["files_sent"] == 1
+    assert result["submission"]["transport"] == "browser"
     assert result["application_state"] == ApplicationState.SUBMITTED.value
-    # O handshake faz um GET na pagina do formulario antes do POST.
-    posted = [request for request in submitted if request.method == "POST"]
-    assert len(posted) == 1
-    assert any(request.method == "GET" for request in submitted)
-    request = posted[0]
-    assert "multipart/form-data" in request.headers["content-type"]
-    assert b'name="job_application[resume]"' in request.content
-    assert b'filename="resume.pdf"' in request.content
-    assert b"candidate@example.test" in request.content
+    assert result["submission"]["http_status"] == 201
+    # exatamente uma escrita foi autorizada e consumida pelo guard
+    guard = _install_live_stubs.guard  # type: ignore[attr-defined]
+    assert guard.authorized_writes_used == 1
+    assert guard.authorized_writes_remaining == 0
+    assert guard.blocked_writes == []
 
     db = Database(settings.resolve(settings.db_path))
     try:
@@ -682,3 +792,196 @@ def test_csrf_field_extraction_covers_the_common_markups():
     assert csrf_field('{"csrfToken":"jwt-token"}') == ("authenticity_token", "jwt-token")
     assert csrf_field("&lt;meta name=&quot;csrf-token&quot; content=&quot;esc&amp;aped&quot;&gt;") == ("csrf-token", "esc&aped")
     assert csrf_field("<html>no token here</html>") == ("", "")
+
+
+# --- recovery explicito de SUBMIT_FAILED --------------------------------------
+
+
+def _attempt(db: Database, application_id: str, path: str, suffix: str, *, timeout: float = 10.0):
+    destination = db.get_application(application_id)
+    intent, policy = _authorized_intent(db, application_id, _SERVER_URL[0] + path, path)
+    executor = GreenhouseSubmissionExecutor(db, timeout=timeout)
+    return executor.submit(
+        intent.id,
+        current_form_fingerprint="form-v1",
+        current_resume_sha256="resume-v1",
+        current_answers_fingerprint="answers-v1",
+        policy=policy,
+        fields={"job_application[email]": "candidate@example.test"},
+        session_url=_SERVER_URL[0] + "/job-with-token",
+    )
+
+
+_SERVER_URL: list[str] = []
+
+
+def test_retry_submit_reopens_an_application_after_a_definitive_failure(tmp_path: Path):
+    from jobsearch_agent.application import ApplicationService
+
+    with SubmissionTestServer() as server:
+        _SERVER_URL[:] = [server.origin]
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "retry-failed")
+        result = _attempt(db, application_id, "/submit/error", "retry-failed")
+        assert result.status == "SUBMIT_FAILED"
+        assert db.get_application(application_id).state == ApplicationState.SUBMIT_FAILED
+
+        reopened = ApplicationService(db).retry_submit(application_id)
+        assert reopened.state == ApplicationState.REVIEW_REACHED
+        events = [event.event for event in db.list_application_events(application_id)]
+        assert "submit_retry_authorized" in events
+        db.close()
+
+
+def test_retry_submit_refuses_an_unknown_outcome(tmp_path: Path):
+    """SUBMIT_UNKNOWN nunca volta: nao se sabe se a candidatura foi aceita."""
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+
+    with SubmissionTestServer() as server:
+        _SERVER_URL[:] = [server.origin]
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "retry-unknown")
+        result = _attempt(db, application_id, "/submit/timeout", "retry-unknown", timeout=0.05)
+        assert result.status == "SUBMIT_UNKNOWN"
+
+        with pytest.raises(ApplicationDomainError, match="requires SUBMIT_FAILED"):
+            ApplicationService(db).retry_submit(application_id)
+        assert db.get_application(application_id).state == ApplicationState.SUBMIT_UNKNOWN
+        db.close()
+
+
+def test_retry_submit_refuses_when_the_attempt_outcome_is_unknown(tmp_path: Path):
+    """Segunda barreira: mesmo com estado inconsistente, tentativa UNKNOWN barra."""
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+
+    with SubmissionTestServer() as server:
+        _SERVER_URL[:] = [server.origin]
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "retry-inconsistent")
+        result = _attempt(db, application_id, "/submit/timeout", "retry-inconsistent", timeout=0.05)
+        assert result.status == "SUBMIT_UNKNOWN"
+
+        # Forca o estado para SUBMIT_FAILED e mantem a tentativa UNKNOWN.
+        application = db.get_application(application_id)
+        application.state = ApplicationState.SUBMIT_FAILED
+        db.save_application(application)
+
+        with pytest.raises(ApplicationDomainError, match="must never be resent"):
+            ApplicationService(db).retry_submit(application_id)
+        db.close()
+
+
+def test_retry_submit_refuses_when_the_state_is_not_a_failed_submission(tmp_path: Path):
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "retry-wrong-state")
+    with pytest.raises(ApplicationDomainError, match="requires SUBMIT_FAILED"):
+        ApplicationService(db).retry_submit(application_id)
+    db.close()
+
+
+# --- submissao pelo browser ---------------------------------------------------
+
+BROWSER_DEST = "https://boards.greenhouse.io/acme/jobs/4242"
+BROWSER_PATH = "/acme/jobs/4242"
+
+
+def _browser_submit(db: Database, suffix: str, *, status: int = 201, confirmed: bool = True, captcha: bool = False):
+    from jobsearch_agent.browser import NetworkWriteGuard
+    from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
+
+    application_id = _ready_application(db, suffix)
+    intent, policy = _authorized_intent(db, application_id, BROWSER_DEST, BROWSER_PATH)
+    guard = NetworkWriteGuard({"boards.greenhouse.io"})
+    page = FakeSubmitPage(guard, BROWSER_DEST, status=status, confirmed=confirmed, captcha=captcha)
+    session = FakeGuardedSession(guard, page)
+    outcome = GreenhouseBrowserSubmitter(db, timeout_seconds=1.0).submit(
+        session,
+        intent.id,
+        current_form_fingerprint="form-v1",
+        current_resume_sha256="resume-v1",
+        current_answers_fingerprint="answers-v1",
+        policy=policy,
+    )
+    return outcome, guard, application_id
+
+
+def test_browser_submission_confirms_and_records_submitted(tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    outcome, guard, application_id = _browser_submit(db, "br-confirm")
+    assert outcome.status == "SUBMITTED"
+    assert outcome.http_status == 201
+    assert guard.authorized_writes_used == 1
+    assert guard.authorized_writes_remaining == 0
+    assert db.get_application(application_id).state == ApplicationState.SUBMITTED
+    db.close()
+
+
+def test_browser_submission_without_confirmation_stays_unknown(tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    outcome, guard, application_id = _browser_submit(db, "br-unknown", confirmed=False)
+    assert outcome.status == "SUBMIT_UNKNOWN"
+    assert guard.authorized_writes_used == 1
+    assert db.get_application(application_id).state == ApplicationState.SUBMIT_UNKNOWN
+    db.close()
+
+
+def test_browser_submission_rejection_is_a_definitive_failure(tmp_path: Path):
+    db = Database(tmp_path / "submission.db")
+    outcome, _, application_id = _browser_submit(db, "br-rejected", status=422, confirmed=False)
+    assert outcome.status == "SUBMIT_FAILED"
+    assert outcome.http_status == 422
+    assert db.get_application(application_id).state == ApplicationState.SUBMIT_FAILED
+    db.close()
+
+
+def test_browser_submission_never_allows_a_second_write(tmp_path: Path):
+    """O guard cobre um POST; um segundo envio do formulario e bloqueado."""
+    db = Database(tmp_path / "submission.db")
+    outcome, guard, application_id = _browser_submit(db, "br-double")
+    assert outcome.status == "SUBMITTED"
+    assert guard.authorized_writes_remaining == 0
+    # O proprio formulario dispara de novo: tem de ser bloqueado.
+    guard.inspect(type("R", (), {"method": "POST", "url": BROWSER_DEST, "resource_type": "fetch"})())
+    assert guard.blocked_writes, "segunda escrita deveria ser bloqueada"
+    db.close()
+
+
+def test_browser_submission_stops_on_captcha_without_sending(tmp_path: Path):
+    from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
+
+    db = Database(tmp_path / "submission.db")
+    outcome, guard, application_id = _browser_submit(db, "br-captcha", captcha=True)
+    assert outcome.status == "NEEDS_CAPTCHA"
+    # Nada saiu do browser e a permissao segue intacta.
+    assert guard.authorized_writes_used == 0
+    # A permissao e sempre desarmada ao fim, mesmo sem ter sido consumida.
+    assert guard.authorized_write is None
+    assert "CAPTCHA" in outcome.error
+    # Falha definitiva (o guard prova que nenhuma escrita ocorreu), portanto
+    # retomavel por `application retry-submit`.
+    assert db.get_application(application_id).state == ApplicationState.SUBMIT_FAILED
+    db.close()
+
+
+def test_classification_of_the_browser_outcome():
+    from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
+
+    classifier = GreenhouseBrowserSubmitter.__dict__["_classify"]
+    submitter = GreenhouseBrowserSubmitter.__new__(GreenhouseBrowserSubmitter)
+
+    verification, status = classifier(submitter, {"http_status": 201, "confirmation_reached": True}, 1)
+    assert status == "SUBMITTED" and verification.status == "confirmed"
+
+    verification, status = classifier(submitter, {"http_status": 201, "confirmation_reached": False}, 1)
+    assert status == "SUBMIT_UNKNOWN" and verification.status == "unknown"
+
+    verification, status = classifier(submitter, {"http_status": 500, "confirmation_reached": False}, 1)
+    assert status == "SUBMIT_FAILED" and verification.status == "failed"
+
+    verification, status = classifier(submitter, {"http_status": None, "confirmation_reached": False}, 0)
+    assert status == "SUBMIT_FAILED"
+
+    verification, status = classifier(submitter, {"captcha_challenge": True}, 0)
+    assert status == "NEEDS_CAPTCHA" and verification is None

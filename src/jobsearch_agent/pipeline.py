@@ -15,6 +15,7 @@ from .browser import DryRunBrowserExecutor, PlaywrightSessionManager
 from .config import Settings
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
+from .submission_browser import GreenhouseBrowserSubmitter
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
@@ -575,57 +576,61 @@ def apply_live(
                 default_resume=str(resume_path),
             )
             live = orchestrator.run(session, context, job.url, audit_dir=artifact_dir / "browser")
+
+            response: dict[str, Any] = {
+                "status": live.status,
+                "job_id": job_id,
+                "application_id": application.id,
+                "provider": live.provider or adapter.provider,
+                "url": live.url or job.url,
+                "advanced_steps": live.advanced_steps,
+                "form_fingerprint": live.form_fingerprint,
+                "network_writes_allowed": False,
+                "error": live.error,
+            }
+            if live.form is not None:
+                answers_fingerprint = compute_answers_fingerprint(live.form)
+                db.save_application_form(application.id, live.form)
+                context.form = live.form
+                context.validation["dry_run"] = {
+                    "form_fingerprint": live.form_fingerprint,
+                    "answers_fingerprint": answers_fingerprint,
+                    "status": live.status,
+                    "source": "live",
+                }
+                application.context = to_dict(context)
+                application.context["resume_sha256"] = resume_sha256
+                application = _advance_to_review(service, application, live, context)
+                response["answers_fingerprint"] = answers_fingerprint
+                response["application_state"] = application.state.value
+                if submit:
+                    if live.status != "FILLED_REVIEW_REQUIRED":
+                        # Nao tenta submeter um formulario incompleto: reporta as
+                        # perguntas sem resposta em vez de falhar no intent.
+                        response["submission"] = {
+                            "status": "NOT_ATTEMPTED",
+                            "reason": f"fill nao chegou ao review: {live.status}",
+                            "unanswered_required": _unanswered_questions(live.form),
+                        }
+                    else:
+                        # A sessao segue ABERTA: o submit e executado pela propria
+                        # aplicacao no browser, com o guard armado para um POST.
+                        response["submission"] = _submit_live_in_browser(
+                            db,
+                            session,
+                            application,
+                            job,
+                            live.form,
+                            artifact_dir,
+                            provider=adapter.provider,
+                            timeout=submit_timeout,
+                            ttl_seconds=intent_ttl_seconds,
+                            attachments=live.attachments,
+                        )
+                        response["application_state"] = db.get_application(application.id).state.value
         finally:
             session.close()
 
-        response: dict[str, Any] = {
-            "status": live.status,
-            "job_id": job_id,
-            "application_id": application.id,
-            "provider": live.provider or adapter.provider,
-            "url": live.url or job.url,
-            "advanced_steps": live.advanced_steps,
-            "form_fingerprint": live.form_fingerprint,
-            "network_writes_allowed": False,
-            "error": live.error,
-        }
-        if live.form is not None:
-            answers_fingerprint = compute_answers_fingerprint(live.form)
-            db.save_application_form(application.id, live.form)
-            context.form = live.form
-            context.validation["dry_run"] = {
-                "form_fingerprint": live.form_fingerprint,
-                "answers_fingerprint": answers_fingerprint,
-                "status": live.status,
-                "source": "live",
-            }
-            application.context = to_dict(context)
-            application.context["resume_sha256"] = resume_sha256
-            application = _advance_to_review(service, application, live, context)
-            response["answers_fingerprint"] = answers_fingerprint
-            response["application_state"] = application.state.value
-            if submit:
-                if live.status != "FILLED_REVIEW_REQUIRED":
-                    # Nao tenta submeter um formulario incompleto: reporta as
-                    # perguntas sem resposta em vez de falhar no intent.
-                    response["submission"] = {
-                        "status": "NOT_ATTEMPTED",
-                        "reason": f"fill nao chegou ao review: {live.status}",
-                        "unanswered_required": _unanswered_questions(live.form),
-                    }
-                else:
-                    response["submission"] = _submit_live(
-                    db,
-                    application,
-                    job,
-                    live.form,
-                    artifact_dir,
-                    provider=adapter.provider,
-                    timeout=submit_timeout,
-                    ttl_seconds=intent_ttl_seconds,
-                        attachments=live.attachments,
-                    )
-                    response["application_state"] = db.get_application(application.id).state.value
         append_event(
             settings.root,
             "application_live_fill",
@@ -677,8 +682,9 @@ def _advance_to_review(service: ApplicationService, application, live, context: 
     return application
 
 
-def _submit_live(
+def _submit_live_in_browser(
     db: Database,
+    session,
     application,
     job,
     form,
@@ -689,7 +695,16 @@ def _submit_live(
     ttl_seconds: int,
     attachments: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Authorize and perform the single submission for a filled application."""
+    """Autoriza e executa a unica submissao, pela propria aplicacao no browser.
+
+    A Submission Boundary continua no comando: valida a intent, persiste a
+    tentativa antes da escrita e arma o guard para um POST. O pedido e feito
+    pelo JavaScript do board, que e o unico capaz de produzir os tokens
+    efemeros exigidos pelo endpoint.
+
+    ``attachments`` e aceito para compatibilidade de chamada; o upload ja foi
+    feito no proprio formulario durante o preenchimento.
+    """
     validation = application.context.get("validation", {})
     live = validation.get("dry_run", {})
     form_fingerprint = str(live.get("form_fingerprint", ""))
@@ -727,29 +742,22 @@ def _submit_live(
         expires_in_seconds=ttl_seconds,
     )
     submission_service.authorize_submission(intent.id)
-    payload = build_submission_payload(
-        form,
-        artifact_root=str(artifact_dir),
-        extra_files=attachments,
-    )
     policy = LiveNetworkPolicy.for_submission(provider, application.id, intent.id)
-    execution = GreenhouseSubmissionExecutor(db, timeout=timeout).submit(
+    outcome = GreenhouseBrowserSubmitter(db, timeout_seconds=timeout).submit(
+        session,
         intent.id,
         current_form_fingerprint=form_fingerprint,
         current_resume_sha256=resume_sha256,
         current_answers_fingerprint=answers_fingerprint,
         policy=policy,
-        fields=payload.fields,
-        files=payload.files,
-        session_url=job.url,
     )
     return {
         "intent_id": intent.id,
-        "status": execution.status,
-        "http_status": execution.http_status,
-        "files_sent": execution.files_sent,
-        "fields_sent": execution.fields_sent,
-        "error": execution.error,
+        "status": outcome.status,
+        "http_status": outcome.http_status,
+        "transport": "browser",
+        "evidence": outcome.evidence,
+        "error": outcome.error,
     }
 
 

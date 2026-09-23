@@ -108,11 +108,26 @@ Sem `--submit`, o comando nunca escreve na rede: a sessão do browser bloqueia P
 WebSocket e submit de formulário. Se um controle de avanço tentar uma escrita, a execução para com
 `ADVANCE_BLOCKED_BY_NETWORK_POLICY` em vez de contornar a política.
 
-Com `--submit`, o agente cria o `ReviewSnapshot`, cria e autoriza a `SubmissionIntent` e executa **um
-único** POST multipart, vinculado a destino, fingerprint do formulário, SHA-256 do currículo e
-fingerprint das respostas. O `LiveNetworkPolicy` fixa origem, método, caminho e estágio. Confirmação
-só vira `SUBMITTED` com status de provider reconhecido (JSON ou página HTML de confirmação); timeout,
-redirect ou resposta ambígua viram `SUBMIT_UNKNOWN` e não são reenviados automaticamente.
+Com `--submit`, a sessão do browser **permanece aberta**: o agente cria o `ReviewSnapshot`, cria e
+autoriza a `SubmissionIntent` e deixa a **própria aplicação do board** enviar o formulário. Os boards
+modernos do Greenhouse montam o pedido no cliente — `application/json` com
+`g-recaptcha-enterprise-token`, `request_token`, `csrfToken` e `fingerprint` —, tokens efêmeros que
+nenhum cliente HTTP externo reproduz. Reconstruir esse POST fora do browser é o que produzia
+`400 Bad Request`.
+
+A escrita continua sob a Submission Boundary: a intent é validada, o destino, o método e os
+fingerprints têm de coincidir, a tentativa é persistida **antes** do clique, e o `NetworkWriteGuard`
+é armado para **exatamente um** POST na origem e no caminho autorizados (`AuthorizedWrite`). Esgotada
+a permissão, o guard volta a bloquear toda escrita. Nenhum token é forjado, extraído para replay ou
+contornado: se a página apresentar um desafio de CAPTCHA, a execução para em `NEEDS_CAPTCHA` e nada
+sai do browser.
+
+O resultado é observado no browser — resposta do POST, mudança para o `confirmationPath` e DOM de
+confirmação. Confirmação inequívoca vira `SUBMITTED`; escrita efetuada sem confirmação vira
+`SUBMIT_UNKNOWN`; rejeição ou nenhuma escrita vira `SUBMIT_FAILED`. `SUBMIT_UNKNOWN` nunca é
+reenviado automaticamente; `SUBMIT_FAILED` é definitivo e pode ser retomado por
+`application retry-submit`. O executor HTTP (`GreenhouseSubmissionExecutor`) permanece como
+implementação controlada para testes e servidores locais.
 
 `fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
 Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos
@@ -254,6 +269,10 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 - O executor Greenhouse envia o PDF como parte multipart quando o formulário tem campo de currículo.
   Confirmação só é aceita por status reconhecido (JSON ou página HTML); redirect, erro e resposta
   ambígua permanecem `SUBMIT_UNKNOWN`, e uma segunda tentativa é bloqueada.
+- A submissão autorizada não desliga o guard: `AuthorizedWrite` libera um único POST, na origem e no
+  caminho que a `LiveNetworkPolicy` já exigia, e se esgota em seguida. Dry-run continua sem nenhuma
+  escrita possível; a diferença entre os dois caminhos é a permissão one-shot, não a ausência de
+  controle.
 - `apply` só existe para providers com adapter e `LiveNetworkPolicy`. LinkedIn não possui executor
   live: a política da plataforma proíbe automação de atividade por software de terceiros.
 - A milestone Prepare Application não abre browser nem envia candidaturas.

@@ -109,23 +109,29 @@ def load_answers(path: str | Path) -> list[ApplicationAnswer]:
 
 #: Marcadores de opcao que recusam a autodeclaracao, por ATS.
 #: Comparados sobre o rotulo normalizado (pontuacao vira espaco), portanto
-#: escritos sem apostrofo. Cobrem os rotulos reais do Greenhouse:
-#: "I don't wish to answer", "I do not want to answer", "Decline To Self Identify".
+#: escritos sem apostrofo. Sao frases negativas completas de proposito: um
+#: marcador parcial como "wish to answer" casaria tambem com "I wish to
+#: answer", que e o oposto da recusa.
 DECLINE_MARKERS = (
+    "decline to self identify",
     "decline",
-    "self identify",
-    "wish to answer",
-    "want to answer",
+    "do not wish to answer",
+    "don t wish to answer",
+    "do not want to answer",
+    "don t want to answer",
+    "prefer not to answer",
     "prefer not",
     "not to answer",
-    "no answer",
 )
 
 DECLINE_SOURCE = "decline_self_identification"
 
 #: Rotulos de aceite variam por ATS ("Yes", "Acknowledge/Confirm", "I accept").
+#: "yes" fica por ultimo e so e usado quando nenhum marcador especifico casa,
+#: para nao confundir uma pergunta de deficiencia ("Yes, I have a disability")
+#: com um consentimento.
 AFFIRM_SOURCE = "affirm_consent"
-AFFIRM_MARKERS = ("i agree", "agree", "acknowledge", "confirm", "accept", "i consent", "yes")
+AFFIRM_MARKERS = ("i agree", "agree", "acknowledge", "confirm", "i accept", "i consent", "yes")
 
 
 @dataclass(frozen=True)

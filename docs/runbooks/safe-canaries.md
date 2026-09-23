@@ -95,7 +95,8 @@ Limites do agente:
 
 - a sessão do browser bloqueia POST/PUT/PATCH/DELETE, WebSocket e submit de formulário;
 - sem `--submit` o comando não escreve na rede em nenhum momento;
-- o submit exige um segundo comando explícito e nunca é automático;
+- com `--submit`, o guard libera **um único** POST, na origem e no caminho da intent, e se esgota;
+- desafio de CAPTCHA interrompe com `NEEDS_CAPTCHA`: nunca é resolvido nem contornado;
 - um controle de avanço que tente escrita para a execução com
   `ADVANCE_BLOCKED_BY_NETWORK_POLICY`.
 

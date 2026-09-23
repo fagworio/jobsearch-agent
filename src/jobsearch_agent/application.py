@@ -32,7 +32,9 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.SUBMIT_AUTHORIZED: {ApplicationState.SUBMITTING, ApplicationState.POLICY_BLOCKED},
     ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN},
     ApplicationState.SUBMITTED: set(),
-    ApplicationState.SUBMIT_FAILED: set(),
+    # Nao e terminal: uma falha definitiva pode ser retomada por operacao
+    # explicita. SUBMIT_UNKNOWN continua terminal — nao se sabe se foi aceita.
+    ApplicationState.SUBMIT_FAILED: {ApplicationState.REVIEW_REACHED},
     ApplicationState.SUBMIT_UNKNOWN: set(),
     ApplicationState.NEEDS_ANSWER: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.NEEDS_ARTIFACT: {ApplicationState.PREPARING, ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.NEEDS_ANSWER, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
@@ -127,6 +129,34 @@ class ApplicationService:
         application.updated_at = now
         self.database.save_application_transition(application, ApplicationEvent(application.id, previous_state, target, event, payload or {}, now))
         return application
+
+    def retry_submit(self, application_id: str) -> Application:
+        """Reabre uma Application cuja submissao falhou de forma definitiva.
+
+        So vale para SUBMIT_FAILED: um SUBMIT_UNKNOWN nunca volta
+        automaticamente, porque nao se sabe se a candidatura foi aceita e
+        reenviar poderia duplicar. A operacao e explicita e registrada.
+        """
+        application = self.database.get_application(application_id)
+        if not application:
+            raise ApplicationDomainError(f"application not found: {application_id}")
+        if application.state != ApplicationState.SUBMIT_FAILED:
+            raise ApplicationDomainError(f"submit retry requires SUBMIT_FAILED, got {application.state.value}")
+        attempts = self.database.list_submission_attempts(application_id)
+        if not attempts:
+            raise ApplicationDomainError("submit retry requires a recorded attempt")
+        last = attempts[-1]
+        if last.status != ApplicationState.SUBMIT_FAILED.value:
+            raise ApplicationDomainError(
+                f"submit retry refused: last attempt is {last.status}; "
+                "a submission with unknown outcome must never be resent"
+            )
+        return self.transition(
+            application_id,
+            ApplicationState.REVIEW_REACHED,
+            "submit_retry_authorized",
+            {"previous_state": application.state.value, "attempt_id": last.id, "attempt_status": last.status},
+        )
 
     def resume(self, application_id: str) -> Application:
         application = self.database.get_application(application_id)

@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from .application import ApplicationDomainError, context_from_dict
+from .application import ApplicationDomainError, ApplicationService, context_from_dict
 from .config import Settings
 from .greenhouse import GreenhouseSubmissionExecutor
 from .llm import LLMError
@@ -114,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_resume)
     application_resume.add_argument("application_id")
     application_resume.set_defaults(handler="application_resume")
+    application_retry = application_sub.add_parser("retry-submit", help="reabre uma Application apos falha definitiva de submissao")
+    runtime_options(application_retry)
+    application_retry.add_argument("application_id")
+    application_retry.set_defaults(handler="application_retry_submit")
     application_status = application_sub.add_parser("status", help="consulta uma Application")
     runtime_options(application_status)
     application_status.add_argument("application_id")
@@ -303,6 +307,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.handler == "application_prepare":
             _print(prepare_application(settings, args.job_id, args.language))
+            return 0
+        if args.handler == "application_retry_submit":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                application = ApplicationService(db).retry_submit(args.application_id)
+                _print({"application": application, "events": db.list_application_events(application.id)})
+            finally:
+                db.close()
             return 0
         if args.handler == "application_resume":
             _print(resume_application(settings, args.application_id))
