@@ -605,7 +605,16 @@ def apply_live(
             response["answers_fingerprint"] = answers_fingerprint
             response["application_state"] = application.state.value
             if submit:
-                response["submission"] = _submit_live(
+                if live.status != "FILLED_REVIEW_REQUIRED":
+                    # Nao tenta submeter um formulario incompleto: reporta as
+                    # perguntas sem resposta em vez de falhar no intent.
+                    response["submission"] = {
+                        "status": "NOT_ATTEMPTED",
+                        "reason": f"fill nao chegou ao review: {live.status}",
+                        "unanswered_required": _unanswered_questions(live.form),
+                    }
+                else:
+                    response["submission"] = _submit_live(
                     db,
                     application,
                     job,
@@ -614,9 +623,9 @@ def apply_live(
                     provider=adapter.provider,
                     timeout=submit_timeout,
                     ttl_seconds=intent_ttl_seconds,
-                    attachments=live.attachments,
-                )
-                response["application_state"] = db.get_application(application.id).state.value
+                        attachments=live.attachments,
+                    )
+                    response["application_state"] = db.get_application(application.id).state.value
         append_event(
             settings.root,
             "application_live_fill",
@@ -627,6 +636,21 @@ def apply_live(
         return response
     finally:
         db.close()
+
+
+
+def _unanswered_questions(form) -> list[dict[str, str]]:
+    """Perguntas obrigatorias que ficaram sem resposta, com o texto legivel."""
+    if form is None:
+        return []
+    pending: list[dict[str, str]] = []
+    for field in form.fields:
+        if not field.required:
+            continue
+        if field.value not in (None, "") or (field.answer and field.answer.answer):
+            continue
+        pending.append({"key": field.key, "question": (field.label or "").strip(), "type": field.field_type})
+    return pending
 
 
 def _advance_to_review(service: ApplicationService, application, live, context: ApplicationContext):
