@@ -412,3 +412,34 @@ def test_the_observer_never_persists_the_body(tmp_path):
     assert BODY_SENTINEL not in json.dumps(evidence[0].safe_view())
     assert "body" not in evidence[0].safe_view()
     world.database.close()
+
+
+def test_the_ats_sending_subdomain_still_counts_as_the_ats(tmp_path):
+    """`no-reply@hire.lever.co` E o ATS.
+
+    O endereco real de confirmacao de um ATS e um subdominio de envio. Comparar
+    por igualdade fazia a mensagem certa pontuar 0.40 (abaixo do piso) e o teste
+    real falharia por um motivo que nao e o que ele quer medir.
+    """
+    world = _awaiting(tmp_path, "sending-subdomain", source="lever")
+    source = StaticEmailSource([_record(sender="no-reply@hire.lever.co", body="We received your application.")])
+    result = world.service.reconcile(world.application_id, email_sources=[source])
+
+    assert result.accepted is not None
+    assert "ats_domain_match" in result.accepted["signals"]
+    assert result.accepted["confidence"] == pytest.approx(0.60)
+    assert _state(world) == ApplicationState.SUBMITTED.value
+    world.database.close()
+
+
+def test_a_lookalike_domain_is_not_the_ats():
+    """Sufixo casa por rotulo: nem `notlever.co`, nem `lever.co.outro.com`."""
+    from jobsearch_agent.confirmation import ats_domains, sender_is_ats
+
+    domains = ats_domains("lever")
+    assert sender_is_ats("hire.lever.co", domains) is True
+    assert sender_is_ats("lever.co", domains) is True
+    assert sender_is_ats("notlever.co", domains) is False
+    assert sender_is_ats("lever.co.evil.example", domains) is False
+    assert sender_is_ats("", domains) is False
+    assert sender_is_ats("hire.lever.co", set()) is False

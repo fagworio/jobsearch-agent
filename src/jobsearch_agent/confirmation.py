@@ -241,6 +241,19 @@ def ats_domains(ats: str) -> set[str]:
     return domains
 
 
+def sender_is_ats(sender_domain: str, domains: set[str]) -> bool:
+    """O remetente pertence ao ATS, incluindo subdominio de ENVIO.
+
+    O endereco real de confirmacao costuma ser um subdominio do provedor
+    (`no-reply@hire.lever.co`), e comparar por igualdade perdia exatamente o caso
+    real. A comparacao e por rotulo: `.lever.co` casa `hire.lever.co`, e nao casa
+    `notlever.co` nem `lever.co.evil.com`.
+    """
+    if not sender_domain or not domains:
+        return False
+    return any(sender_domain == domain or sender_domain.endswith("." + domain) for domain in domains)
+
+
 @dataclass(frozen=True)
 class EmailMatch:
     """O casamento de uma mensagem, com os sinais que o sustentam."""
@@ -293,7 +306,7 @@ def match_email(
         signals.append("company_match")
 
     domains = ats_domains(ats)
-    if domains and message.sender_domain in domains:
+    if sender_is_ats(message.sender_domain, domains):
         signals.append("ats_domain_match")
 
     job_keys = _tokens(job.title, minimum=_MIN_JOB_TOKEN)
