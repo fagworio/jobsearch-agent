@@ -132,6 +132,10 @@ class ApplicationLoopResult:
     answers_fingerprint: str = ""
     submission_attempted: bool = False
     submission_writes: int = 0
+    #: Escritas usadas para SUBIR o curriculo ao storage do board. Sao um
+    #: orcamento separado do de submissao — misturar os dois esconderia qual
+    #: permissao foi consumida.
+    upload_writes_used: int = 0
     terminal: bool = False
     requires_action: str = ""
     reason: str = ""
@@ -166,6 +170,11 @@ class LoopRuntime:
     answer_provider: Any | None = None
     #: Ausente = politica declarada pelo provider (`LiveNetworkPolicy.for_submission`).
     policy_for: PolicyFactory | None = None
+    #: Permissoes de escrita para a SUBIDA do curriculo, montadas por quem
+    #: conhece o provider (o pipeline). O loop so as arma durante o
+    #: preenchimento e SOMENTE quando o envio foi autorizado: com `--submit`
+    #: ausente nada e armado e o dry-run continua sem nenhuma escrita.
+    upload_permits: Callable[[Job, ATSAdapter, str], list[Any]] | None = None
     allow_insecure_destination: bool = False
     max_cycles: int = 5
     allow_advance: bool = True
@@ -215,6 +224,12 @@ class ApplicationLoop:
         try:
             session = self.runtime.open_session(job, adapter)
             phases.append(LoopPhase.INSPECT.value)
+            # O curriculo sobe para o storage do board por POST DURANTE o
+            # preenchimento. Sem essa permissao o arquivo nunca chega ao board e
+            # o campo continua vazio no DOM: o proprio site recusa o envio com
+            # "Resume/CV is required" mesmo com o anexo no modelo. So acontece
+            # com envio autorizado — sem `--submit` o dry-run segue sem escrita.
+            upload_armed = self._arm_uploads(session, job, adapter, application.id) if submit else False
             context = ApplicationContext(
                 application_id=application.id,
                 job_id=job.id,
@@ -234,6 +249,7 @@ class ApplicationLoop:
                 journey=journey,
             )
             live = orchestrator.run(session, context, form_url)
+            upload_writes_used = self._upload_writes_used(session) if upload_armed else 0
             if not journey.steps and live.form is not None:
                 # Blindagem: se algum caminho devolver formulario sem registrar a
                 # etapa, o contrato passa a valer mesmo assim. Sem isto os totais
@@ -246,6 +262,8 @@ class ApplicationLoop:
                     decisions=dict(context.validation.get("question_resolution", {})),
                 )
             phases.extend([LoopPhase.RESOLVE.value, LoopPhase.FILL.value])
+            if upload_armed:
+                session.disarm_authorized_write()
             if live.advanced_steps:
                 phases.append(LoopPhase.ADVANCE.value)
 
@@ -268,6 +286,7 @@ class ApplicationLoop:
                     phases,
                     resume_sha256=material.resume_sha256,
                     answers_fingerprint=journey.answers_fingerprint(),
+                    upload_writes_used=upload_writes_used,
                 )
 
             form = live.form
@@ -289,6 +308,7 @@ class ApplicationLoop:
                     terminal=False,
                     requires_action="submit",
                     reason="preenchimento concluido; envio nao autorizado nesta execucao",
+                    upload_writes_used=upload_writes_used,
                 )
 
             phases.append(LoopPhase.SUBMIT.value)
@@ -317,11 +337,33 @@ class ApplicationLoop:
                 form_fingerprint,
                 answers_fingerprint,
                 phases,
+                upload_writes_used=upload_writes_used,
             )
         finally:
             close = getattr(session, "close", None)
             if callable(close):
                 close()
+
+    # -- upload ----------------------------------------------------------------
+
+    def _arm_uploads(self, session: Any, job: Job, adapter: ATSAdapter, application_id: str) -> bool:
+        """Arma o orcamento de upload antes do preenchimento. Devolve se armou."""
+        builder = self.runtime.upload_permits
+        if builder is None:
+            return False
+        permits = list(builder(job, adapter, application_id) or [])
+        if not permits:
+            return False
+        session.arm_writes(permits)
+        return True
+
+    @staticmethod
+    def _upload_writes_used(session: Any) -> int:
+        guard = getattr(session, "network_guard", None)
+        try:
+            return int(getattr(guard, "authorized_writes_used", 0) or 0)
+        except (TypeError, ValueError):  # pragma: no cover - defensivo
+            return 0
 
     # -- resolucao -------------------------------------------------------------
 
@@ -366,6 +408,7 @@ class ApplicationLoop:
         form_fingerprint: str,
         answers_fingerprint: str,
         phases: list[str],
+        upload_writes_used: int = 0,
     ) -> ApplicationLoopResult:
         state = self._state(application.id)
         terminal = state in TERMINAL_STATES
@@ -383,6 +426,7 @@ class ApplicationLoop:
             reason=submission.error,
             submission_attempted=True,
             submission_writes=submission.writes,
+            upload_writes_used=upload_writes_used,
             form_fingerprint=form_fingerprint,
         )
 
@@ -396,6 +440,7 @@ class ApplicationLoop:
         *,
         resume_sha256: str = "",
         answers_fingerprint: str = "",
+        upload_writes_used: int = 0,
     ) -> ApplicationLoopResult:
         state = self._state(application.id)
         recoverable = state in RECOVERABLE_STATES
@@ -418,6 +463,7 @@ class ApplicationLoop:
             terminal=not recoverable,
             requires_action=requires_action,
             reason=live.error or status,
+            upload_writes_used=upload_writes_used,
         )
 
     def _result(
@@ -436,6 +482,7 @@ class ApplicationLoop:
         reason: str = "",
         submission_attempted: bool = False,
         submission_writes: int = 0,
+        upload_writes_used: int = 0,
         form_fingerprint: str = "",
     ) -> ApplicationLoopResult:
         # Os totais vem do CONTRATO acumulado, nao da ultima tela: numa
@@ -456,6 +503,7 @@ class ApplicationLoop:
             or (journey.answers_fingerprint() if journey is not None else ""),
             submission_attempted=submission_attempted,
             submission_writes=submission_writes,
+            upload_writes_used=upload_writes_used,
             terminal=terminal,
             requires_action=requires_action,
             reason=reason,

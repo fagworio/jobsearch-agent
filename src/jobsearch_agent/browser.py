@@ -423,19 +423,31 @@ class DOMStabilityGuard:
         """
         deadline = time.monotonic() + self.max_ms / 1000
         first_observation = True
-        try:
-            while True:
-                remaining_ms = max(int((deadline - time.monotonic()) * 1000), 1)
-                page.evaluate(script, {"quiet": self.quiet_ms, "minObservation": self.min_observation_ms if first_observation else 0, "maxWait": remaining_ms})
-                if pending_read_count is None or pending_read_count() == 0:
-                    return
-                first_observation = False
-                if time.monotonic() >= deadline:
-                    raise BrowserSessionError("DOM_UNSTABLE: read requests did not settle")
-        except Exception as exc:
-            if isinstance(exc, BrowserSessionError):
+        while True:
+            try:
+                while True:
+                    remaining_ms = max(int((deadline - time.monotonic()) * 1000), 1)
+                    page.evaluate(script, {"quiet": self.quiet_ms, "minObservation": self.min_observation_ms if first_observation else 0, "maxWait": remaining_ms})
+                    if pending_read_count is None or pending_read_count() == 0:
+                        return
+                    first_observation = False
+                    if time.monotonic() >= deadline:
+                        raise BrowserSessionError("DOM_UNSTABLE: read requests did not settle")
+            except BrowserSessionError:
                 raise
-            raise BrowserSessionError("DOM_UNSTABLE: form did not stabilize") from exc
+            except Exception as exc:
+                # Uma NAVEGACAO no meio da avaliacao destroi o contexto de
+                # execucao, e o Playwright levanta erro por isso. Nao e
+                # instabilidade: e a pagina trocando de tela — e a tela nova
+                # merece a mesma janela de quietude. Antes, essa corrida virava
+                # `DOM_UNSTABLE: form did not stabilize` com a pagina QUIETA
+                # (censo de 0 mutacoes em 4s), num campo ja preenchido, e a
+                # candidatura real da Fueled morria ali. Reobservar e barato e
+                # nao afrouxa nada: o orcamento total continua o mesmo, e um
+                # formulario que muda sem parar ainda falha.
+                if time.monotonic() >= deadline:
+                    raise BrowserSessionError(f"DOM_UNSTABLE: {type(exc).__name__}: {exc}") from exc
+                first_observation = True
 
 
 def validate_navigation_url(url: str, allowed_hosts: set[str] | None = None, *, resource: bool = False) -> ValidationResult:

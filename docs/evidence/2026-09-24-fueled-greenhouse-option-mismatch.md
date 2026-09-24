@@ -85,3 +85,47 @@ de widget fechado. Suíte: 497 testes.
 O que **não** está provado: nenhuma candidatura foi enviada a este board. O envio continua sendo o
 próximo passo, e depende das respostas que só o candidato pode dar (pronomes, experiência em agência
 e escopo de projetos).
+
+
+## Continuação: o envio realmente saiu (mesmo dia)
+
+Depois das correções de opção, o preenchimento chegou a `READY_TO_SUBMIT` com
+`unanswered_required: []`, `submission_attempted: false` e `submission_writes: 0`
+— o critério de aceite da fase. As execuções com `--submit` revelaram mais três
+defeitos, todos corrigidos com teste:
+
+1. **A boundary recusava o destino.** O perfil do Greenhouse fixava
+   `boards.greenhouse.io`, mas o board novo vive em `job-boards.greenhouse.io` e
+   o POST sai da PRÓPRIA origem da página:
+   `SubmissionBoundaryError: unexpected submission origin`. O perfil passou a
+   declarar origens adicionais e o destino usa a origem da vaga quando aceita.
+2. **Uma intent autorizada que nunca disparou prendia a candidatura.** O retry
+   exigia uma tentativa registrada; sem tentativa (= nada saiu, prova no banco)
+   a Application ficava em `SUBMIT_AUTHORIZED` para sempre. Agora o retry libera
+   a intent (CANCELLED) e volta para `REVIEW_REACHED`.
+3. **O currículo nunca subia.** A permissão de escrita para o storage era armada
+   SÓ no caminho antigo (`apply`), nunca no loop. O board respondia
+   `Resume/CV is required` na validação do próprio site e o POST não acontecia
+   (`submission_writes: 0`). O loop passou a armar o orçamento de upload **somente
+   com `--submit`** (sem envio autorizado, dry-run intacto), com telemetria
+   própria (`upload_writes_used`).
+
+Também foi corrigido um falso `DOM_UNSTABLE`: a página navegava durante a
+observação, o contexto de execução era destruído e o guard reprovava um
+formulário que estava **parado** (censo de 0 mutações em 4s). Agora uma navegação
+reobserva dentro do mesmo orçamento.
+
+### Desfecho observado
+
+```text
+upload_writes_used: 1        o currículo chegou ao board
+submission_writes: 1         o POST da candidatura saiu (exatamente uma escrita)
+state: NEEDS_HUMAN_CAPTCHA
+challenge: provider=recaptcha_enterprise  reason_token=provider_rejected_submission
+           decision=provider_rejected  confidence=0.85  session=challenge-session-0001
+```
+
+O board aceitou o upload e o POST, e recusou a candidatura na verificação
+anti-bot — o mesmo desfecho do caso CI&T/Lever. O agente **não** contorna nem
+disfarça automação (ADR 0001/0003): o caminho previsto é o humano resolver o
+desafio numa janela visível, ou seguir com o pacote de handoff.

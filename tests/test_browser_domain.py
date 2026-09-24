@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from jobsearch_agent.application import evaluate_safety_gate
-from jobsearch_agent.browser import BrowserSessionError, DryRunBrowserExecutor, NetworkWriteGuard, OptionSelectionError, PlaywrightFormFiller, PlaywrightSessionManager, choose_option_index, validate_navigation_url
+from jobsearch_agent.browser import BrowserSessionError, DOMStabilityGuard, DryRunBrowserExecutor, NetworkWriteGuard, OptionSelectionError, PlaywrightFormFiller, PlaywrightSessionManager, choose_option_index, validate_navigation_url
 from jobsearch_agent.execution import DryRunExecutionPlan, ExecutionAction, ExecutionPlan, ExecutionPlanError, LiveApplicationPlan, build_execution_plan, validate_live_application_plan
 from jobsearch_agent.forms import validate_application_field, validate_application_form
 from jobsearch_agent.inspector import ATSInspector, DOMFieldBinding, FormBindings, InspectionError, validate_bindings_against_html
@@ -581,3 +581,34 @@ def test_the_real_session_exposes_every_method_the_submitter_calls():
     assert called, "nenhuma chamada `session.<metodo>` encontrada: o teste perdeu o sentido"
     missing = sorted(name for name in called if not callable(getattr(PlaywrightSessionManager, name, None)))
     assert missing == [], f"a sessao real nao implementa: {missing}"
+
+
+class _FlakyPage:
+    """Pagina cuja avaliacao morre uma vez (navegacao) e depois fica quieta."""
+
+    def __init__(self, failures: int = 1):
+        self.failures = failures
+        self.calls = 0
+
+    def evaluate(self, *_args, **_kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+        return True
+
+
+def test_dom_stability_survives_a_navigation_that_destroys_the_context():
+    """Achado real: a pagina navegou durante a observacao e o guard reprovou um
+    formulario que estava QUIETO (censo de 0 mutacoes em 4s)."""
+    page = _FlakyPage(failures=1)
+
+    DOMStabilityGuard(max_ms=5000).wait(page)
+
+    assert page.calls == 2
+
+
+def test_dom_stability_reports_the_cause_when_it_never_settles():
+    page = _FlakyPage(failures=float("inf"))
+
+    with pytest.raises(BrowserSessionError, match="DOM_UNSTABLE: RuntimeError"):
+        DOMStabilityGuard(max_ms=300).wait(page)

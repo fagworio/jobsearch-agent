@@ -7,6 +7,7 @@ ele para pedindo contexto, e o que ele recusa fazer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -42,6 +43,14 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.closed = False
+        self.armed: list[list[object]] = []
+        self.disarms = 0
+
+    def arm_writes(self, permits) -> None:
+        self.armed.append(list(permits))
+
+    def disarm_authorized_write(self) -> None:
+        self.disarms += 1
 
     def close(self) -> None:
         self.closed = True
@@ -375,3 +384,32 @@ def test_cert_a07_an_early_stop_still_reports_the_prepared_material(tmp_path: Pa
     assert result.submission_attempted is False
     assert result.submission_writes == 0
     database.close()
+
+
+def test_the_upload_budget_is_armed_only_when_the_submission_is_authorized(tmp_path: Path):
+    """O curriculo sobe por POST DURANTE o preenchimento.
+
+    Achado na vaga real da Fueled: sem essa permissao o arquivo nunca chegava ao
+    board, o campo ficava vazio no DOM e o proprio site recusava o envio com
+    "Resume/CV is required" — mesmo com o anexo registrado no modelo. E o
+    contrario tambem e invariante: sem `--submit` NENHUMA escrita e armada.
+    """
+    db = Database(tmp_path / "loop.db")
+    job = _job(db)
+
+    def permit_builder(_job, _adapter, application_id):
+        return [f"upload-permit:{application_id}"]
+
+    session = FakeSession()
+    runtime = _runtime(session=session)
+    runtime = replace(runtime, upload_permits=permit_builder)
+    ApplicationLoop(db, runtime).run(job.id, submit=True)
+    assert session.armed == [[f"upload-permit:{db.get_application_for_job(job.id).id}"]]
+    assert session.disarms >= 1
+
+    dry_session = FakeSession()
+    dry_runtime = replace(_runtime(session=dry_session), upload_permits=permit_builder)
+    ApplicationLoop(db, dry_runtime).run(job.id, submit=False)
+    assert dry_session.armed == []
+    assert dry_session.disarms == 0
+    db.close()

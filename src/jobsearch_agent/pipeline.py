@@ -872,9 +872,31 @@ def loop_runtime(
         session.start()
         return session
 
+    def upload_permits(job: Job, adapter: Any, application_id: str) -> list[Any]:
+        """Permissoes para SUBIR o curriculo, montadas aqui porque este modulo e o
+        que conhece o provider.
+
+        Um ATS que carrega o formulario por POST na API nao tem upload de arquivo
+        por HTTP: nesse caso nao ha o que armar.
+        """
+        profile_here = provider_profile(adapter.provider)
+        upload_paths = dict(profile_here.upload_write_paths)
+        return [
+            AuthorizedWrite(
+                application_id=application_id,
+                submission_intent_id="",
+                origin=host,
+                path_pattern=upload_paths.get(host, r"^/.*$"),
+                method="POST",
+                max_writes=1,
+            )
+            for host in profile_here.upload_write_origins
+        ]
+
     return LoopRuntime(
         adapter_for=adapter_resolver or resolve_adapter,
         form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
+        upload_permits=upload_permits,
         profile=candidate_profile,
         preferences=preferences,
         answers=answers,
