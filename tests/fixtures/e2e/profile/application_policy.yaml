@@ -1,0 +1,10 @@
+autonomy:
+  search: auto
+  analyze: auto
+  generate_resume: auto
+  answer_known_questions: auto
+  fill_forms: auto
+  submit: manual
+providers: {}
+limits:
+  applications_per_day: 20

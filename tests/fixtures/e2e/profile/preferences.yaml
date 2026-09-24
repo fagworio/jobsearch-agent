@@ -1,0 +1,13 @@
+locations:
+  remote: true
+  allowed_countries: [Brazil]
+work_authorization: [Brazil]
+requires_sponsorship: "no"
+minimum_salary: "USD 3000 per month"
+currency: USD
+timezone: "America/Sao_Paulo"
+autonomy:
+  submit: review
+resume:
+  template: ats
+  max_pages: 2

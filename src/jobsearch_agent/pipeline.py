@@ -807,12 +807,24 @@ def loop_runtime(
     allow_advance: bool = True,
     max_cycles: int = 5,
     submission_timeout: float = 45.0,
+    session_factory: Any | None = None,
+    policy_factory: Any | None = None,
+    adapter_resolver: Any | None = None,
+    allow_insecure_destination: bool = False,
 ) -> LoopRuntime:
     """Monta o runtime de PRODUCAO do `ApplicationLoop` a partir das Settings.
 
     Fica aqui, e nao no loop, porque este modulo e o que conhece Settings,
     perfis, adapters e sessao. O loop recebe tudo pronto e continua sem saber o
     que e um provider.
+
+    `adapter_resolver`, `session_factory` e `policy_factory` existem para o teste
+    de ponta a ponta: o destino e um ATS controlado em loopback, que nao pertence a
+    provider nenhum — e o adapter e como o produto IDENTIFICA o ATS naquele
+    endereco. Substituir isso e configurar o DESTINO, nunca o material: perfil,
+    fatos, curriculo, respostas, snapshot e intent continuam vindo do caminho de
+    producao. E a politica injetada segue sendo validada contra a intent em
+    `begin_submission`.
     """
     candidate_profile, _facts = _load_profile_data(settings)
     preferences = candidate_profile.candidate_preferences or CandidatePreferences()
@@ -861,17 +873,21 @@ def loop_runtime(
         return session
 
     return LoopRuntime(
-        adapter_for=resolve_adapter,
+        adapter_for=adapter_resolver or resolve_adapter,
         form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
         profile=candidate_profile,
         preferences=preferences,
         answers=answers,
         prepare=prepare_material,
-        open_session=open_session,
+        open_session=session_factory or open_session,
+        policy_for=policy_factory,
         answer_provider=_answer_provider(settings),
         max_cycles=max_cycles,
         allow_advance=allow_advance,
         submission_timeout=submission_timeout,
+        # Destino http:// so existe em ambiente controlado (loopback), e o padrao
+        # segue recusando: uma submissao real exige HTTPS.
+        allow_insecure_destination=allow_insecure_destination,
     )
 
 

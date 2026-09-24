@@ -1,0 +1,17 @@
+# Respostas JA APROVADAS pelo candidato, no formato de producao.
+#
+# As perguntas abertas NAO estao aqui de proposito: elas precisam ser geradas
+# pelo QuestionResolver a partir do contexto autorizado (JSA-QA-001).
+answers:
+  - question: "Salary expectation"
+    answer: "USD 3000 per month"
+    source: approved_answer
+    approved: true
+  - question: "How did you hear about this job?"
+    answer: "LinkedIn"
+    source: approved_answer
+    approved: true
+  - question: "I agree to the processing of my personal data"
+    answer: "Yes"
+    source: approved_answer
+    approved: true

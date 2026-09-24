@@ -1,0 +1,115 @@
+# Fatos verificados que sustentam o curriculo. Toda claim gerada aponta para um
+# destes ids, e a validacao factual do resume recusa claim sem suporte.
+facts:
+  fact_e2e_identity_first:
+    type: identity
+    statement:
+      en-US: "The candidate's first name is E2E."
+      pt-BR: "O primeiro nome do candidato é E2E."
+    tags: [identity, first-name]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_identity_last:
+    type: identity
+    statement:
+      en-US: "The candidate's last name is Product."
+      pt-BR: "O sobrenome do candidato é Product."
+    tags: [identity, last-name]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_summary:
+    type: summary
+    statement:
+      en-US: "WordPress developer with 7 years building custom plugins, WooCommerce stores and REST integrations."
+      pt-BR: "Desenvolvedor WordPress com 7 anos construindo plugins personalizados, lojas WooCommerce e integrações REST."
+    tags: [summary, wordpress, woocommerce, rest]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_001:
+    type: experience
+    statement:
+      en-US: "Built custom WordPress plugins used across client sites."
+      pt-BR: "Construí plugins WordPress personalizados usados em sites de clientes."
+    tags: [wordpress, plugins]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_002:
+    type: experience
+    statement:
+      en-US: "Integrated WooCommerce stores with payment and shipping providers."
+      pt-BR: "Integrei lojas WooCommerce com provedores de pagamento e entrega."
+    tags: [woocommerce, integrations]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_003:
+    type: experience
+    statement:
+      en-US: "Developed PHP REST APIs consumed by web and mobile clients."
+      pt-BR: "Desenvolvi APIs REST em PHP consumidas por clientes web e mobile."
+    tags: [php, rest, api]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_004:
+    type: experience
+    statement:
+      en-US: "Improved loading performance on high-traffic WordPress sites."
+      pt-BR: "Melhorei o desempenho de carregamento em sites WordPress de alto tráfego."
+    tags: [wordpress, performance]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_005:
+    type: experience
+    statement:
+      en-US: "Built and maintained custom WordPress plugins for client platforms."
+      pt-BR: "Construí e mantive plugins WordPress personalizados para plataformas de clientes."
+    tags: [wordpress, plugins]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_006:
+    type: experience
+    statement:
+      en-US: "Extended WooCommerce checkout flows with custom payment gateways."
+      pt-BR: "Estendi fluxos de checkout WooCommerce com gateways de pagamento próprios."
+    tags: [woocommerce, php]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_007:
+    type: experience
+    statement:
+      en-US: "Designed REST API integrations between WordPress and internal services."
+      pt-BR: "Projetei integrações de API REST entre WordPress e serviços internos."
+    tags: [rest, api, integrations]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_008:
+    type: experience
+    statement:
+      en-US: "Migrated legacy PHP code to modern WordPress coding standards."
+      pt-BR: "Migrei código PHP legado para padrões modernos do WordPress."
+    tags: [php, wordpress]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_009:
+    type: experience
+    statement:
+      en-US: "Automated deployments and tests for WordPress projects."
+      pt-BR: "Automatizei deploys e testes de projetos WordPress."
+    tags: [wordpress, git]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_experience_legacy:
+    type: experience
+    statement:
+      en-US: "Maintained COBOL batch jobs on a mainframe."
+      pt-BR: "Mantive rotinas COBOL em mainframe."
+    tags: [cobol, mainframe]
+    source: e2e-fixture
+    verified: true
+  fact_e2e_education_001:
+    type: education
+    statement:
+      en-US: "BSc in Computer Science."
+      pt-BR: "Bacharelado em Ciência da Computação."
+    tags: [education, computer-science]
+    source: e2e-fixture
+    verified: true

@@ -226,6 +226,35 @@ por `LoopRuntime`, montado por `pipeline.loop_runtime` em produção e por um
 runtime sintético nos testes. A sequência de submissão existe em um só lugar
 (`SubmissionCoordinator`), compartilhada com `apply_live`.
 
+### Runtime de produção: o currículo nasce, é validado e é enviado
+
+`tests/e2e/test_e2e_prod_001_production_runtime.py` prova a **integração com o produto que gera o
+material**, e não só o motor de candidatura. A partir de uma vaga ingerida por `ingest` e de fixtures
+de perfil sintéticas (carregadas pelos mesmos loaders de produção):
+
+```text
+prepare()  →  análise  →  estratégia  →  currículo dinâmico  →  validação factual
+           →  TXT/DOCX/PDF  →  upload do PDF GERADO  →  POST  →  SUBMITTED
+```
+
+E a cadeia de bytes é medida ponta a ponta: o PDF que chega ao servidor é **byte a byte** o mesmo que
+o `prepare()` gerou. O currículo também é conferido no conteúdo: contém os fatos relevantes da vaga e
+não traz a experiência irrelevante do perfil (há mais fatos do que slots, então a seleção por
+relevância é real).
+
+O que o teste pode substituir é **somente o destino controlado** — qual adapter corresponde àquele
+endereço, a sessão que permite loopback e a política de escrita restrita ao endpoint. Perfil, fatos,
+preferências, respostas, material, `resume.pdf`, SHA, contexto, snapshot e intent vêm todos do
+caminho de produção:
+
+```python
+runtime = loop_runtime(settings, adapter_resolver=..., session_factory=..., policy_factory=...,
+                       allow_insecure_destination=True)
+result = ApplicationLoop(database, runtime).run(job_id, submit=True)
+```
+
+Exige LibreOffice (para o PDF real); sem ele o teste é pulado, não falha.
+
 ### Multi-step: a autorização cobre a candidatura, não a última tela
 
 Um formulário de várias etapas substitui o DOM a cada avanço. O `ApplicationForm` continua

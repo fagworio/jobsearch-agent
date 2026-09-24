@@ -1,0 +1,87 @@
+# Fixture de PRODUCAO do JSA-E2E-PROD-001.
+#
+# Dados sinteticos, formato de producao: este arquivo passa pelos mesmos loaders
+# do perfil real (load_profile/validate_facts). Nenhum dado do candidato real.
+version: "1"
+demo: false
+identity:
+  name: "E2E Product Candidate"
+  first_name: "E2E"
+  last_name: "Product"
+  email: "e2e.product@example.invalid"
+  phone: "+55 11 90000-0000"
+  location: "São Paulo, Brazil"
+  current_location: "São Paulo, Brazil"
+  country: "Brazil"
+  linkedin: "https://www.linkedin.com/in/e2e-product"
+  github: "https://github.com/e2e-product"
+identity_fact_ids:
+  first_name: fact_e2e_identity_first
+  last_name: fact_e2e_identity_last
+professional_summary:
+  en-US:
+    text: "WordPress developer with 7 years building custom plugins, WooCommerce stores and REST integrations."
+    fact_ids: [fact_e2e_summary]
+  pt-BR:
+    text: "Desenvolvedor WordPress com 7 anos construindo plugins personalizados, lojas WooCommerce e integrações REST."
+    fact_ids: [fact_e2e_summary]
+experience:
+  - id: experience_e2e_001
+    company: "Example Studio"
+    role: "WordPress Developer"
+    start_date: "2020-01"
+    end_date: ""
+    facts:
+      - fact_e2e_experience_001
+      - fact_e2e_experience_002
+      - fact_e2e_experience_003
+      - fact_e2e_experience_004
+      - fact_e2e_experience_005
+      - fact_e2e_experience_006
+      - fact_e2e_experience_007
+  - id: experience_e2e_002
+    company: "Old Agency"
+    role: "PHP Developer"
+    start_date: "2017-01"
+    end_date: "2019-12"
+    facts: [fact_e2e_experience_008, fact_e2e_experience_009]
+  # Irrelevante para a vaga: existe para provar que o curriculo e DA VAGA, e nao
+  # um despejo do perfil inteiro.
+  - id: experience_e2e_legacy
+    company: "Mainframe Corp"
+    role: "Legacy Systems Analyst"
+    start_date: "2015-01"
+    end_date: "2016-12"
+    facts: [fact_e2e_experience_legacy]
+education:
+  - id: education_e2e_001
+    institution: "Example University"
+    credential:
+      en-US: "BSc in Computer Science"
+      pt-BR: "Bacharelado em Ciência da Computação"
+    field_of_study:
+      en-US: "Computer Science"
+      pt-BR: "Ciência da Computação"
+    start_date: "2012-02"
+    end_date: "2015-12"
+    facts: [fact_e2e_education_001]
+skills:
+  wordpress:
+    years: "7"
+    level: advanced
+    tags: [wordpress, php, plugin-development]
+  woocommerce:
+    years: "5"
+    level: advanced
+    tags: [woocommerce, ecommerce]
+  php:
+    years: "8"
+    level: advanced
+    tags: [php]
+  rest-api:
+    years: "6"
+    level: advanced
+    tags: [rest, api, integrations]
+languages:
+  portuguese: {level: native}
+  english: {level: advanced}
