@@ -63,17 +63,32 @@ _TABLES: dict[str, Mapping[str, tuple[str, ...]]] = {
 }
 
 
-def option_key(semantic_type: str = "", supported_by: Sequence[str] = ()) -> str:
+def option_key(semantic_type: str = "", supported_by: Sequence[str] = (), source: str = "") -> str:
     """Qual tabela governa este campo.
 
-    A regra da politica carrega a chave (`answer_policy:referral_source`); quando
-    nao ha regra, a semantica do campo responde ("notice_period", "region").
+    A chave pode estar em tres lugares, e a ordem importa:
+
+    1. a regra da politica (`answer_policy:referral_source`);
+    2. a semantica do campo ("notice_period", "region");
+    3. a ULTIMA parte da evidencia/origem (`preferences.notice_period` →
+       "notice_period"). Sem isto o campo de aviso previo da vaga real da Fueled
+       chegava com `semantic_type="unknown"` e a tabela de formas nunca era
+       consultada — a resposta declarada ("Immediately") ia sozinha contra a
+       opcao do board ("Available immediately") e o campo obrigatorio ficava
+       vazio.
     """
+    candidates: list[str] = []
     for item in supported_by or ():
         text = str(item or "")
         if text.startswith("answer_policy:"):
-            return text.split(":", 1)[1].strip()
-    return str(semantic_type or "").strip()
+            candidates.append(text.split(":", 1)[1].strip())
+        candidates.append(text.rsplit(".", 1)[-1].rsplit(":", 1)[-1].strip())
+    candidates.append(str(semantic_type or "").strip())
+    candidates.append(str(source or "").rsplit(".", 1)[-1].rsplit(":", 1)[-1].strip())
+    for candidate in candidates:
+        if candidate in _TABLES:
+            return candidate
+    return next((candidate for candidate in candidates if candidate), "")
 
 
 def _canonical_for(table: Mapping[str, tuple[str, ...]], value: str) -> str:
@@ -104,6 +119,7 @@ def option_candidates(
     *,
     semantic_type: str = "",
     supported_by: Sequence[str] = (),
+    source: str = "",
     value: str = "",
 ) -> tuple[str, ...]:
     """Textos a tentar, em ordem, contra as opcoes REAIS do widget.
@@ -113,7 +129,7 @@ def option_candidates(
     """
     declared = " ".join(str(value or "").split())
     candidates: list[str] = [declared] if declared else []
-    for form in option_forms(option_key(semantic_type, supported_by), declared):
+    for form in option_forms(option_key(semantic_type, supported_by, source), declared):
         if form not in candidates:
             candidates.append(form)
     return tuple(candidates)

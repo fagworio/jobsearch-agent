@@ -164,7 +164,10 @@ def test_greenhouse_conditional_get_is_pending_before_dom_change(tmp_path: Path)
     ("options", "expected_status", "expected_reason"),
     [
         (["Canada", "Cameroon"], "COMPLETED", ""),
-        (["Canada", "Canada"], "UNSUPPORTED_FORM", "AMBIGUOUS_COMBOBOX_OPTION"),
+        # Duas opcoes DIFERENTES que casam com o mesmo texto: ambiguidade real.
+        # (A mesma opcao repetida nao e ambiguidade — o widget re-renderiza a cada
+        # tecla e repete a lista.)
+        (["Canada East", "Canada West"], "UNSUPPORTED_FORM", "AMBIGUOUS_COMBOBOX_OPTION"),
         (["Cameroon"], "UNSUPPORTED_FORM", "OPTION_NOT_FOUND_COMBOBOX_OPTION"),
     ],
 )
@@ -236,7 +239,7 @@ def test_single_async_greenhouse_combobox_waits_for_get_and_selects_one_exact_op
         audit_dir = tmp_path / "audit"
         result = PlaywrightFormFiller().fill(manager, context, plan, inspected.bindings, audit_dir=audit_dir)
         assert time.monotonic() - started >= 0.35
-        assert result.status == expected_status
+        assert result.status == expected_status, result.reason
         assert len(result.operations) == (1 if expected_status == "COMPLETED" else 0)
         if expected_status == "UNSUPPORTED_FORM":
             assert result.reason.startswith(expected_reason)

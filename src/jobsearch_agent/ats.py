@@ -256,6 +256,12 @@ class GreenhouseAdapter:
         "fonts.gstatic.com",
         "recruiting.cdn.greenhouse.io",
         "my.greenhouse.io",
+        # Autocomplete do campo "Location (City)": o widget consulta este host a
+        # cada letra. Sem ele na lista o guard ABORTA a leitura, o widget fica
+        # sem sugestao nenhuma e se DESABILITA — o campo obrigatorio nunca era
+        # preenchido (achado na real da Fueled). Leitura pura: GET com api_key na
+        # query; escrita continua sob o NetworkWriteGuard.
+        "api-geocode-earth-proxy.greenhouse.io",
         "www.dropbox.com",
         # Storage do board. A rota precisa permitir o host para a requisicao
         # chegar ao NetworkWriteGuard; la o POST so passa com permissao.

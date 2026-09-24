@@ -1256,7 +1256,10 @@ _SOURCE_PRIORITY: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("other", ("other", "outro", "outra")),
     ("named_board", ("indeed", "glassdoor", "wellfound", "angel", "stackoverflow", "weworkremotely", "remote ok", "remoteok", "himalayas")),
     ("generic_board", ("job board", "job site", "job portal", "site de vagas")),
-    ("self_sourced", ("linkedin", "company website", "careers page", "site da empresa")),
+    # "Search engine" e canal proprio, nao "Employee Referral / Job Board /
+    # Other": o candidato escolheu essa opcao no board da Fueled e o campo
+    # condicional que pede detalhe so se aplica as tres primeiras.
+    ("self_sourced", ("linkedin", "company website", "careers page", "site da empresa", "search engine", "google", "bing")),
 )
 
 

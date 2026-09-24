@@ -643,17 +643,23 @@ def _listbox_id(page: Any, locator: Any, binding: Any, field_key: str) -> str:
         return str(binding.listbox_id)
     input_id = str(locator.get_attribute("id") or "")
     listboxes = page.get_by_role("listbox")
+    total = listboxes.count()
+    # A convencao casa pelo id do INPUT, entao vale olhar tambem listboxes
+    # "invisiveis": um menu de typeahead recem-aberto e um elemento de altura
+    # zero, e `is_visible()` o considera escondido — foi assim que o campo de
+    # cidade (obrigatorio) terminou em UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND.
+    all_ids = [str(listboxes.nth(index).get_attribute("id") or "") for index in range(total)]
     visible_ids = [
-        str(listboxes.nth(index).get_attribute("id") or "")
-        for index in range(listboxes.count())
-        if listboxes.nth(index).is_visible()
+        all_ids[index] for index in range(total) if listboxes.nth(index).is_visible()
     ]
     if input_id:
-        named = [item for item in visible_ids if item and input_id in item]
+        named = [item for item in all_ids if item and input_id in item]
         if len(named) == 1:
             return named[0]
     if len(visible_ids) == 1:
         return visible_ids[0]
+    if len(all_ids) == 1 and all_ids[0]:
+        return all_ids[0]
     raise BrowserSessionError(f"UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND: {field_key}")
 
 
@@ -685,12 +691,28 @@ def _visible_option_pairs(page: Any, locator: Any, binding: Any, field_key: str)
 
 def _choose_combobox_option(
     page: Any, locator: Any, binding: Any, field_key: str, candidates: tuple[str, ...], intent: str
-) -> Any | None:
-    """Locator da opcao escolhida, ou None se nenhum candidato casou."""
-    pairs = _visible_option_pairs(page, locator, binding, field_key)
+) -> tuple[str, Any] | None:
+    """(rotulo real, locator) da opcao escolhida, ou None se nenhum candidato casou."""
+    try:
+        pairs = _visible_option_pairs(page, locator, binding, field_key)
+    except BrowserSessionError as exc:
+        if "UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND" in str(exc):
+            # O menu deste widget talvez so exista depois da primeira letra.
+            return None
+        raise
     if not pairs:
         return None
-    labels = [label for label, _ in pairs]
+    # Um widget que re-renderiza a cada tecla pode repetir a MESMA opcao: duas
+    # opcoes identicas sao a mesma escolha, nao ambiguidade.
+    unique: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for label, option in pairs:
+        key = _marker_text(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((label, option))
+    labels = [label for label, _ in unique]
     ambiguous = False
     for candidate in candidates:
         try:
@@ -698,10 +720,146 @@ def _choose_combobox_option(
         except OptionSelectionError as exc:
             ambiguous = ambiguous or exc.code.startswith("AMBIGUOUS")
             continue
-        return pairs[index][1]
+        return unique[index]
     if ambiguous:
         raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_OPTION: {field_key}")
     return None
+
+
+#: O react-select guarda a opcao ESCOLHIDA fora do input (o input fica disabled e
+#: com `value` vazio). Sem ler isso, um widget ja respondido parece vazio.
+_SELECTED_VALUE_SCRIPT = """
+    (id) => {
+      const element = document.getElementById(id);
+      if (!element) return '';
+      const shell = element.closest('.select__container')
+        || element.closest('[class*="select-shell"]')
+        || element.parentElement;
+      if (!shell) return '';
+      const chosen = shell.querySelector('[class*="single-value"], [class*="multi-value"]');
+      return chosen ? chosen.textContent.trim() : '';
+    }
+"""
+
+
+def _selected_value(page: Any, locator: Any, field_key: str, *, include_input: bool = False) -> str:
+    """Opcao ja escolhida no widget, ou "" se nao houver como saber.
+
+    `include_input` existe para a CONFERENCIA POS-CLIQUE: um typeahead simples
+    grava a escolha no proprio input. Antes do clique o input contem o TEXTO
+    DIGITADO, e ler isso como "ja respondido" pularia o campo sem escolher nada.
+    """
+    element_id = ""
+    try:
+        element_id = str(locator.get_attribute("id") or "")
+    except Exception:
+        return ""
+    if not element_id:
+        return ""
+    try:
+        chosen = str(page.evaluate(_SELECTED_VALUE_SCRIPT, element_id) or "").strip()
+    except Exception:
+        chosen = ""
+    if chosen or not include_input:
+        return chosen
+    # Widget que guarda a escolha no PROPRIO input (o typeahead simples): o
+    # react-select nao faz isso, mas nem todo board usa react-select.
+    try:
+        return str(locator.input_value() or "").strip()
+    except Exception:
+        return ""
+
+
+def _label_matches(text: str, candidates: tuple[str, ...]) -> bool:
+    wanted = _marker_text(text)
+    if not wanted:
+        return False
+    for candidate in candidates:
+        reference = _marker_text(candidate)
+        if reference and (wanted == reference or wanted.startswith(reference) or reference.startswith(wanted)):
+            return True
+    return False
+
+
+def _clear_and_type(locator: Any, query: str) -> None:
+    """Limpa e DIGITA o texto, tecla por tecla.
+
+    `fill` escreve o valor de uma vez; o typeahead do Greenhouse reage a eventos
+    de teclado (keydown/input) e, no meio do formulario real, um `fill` no campo
+    de cidade nao produzia sugestao nenhuma — a lista ficava vazia e o campo
+    obrigatorio terminava desabilitado. Digitar e o que a pessoa faz.
+    """
+    type_sequentially = getattr(locator, "press_sequentially", None)
+    if not callable(type_sequentially):
+        locator.fill(query)
+        return
+    try:
+        locator.press("ControlOrMeta+a")
+        locator.press("Backspace")
+    except Exception:
+        pass  # campo vazio: nada a limpar
+    type_sequentially(query, delay=80)
+
+
+def _tokens_subset(text: str, candidates: tuple[str, ...]) -> bool:
+    """O widget pode renderizar so um PEDACO do rotulo.
+
+    O seletor de pais do Greenhouse mostra a bandeira e o DDI ("+55") no lugar de
+    "Brazil +55"; comparar texto inteiro reprovaria um campo corretamente
+    respondido. Aqui os tokens do que esta escrito tem de estar contidos nos
+    tokens de algum candidato.
+    """
+    written = [token for token in _marker_text(text).split() if token]
+    if not written:
+        return False
+    for candidate in candidates:
+        reference = _marker_text(candidate).split()
+        if reference and all(token in reference for token in written):
+            return True
+    return False
+
+
+def _label_committed(text: str, candidates: tuple[str, ...]) -> bool:
+    """O widget guarda uma escolha compativel com o que se quis escolher."""
+    return _label_matches(text, candidates) or _tokens_subset(text, candidates)
+
+
+def _wait_enabled(page: Any, locator: Any, timeout_ms: int = 5000) -> bool:
+    """O board desabilita o widget enquanto carrega; esperar evita um timeout longo."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        try:
+            if locator.is_enabled():
+                return True
+        except Exception:
+            return True  # widget sem essa leitura: segue o caminho normal
+        if time.monotonic() >= deadline:
+            return False
+        try:
+            page.wait_for_timeout(250)
+        except Exception:
+            return False
+
+
+def _await_choice(
+    page: Any, locator: Any, binding: Any, field_key: str, candidates: tuple[str, ...], intent: str, timeout_ms: int = 5000
+) -> tuple[str, Any] | None:
+    """Espera a lista de opcoes ficar pronta e escolhe.
+
+    Uma unica leitura logo depois de digitar perdia o widget cuja lista carrega
+    por requisicao assincrona — e o campo obrigatorio ficava vazio.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        chosen = _choose_combobox_option(page, locator, binding, field_key, candidates, intent)
+        if chosen is not None:
+            return chosen
+        if time.monotonic() >= deadline:
+            return None
+        try:
+            page.wait_for_timeout(200)
+        except Exception:
+            return None
 
 
 def _fill_combobox(page: Any, locator: Any, binding: Any, field: Any, value: Any, pending_read_count: Any = None) -> None:
@@ -727,21 +885,62 @@ def _fill_combobox(page: Any, locator: Any, binding: Any, field: Any, value: Any
     candidates = option_candidates(
         semantic_type=str(getattr(field, "semantic_type", "") or ""),
         supported_by=tuple(getattr(answer, "supported_by", ()) or ()),
+        source=str(getattr(answer, "source", "") or ""),
         value=declared,
     )
+    # O proprio board pode ja ter escolhido este valor (autopreenchimento): nesse
+    # estado o input fica disabled e a opcao vive fora dele.
+    if _label_matches(_selected_value(page, locator, field.key), candidates):
+        return
+    # Um widget desabilitado nao aceita clique nem digitacao: sem esta conferencia
+    # o Playwright espera 30s por acao e a execucao inteira morre num timeout.
+    if not _wait_enabled(page, locator):
+        raise BrowserSessionError(
+            f"COMBOBOX_INPUT_DISABLED: {field.key}: {_selected_value(page, locator, field.key) or 'vazio'}"
+        )
     locator.click()
     DOMStabilityGuard().wait(page, pending_read_count)
-    chosen = _choose_combobox_option(page, locator, binding, field.key, candidates, intent)
+    # A lista pode chegar depois do clique (o board busca as opcoes na hora de
+    # abrir). Esperar aqui e o caminho BARATO: escolher sem digitar nunca
+    # esconde a opcao certa atras de um filtro.
+    chosen = _await_choice(page, locator, binding, field.key, candidates, intent, timeout_ms=3000)
     if chosen is None and binding.autocomplete in {"list", "both"} and not pick_from_list:
         for query in _combobox_queries(declared):
-            locator.fill(query)
+            if not _wait_enabled(page, locator):
+                raise BrowserSessionError(
+                    f"COMBOBOX_INPUT_DISABLED: {field.key}: {_selected_value(page, locator, field.key) or 'vazio'}"
+                )
+            _clear_and_type(locator, query)
             DOMStabilityGuard().wait(page, pending_read_count)
-            chosen = _choose_combobox_option(page, locator, binding, field.key, candidates, intent)
+            chosen = _await_choice(page, locator, binding, field.key, candidates, intent)
             if chosen is not None:
                 break
+        if chosen is None:
+            # O filtro pode ter ESCONDIDO a opcao certa: a resposta declarada
+            # ("Immediately") nao e prefixo do rotulo do board ("Available
+            # immediately"), e digitar reduz a lista a nada. Limpar o filtro
+            # devolve a lista inteira, e a escolha volta a ser contra as opcoes
+            # REAIS — achado na vaga real da Fueled.
+            _clear_and_type(locator, "")
+            DOMStabilityGuard().wait(page, pending_read_count)
+            chosen = _await_choice(page, locator, binding, field.key, candidates, intent, timeout_ms=3000)
     if chosen is None:
+        if _label_matches(_selected_value(page, locator, field.key), candidates):
+            return
+        # Diagnostico exato: sem listbox e um problema estrutural do widget;
+        # com listbox e nenhum candidato, e a resposta que nao existe no board.
+        _listbox_id(page, locator, binding, field.key)
         raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")
-    chosen.click()
+    chosen_label, chosen_option = chosen
+    chosen_option.click()
+    # A escolha tem de sobreviver no widget: o react-select guarda o valor FORA
+    # do input, entao ler o input nao prova nada. A comparacao e contra o rotulo
+    # da opcao que foi CLICADA, nao contra a resposta declarada: o board pode
+    # renderizar so um pedaco dele (o pais vira "+55").
+    DOMStabilityGuard().wait(page, pending_read_count)
+    confirmed = _selected_value(page, locator, field.key, include_input=True)
+    if not confirmed or not _label_committed(confirmed, (chosen_label,) + candidates):
+        raise BrowserSessionError(f"VALUE_NOT_COMMITTED: {field.key}: {confirmed or 'vazio'}")
 
 
 
@@ -944,6 +1143,10 @@ class PlaywrightFormFiller:
                         "AMBIGUOUS_COMBOBOX_",
                         "UNSUPPORTED_COMBOBOX_",
                         "OPTION_NOT_FOUND_COMBOBOX_OPTION:",
+                        # Widget que o board desabilitou (autopreenchimento em
+                        # andamento, por exemplo): nao e erro de execucao, e um
+                        # formulario que este agente nao consegue preencher.
+                        "COMBOBOX_INPUT_DISABLED:",
                         "unsupported combobox",
                         "combobox value is empty",
                         "combobox listbox is not bound",
