@@ -27,3 +27,10 @@ tmp/pdfs/
 work/
 dist/
 *.egg-info/
+
+# Credenciais locais de integracao (JSA-CONF-006). O caminho padrao fica fora do
+# repositorio (~/.config/jobsearch-agent/gmail); isto e defesa em profundidade
+# para quem apontar JOBSEARCH_GMAIL_DIR para dentro do projeto.
+client_secret.json
+token.json
+gmail/

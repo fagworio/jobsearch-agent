@@ -129,6 +129,83 @@ a digest otherwise — an RFC `Message-ID` can carry the sender's domain, so it 
 - Provider-status observers (JSA-CONF-008) are future work with the same contract and their own
   evidence provenance.
 
+## JSA-CONF-006: Gmail as the first `EmailSource`
+
+### Least privilege is the mechanism, not the intention
+
+```text
+requested scope:  https://www.googleapis.com/auth/gmail.readonly
+never:            gmail.modify · gmail.send · mail.google.com
+```
+
+The agent does not mark as read, move, delete or send anything, and the scope is what makes that
+mechanically true rather than a promise in a docstring. `gmail.metadata` alone is **not** enough: the
+confirmation requires reading subject and body in memory to find the receipt language and the
+corroborations.
+
+The scope is enforced on the way in as well: a token whose recorded scopes contain anything beyond
+readonly is refused, and an authorization that grants more than readonly is rejected *before* the
+token is written. Credentials that can do more than the task are not the credentials of this system.
+
+### Credential layout, and the gates on reading it
+
+```text
+~/.config/jobsearch-agent/gmail/
+├── client_secret.json   OAuth client — application configuration
+└── token.json           access/refresh token — the user's local secret
+```
+
+Directory `0700`, files `0600`, and this is verified **on read**, not only applied on write: a token
+that group or other can read is refused, because the right answer to a possibly leaked secret is to
+reauthorize, not to keep using it. Both gates run over the JSON document without importing a Google
+library, so the privacy policy is testable without credentials and without network.
+
+Neither file ever enters `Application.context`, the event journal, `confirmation_evidence`, artifacts,
+logs or stdout. `credentials_summary` exists so the status command can say "this is configured"
+without saying what it is configured with.
+
+Access is established by a command of its own, which only establishes access:
+
+```bash
+jobsearch-agent integrations gmail authorize     # consent in the normal browser, callback on localhost
+jobsearch-agent integrations gmail status        # read-only summary, no secret
+```
+
+### Incremental query, and who decides the window
+
+```text
+Gmail query `after:<epoch>`  ──►  reduces the universe
+message internalDate         ──►  decides: internalDate >= MANUAL_SUBMISSION_REPORTED − tolerance
+```
+
+Even when the provider's search syntax already filters by date, the real message timestamp is
+validated a second time. The semantics of the window stay decided by this system: if Gmail's query
+semantics change, the window does not. A message the query returned but whose timestamp precedes the
+window is not evidence — and a message without `internalDate` cannot be placed in time, so it is not
+evidence either.
+
+`reference` is the **opaque id returned by the API**, never the `Message-ID` header: the header can
+carry the sender's domain, and the evidence must not.
+
+### A failure is not an absence
+
+```text
+401 · 5xx · timeout · refused refresh  ──►  ConfirmationSourceUnavailable   (an error)
+empty result                           ──►  "no confirmation evidence observed"  (a result)
+```
+
+The two are deliberately different types. `ConfirmationSourceUnavailable` propagates through
+reconciliation: nothing is persisted, the Application state does not change, and the operator sees a
+failure instead of a conclusion. "I could not look" can never be read as "there was nothing there",
+and therefore never as "there was no submission".
+
+### Why not IMAP now
+
+IMAP would work, but an app password is a long-lived secret, message ids and search semantics vary
+more across providers, and incremental retrieval is less convenient — with worse credential
+management for no extra capability here. IMAP remains a future adapter behind the same `EmailSource`
+port, useful for Outlook, corporate mail and generic providers.
+
 ## Consequences
 
 - The manual flow can finally reach `SUBMITTED` without any user declaration: automation → anti-bot

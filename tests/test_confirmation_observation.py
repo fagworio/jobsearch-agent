@@ -21,7 +21,7 @@ from jobsearch_agent.confirmation import (
     ConfirmationObservationError,
     ConfirmationReconciliationService,
     EmailConfirmationObserver,
-    EmailRecord,
+    EmailMessage,
     StaticEmailSource,
     ats_domains,
     match_email,
@@ -54,12 +54,12 @@ def _record(
     body: str = "",
     minutes_ago: float = 2.0,
 ) -> EmailRecord:
-    return EmailRecord(
-        message_id=message_id,
+    return EmailMessage(
+        reference=message_id,
+        observed_at=_instant(minutes_ago),
         sender=sender,
         subject=subject,
         body=body,
-        received_at=_instant(minutes_ago),
     )
 
 
@@ -269,11 +269,11 @@ def test_the_tolerance_covers_a_slightly_earlier_timestamp(tmp_path):
 def test_a_hostile_record_neither_confirms_nor_crashes(tmp_path):
     world = _awaiting(tmp_path, "hostile")
     future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
-    weird = EmailRecord(
-        message_id="18f0a1b2c3d4e5f6",
+    weird = EmailMessage(
+        reference="18f0a1b2c3d4e5f6",
+        observed_at=future,
         sender="no-reply@greenhouse.io",
         subject="We received your application",
-        received_at=future,
     )
     result = world.service.reconcile(world.application_id, email_sources=[StaticEmailSource([weird])])
     assert result.detected == ()

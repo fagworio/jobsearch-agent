@@ -9,8 +9,10 @@ from pathlib import Path
 
 from .application import ApplicationDomainError, ApplicationService, context_from_dict
 from .config import Settings
+from .confirmation import ConfirmationObservationError, ConfirmationSourceUnavailable
 from .greenhouse import GreenhouseSubmissionExecutor
 from .handoff import HumanHandoffService
+from .integrations.email.oauth import GMAIL_READONLY_SCOPE, GmailAuthError, GmailConfigError
 from .llm import LLMError
 from .linkedin.inspector import LinkedInInspector
 from .models import to_dict
@@ -143,6 +145,21 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_report)
     application_report.add_argument("application_id")
     application_report.set_defaults(handler="application_report_manual_submit")
+    application_reconcile = application_sub.add_parser(
+        "reconcile-confirmation",
+        help="procura evidencia independente de confirmacao (somente leitura)",
+        description=(
+            "Roda os observadores de confirmacao sobre a janela aberta por "
+            "MANUAL_SUBMISSION_REPORTED, registra o que foi observado e submete ao "
+            "portao do dominio. Falha da fonte de dados NUNCA significa ausencia "
+            "de confirmacao: a Application nao muda de estado."
+        ),
+    )
+    runtime_options(application_reconcile)
+    application_reconcile.add_argument("application_id")
+    application_reconcile.add_argument("--gmail-dir", default=None, help="diretorio das credenciais do Gmail")
+    application_reconcile.add_argument("--max-messages", type=int, default=None)
+    application_reconcile.set_defaults(handler="application_reconcile_confirmation")
     application_status = application_sub.add_parser("status", help="consulta uma Application")
     runtime_options(application_status)
     application_status.add_argument("application_id")
@@ -227,6 +244,21 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
     status.set_defaults(handler="status")
+
+    integrations = sub.add_parser("integrations", help="acesso a servicos externos (opcional)")
+    integrations_sub = integrations.add_subparsers(dest="integrations_command")
+    gmail = integrations_sub.add_parser("gmail", help="acesso somente leitura a caixa do Gmail")
+    gmail_sub = gmail.add_subparsers(dest="gmail_command")
+    gmail_authorize = gmail_sub.add_parser(
+        "authorize",
+        help="estabelece o acesso (escopo gmail.readonly); nao confirma candidatura",
+    )
+    gmail_authorize.add_argument("--gmail-dir", default=None)
+    gmail_authorize.add_argument("--no-browser", dest="open_browser", action="store_false", default=True)
+    gmail_authorize.set_defaults(handler="gmail_authorize")
+    gmail_status = gmail_sub.add_parser("status", help="estado da credencial, sem revelar segredo")
+    gmail_status.add_argument("--gmail-dir", default=None)
+    gmail_status.set_defaults(handler="gmail_status")
     return parser
 
 
@@ -411,6 +443,42 @@ def main(argv: list[str] | None = None) -> int:
             result = run_preflight(args.url, settings.resolve(settings.artifacts_dir))
             _print(result)
             return 0 if result.status in {"READY", "DOM_UNSTABLE", "UNSUPPORTED_FORM", "UNSUPPORTED_PROVIDER"} else 2
+        if args.handler == "application_reconcile_confirmation":
+            from .confirmation import ConfirmationReconciliationService
+            from .integrations.email import GmailApiClient, GmailEmailSource, GmailPaths, load_credentials
+            from .integrations.email.gmail import DEFAULT_MAX_MESSAGES
+
+            paths = GmailPaths.default(args.gmail_dir)
+            credentials = load_credentials(paths)
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                result = ConfirmationReconciliationService(db).reconcile(
+                    args.application_id,
+                    email_sources=[
+                        GmailEmailSource(
+                            GmailApiClient(credentials),
+                            max_messages=args.max_messages or DEFAULT_MAX_MESSAGES,
+                        )
+                    ],
+                )
+                _print({
+                    "reconciliation": result.to_dict(),
+                    "application": _application_view(db.get_application(args.application_id)),
+                })
+                return 0 if result.accepted else 2
+            finally:
+                db.close()
+        if args.handler == "gmail_authorize":
+            from .integrations.email import GmailPaths, authorize
+
+            summary = authorize(GmailPaths.default(args.gmail_dir), open_browser=args.open_browser)
+            _print({**summary, "scope": GMAIL_READONLY_SCOPE, "confirms_applications": False})
+            return 0
+        if args.handler == "gmail_status":
+            from .integrations.email import GmailPaths, credentials_summary
+
+            _print(credentials_summary(GmailPaths.default(args.gmail_dir)))
+            return 0
         if args.handler == "status":
             db = Database(settings.resolve(settings.db_path))
             try:
@@ -536,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if result.status == "SUBMITTED" else 2
             finally:
                 db.close()
-    except (ApplicationConflict, ApplicationDomainError, SubmissionBoundaryError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (ApplicationConflict, ApplicationDomainError, SubmissionBoundaryError, ProfileError, PipelineError, LLMError, SourceError, OSError, ValueError, json.JSONDecodeError, ConfirmationObservationError, ConfirmationSourceUnavailable, GmailAuthError, GmailConfigError) as exc:
         _print({"error": str(exc), "type": type(exc).__name__})
         return 2
     return 2

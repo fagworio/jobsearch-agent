@@ -31,6 +31,14 @@ python-jobspy = ">=1.1,<2.0"
 [tool.poetry.group.browser.dependencies]
 playwright = ">=1.48,<2.0"
 
+# JSA-CONF-006: leitura da caixa de e-mail para confirmacao observavel. Grupo
+# OPCIONAL de proposito: o nucleo, o handoff e os testes rodam sem credencial,
+# sem rede e sem cliente do Google instalado. O escopo usado e somente
+# gmail.readonly; ver docs/adr/0006-observable-confirmation.md.
+[tool.poetry.group.gmail.dependencies]
+google-api-python-client = ">=2.100,<3.0"
+google-auth-oauthlib = ">=1.2,<2.0"
+
 [tool.poetry.scripts]
 jobsearch-agent = "jobsearch_agent.cli:main"
 

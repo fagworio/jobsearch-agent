@@ -247,6 +247,36 @@ O que fica persistido é a evidência, jamais a mensagem:
 Assunto, corpo, remetente e nome de exibição existem só durante o matching. Um `Message-ID` RFC (que
 pode carregar o domínio do remetente) vira digest; o id opaco da API do provedor é usado como está.
 
+### Gmail: acesso somente leitura, e falha não é ausência
+
+A primeira implementação de caixa é o Gmail, com **least privilege** — o único escopo pedido é
+`gmail.readonly`. O agente não marca como lido, não move, não exclui e não envia; um token cujos
+escopos registrados passem disso é recusado, e uma autorização que conceda mais que readonly é
+rejeitada **antes** de o token ser gravado.
+
+```bash
+pip install 'google-api-python-client>=2.100,<3.0' 'google-auth-oauthlib>=1.2,<2.0'   # grupo opcional
+jobsearch-agent integrations gmail authorize   # consentimento no browser; só estabelece acesso
+jobsearch-agent integrations gmail status      # resumo sem segredo
+jobsearch-agent application reconcile-confirmation <application-id>
+```
+
+Credenciais ficam em `~/.config/jobsearch-agent/gmail/` (`client_secret.json` e `token.json`),
+diretório `0700` e arquivos `0600` — **verificados na leitura**, não apenas aplicados na escrita: um
+token que o grupo ou o mundo podem ler é recusado. Nada disso entra em `Application.context`, journal,
+`confirmation_evidence`, artifacts, log ou stdout. O override é `--gmail-dir` / `JOBSEARCH_GMAIL_DIR`.
+
+A consulta usa `after:` só para reduzir o universo; a janela é decidida pelo `internalDate` da
+mensagem, validado uma segunda vez pelo próprio sistema. E a distinção que sustenta o resto:
+
+```text
+401 · 5xx · timeout · refresh recusado  →  ConfirmationSourceUnavailable   (erro)
+caixa vazia                             →  "no confirmation evidence observed"  (resultado)
+```
+
+Um erro da API nunca pode virar "não houve submissão": a Application não muda de estado e o operador
+vê a falha, não uma conclusão.
+
 `fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
 Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos
 casos existe transição automática para `SUBMIT_AUTHORIZED`: o submit sempre exige autorização

@@ -53,6 +53,16 @@ class ConfirmationObservationError(ValueError):
     """A reconciliacao nao pode rodar. Nenhum estado muda."""
 
 
+class ConfirmationSourceUnavailable(RuntimeError):
+    """A fonte nao respondeu: 401, 5xx, timeout, refresh recusado.
+
+    Isto e DELIBERADAMENTE um erro, e nao um resultado vazio. "Nao consegui
+    olhar" e "olhei e nao havia nada" sao coisas diferentes, e so a segunda pode
+    ser lida como ausencia de confirmacao. Um erro da API nunca pode virar
+    "nao houve submissao".
+    """
+
+
 #: Vocabulario de RECEBIMENTO. Nao e palavra de marketing: e a linguagem que um
 #: ATS usa para dizer que a candidatura chegou. Comparada sobre texto
 #: normalizado (sem acento, minusculo).
@@ -141,26 +151,26 @@ def _compact(text: str) -> str:
 
 
 @dataclass(frozen=True)
-class EmailRecord:
+class EmailMessage:
     """Uma mensagem, como o observador a recebeu.
 
-    `body` existe para o matching e NAO e persistido. `message_id` e a
+    `body` existe para o matching e NAO e persistido. `reference` e a
     referencia: quando ja e um token opaco (o id da API do Gmail, por exemplo)
     ele e usado como esta; um `Message-ID` RFC, que pode carregar o dominio do
     remetente, vira digest.
     """
 
-    message_id: str
-    sender: str
-    subject: str
-    received_at: str
+    reference: str
+    observed_at: str
+    sender: str = ""
+    subject: str = ""
     body: str = ""
     thread_id: str = ""
 
     def __post_init__(self) -> None:
-        if not self.message_id:
-            raise ValueError("email record requires a message id")
-        _instant(self.received_at)
+        if not self.reference:
+            raise ValueError("email message requires a reference")
+        _instant(self.observed_at)
 
     @property
     def sender_domain(self) -> str:
@@ -171,7 +181,10 @@ class EmailRecord:
 class EmailSource(Protocol):
     """Porto de leitura da caixa. Gmail e uma implementacao; fixture e outra."""
 
-    def messages_since(self, since: datetime) -> Iterable[EmailRecord]: ...
+    #: Rotulo que vai para a evidencia (`gmail`, `imap`, `email`).
+    provider: str
+
+    def messages_since(self, since: datetime) -> Iterable[EmailMessage]: ...
 
 
 class ConfirmationObserver(Protocol):
@@ -183,11 +196,13 @@ class ConfirmationObserver(Protocol):
 class StaticEmailSource:
     """Caixa em memoria: fixture de teste e backfill de mensagens ja colhidas."""
 
-    def __init__(self, records: Sequence[EmailRecord]):
+    provider = "email"
+
+    def __init__(self, records: Sequence[EmailMessage]):
         self.records = tuple(records)
 
-    def messages_since(self, since: datetime) -> list[EmailRecord]:
-        return [record for record in self.records if _instant(record.received_at) >= since]
+    def messages_since(self, since: datetime) -> list[EmailMessage]:
+        return [message for message in self.records if _instant(message.observed_at) >= since]
 
 
 #: Tokens de sinal que o observador de e-mail pode emitir. Conjunto fechado: um
@@ -195,9 +210,9 @@ class StaticEmailSource:
 EMAIL_SIGNALS = tuple(CONFIRMATION_SIGNAL_WEIGHTS)
 
 
-def _reference_for(record: EmailRecord) -> str:
+def opaque_reference(message: EmailMessage) -> str:
     """Referencia opaca: o id quando ja e opaco, senao um digest dele."""
-    raw = str(record.message_id or record.thread_id)
+    raw = str(message.reference or message.thread_id)
     if re.fullmatch(r"[a-z0-9_.:-]{1,64}", raw):
         return raw
     return "msg-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
@@ -239,7 +254,7 @@ class EmailMatch:
 
 
 def match_email(
-    record: EmailRecord,
+    message: EmailMessage,
     *,
     job: Job,
     ats: str,
@@ -254,12 +269,12 @@ def match_email(
     piso de aceitacao, que e onde "detectada" vira "aceita".
     """
     reference = now or datetime.now(timezone.utc)
-    received = _instant(record.received_at)
+    received = _instant(message.observed_at)
     if not since <= received <= reference:
         # Fora da janela nao e evidencia fraca: nao e evidencia. Um e-mail antigo
         # da mesma empresa confirmaria uma candidatura que ele nao confirma.
         return None
-    text = f"{record.subject}\n{record.body}"
+    text = f"{message.subject}\n{message.body}"
     normalized = _normalize(text)
     if any(_normalize(phrase) in normalized for phrase in REJECTION_PHRASES):
         return None
@@ -267,9 +282,9 @@ def match_email(
         return None
     signals = ["application_confirmation_phrase"]
 
-    sender_tokens = _tokens(record.sender_domain) | _tokens(record.sender)
+    sender_tokens = _tokens(message.sender_domain) | _tokens(message.sender)
     text_tokens = _tokens(text)
-    haystack = sender_tokens | text_tokens | {_compact(text), _compact(record.sender)}
+    haystack = sender_tokens | text_tokens | {_compact(text), _compact(message.sender)}
 
     company_keys = {key for key in _tokens(job.company, minimum=_MIN_COMPANY_TOKEN)}
     if job.company:
@@ -278,7 +293,7 @@ def match_email(
         signals.append("company_match")
 
     domains = ats_domains(ats)
-    if domains and record.sender_domain in domains:
+    if domains and message.sender_domain in domains:
         signals.append("ats_domain_match")
 
     job_keys = _tokens(job.title, minimum=_MIN_JOB_TOKEN)
@@ -297,26 +312,27 @@ def match_email(
 class EmailConfirmationObserver:
     """Observador de confirmacao por e-mail, independente do provedor de caixa."""
 
-    provider: str = "email"
-
-    def __init__(self, source: EmailSource, *, job: Job, ats: str = ""):
+    def __init__(self, source: EmailSource, *, job: Job, ats: str = "", provider: str | None = None):
         self.source = source
         self.job = job
         self.ats = ats
+        # O rotulo vem da FONTE (`gmail`, `imap`, `email`): quem observou e
+        # propriedade de quem leu a caixa, nao do observador generico.
+        self.provider = provider or getattr(source, "provider", "email")
 
     def observe(self, application: Application, *, since: datetime) -> list[SubmissionConfirmationEvidence]:
         now = datetime.now(timezone.utc)
         evidence: list[SubmissionConfirmationEvidence] = []
-        for record in self.source.messages_since(since):
-            match = match_email(record, job=self.job, ats=self.ats, since=since, now=now)
+        for message in self.source.messages_since(since):
+            match = match_email(message, job=self.job, ats=self.ats, since=since, now=now)
             if match is None:
                 continue
             try:
                 evidence.append(
                     SubmissionConfirmationEvidence(
                         source=ConfirmationSource.CONFIRMATION_EMAIL,
-                        observed_at=record.received_at,
-                        reference=_reference_for(record),
+                        observed_at=message.observed_at,
+                        reference=opaque_reference(message),
                         provider=self.provider,
                         confidence=match.confidence,
                         signals=match.signals,
@@ -404,7 +420,15 @@ class ConfirmationReconciliationService:
 
         delivered: list[SubmissionConfirmationEvidence] = []
         for observer in active:
-            delivered.extend(observer.observe(application, since=since))
+            try:
+                delivered.extend(observer.observe(application, since=since))
+            except ConfirmationSourceUnavailable as exc:
+                # Falha de fonte NAO e ausencia de evidencia: propaga como erro
+                # explicito, e nada e persistido. A Application continua onde
+                # estava, e o operador sabe que a pergunta ficou sem resposta.
+                raise ConfirmationSourceUnavailable(
+                    f"confirmation source unavailable for {application_id}: {exc}"
+                ) from exc
 
         # Detectada != aceita: TUDO o que foi visto e persistido antes de qualquer
         # decisao, inclusive o que nao alcanca o piso. Recusar nao pode significar
