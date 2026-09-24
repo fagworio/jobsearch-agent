@@ -31,6 +31,9 @@ dist/
 # Credenciais locais de integracao (JSA-CONF-006). O caminho padrao fica fora do
 # repositorio (~/.config/jobsearch-agent/gmail); isto e defesa em profundidade
 # para quem apontar JOBSEARCH_GMAIL_DIR para dentro do projeto.
-client_secret.json
+# Padrao amplo de proposito: `client_secret_gmail.json` (uma copia deixada na
+# raiz do repositorio) passava pelas entradas exatas e aparecia como untracked
+# num `git add -A`.
+client_secret*.json
 token.json
 gmail/
