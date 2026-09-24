@@ -220,8 +220,15 @@ class BrowserSubmitter:
                 observed.get("http_status"),
                 observed,
                 error=(
-                    "anti-bot verification rejected a submission that was sent; "
-                    "human handoff required (the agent will not disguise automation)"
+                    # Atribuicao, nao causa provada: o que se observou foi o POST
+                    # sair e o provedor NAO confirmar. O provider do desafio vem
+                    # dos sinais (dom/frames/network/response) e a causa interna
+                    # da decisao do provedor nao e observavel: nomear o provedor
+                    # aqui seria gravar a atribuicao como fato.
+                    "the submission was sent (one authorized POST) and the provider did not "
+                    "confirm it; the observed signals are compatible with an anti-bot challenge "
+                    "(attribution, not proven cause). Human handoff required: the agent does not "
+                    "disguise the automated environment nor reuse challenge tokens"
                 ),
             )
         return BrowserSubmissionOutcome(status, completed.id, observed.get("http_status"), observed)

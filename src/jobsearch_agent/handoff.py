@@ -61,7 +61,11 @@ _INSTRUCTION_LIMIT = 240
 _CONTENT_FIELDS = (
     "application_id",
     "job_id",
+    #: Provider do ATS (quem hospeda a candidatura). NAO confundir com a
+    #: atribuicao do desafio: `challenge_provider` e o que o detector observou, e
+    #: a causa interna da recusa nao e observavel.
     "provider",
+    "challenge_provider",
     "reason_token",
     "challenge_session_id",
     "destination",
@@ -106,11 +110,20 @@ def _content_of(fields: Mapping[str, Any]) -> dict[str, Any]:
     """Unico lugar que sabe converter os campos para a forma serializada."""
     data: dict[str, Any] = {}
     for name in _CONTENT_FIELDS:
-        value = fields[name]
+        # `.get`: um registro gravado antes de um campo novo existir nao pode
+        # quebrar a leitura. A presenca obrigatoria e cobrada no `create`, que
+        # indexa os campos antes de chamar isto.
+        value = fields.get(name, "")
         if name == "approved_answers":
             value = [row.to_dict() if isinstance(row, HandoffAnswer) else dict(row) for row in value]
         elif name == "instructions":
             value = [str(item) for item in value]
+        if name == "challenge_provider" and not str(value or "").strip():
+            # Campo acrescentado DEPOIS: pacotes ja gravados nao o tem, e o digest
+            # deles foi calculado sem ele. Omitir o vazio mantem a verificacao de
+            # integridade valida para os dois formatos — e um pacote novo com
+            # atribuicao observada continua coberto pelo digest.
+            continue
         data[name] = value
     return data
 
@@ -150,6 +163,9 @@ class HumanHandoffPackage:
     package_path: str
     package_sha256: str
     created_at: str
+    #: Atribuicao do desafio observado (ex.: `recaptcha_enterprise`), separada do
+    #: provider do ATS. Atribuicao NAO e causa provada.
+    challenge_provider: str = ""
 
     def __post_init__(self) -> None:
         for name in ("package_id", "provider", "reason_token"):
@@ -157,6 +173,8 @@ class HumanHandoffPackage:
                 raise HandoffError(f"{name} must be a short lowercase token")
         if self.challenge_session_id and not _SAFE_TOKEN.fullmatch(self.challenge_session_id):
             raise HandoffError("challenge_session_id must be a short lowercase token")
+        if self.challenge_provider and not _SAFE_TOKEN.fullmatch(self.challenge_provider):
+            raise HandoffError("challenge_provider must be a short lowercase token")
         if self.continuation not in _CONTINUATIONS:
             raise HandoffError(f"unsupported handoff continuation: {self.continuation}")
         public_url(self.destination, "destination")
@@ -210,7 +228,7 @@ class HumanHandoffPackage:
             **{
                 name: str(data[name])
                 for name in _CONTENT_FIELDS
-                if name not in {"approved_answers", "instructions"}
+                if name not in {"approved_answers", "instructions"} and name in data
             },
         )
 
@@ -227,6 +245,9 @@ class HumanHandoffPackage:
             "application_id": self.application_id,
             "job_id": self.job_id,
             "provider": self.provider,
+            # Atribuicao do detector: `provider` e o ATS; isto e o que os sinais
+            # observados sugerem, nunca a causa provada da recusa.
+            "challenge_provider": self.challenge_provider,
             "reason_token": self.reason_token,
             "challenge_session_id": self.challenge_session_id,
             "destination": self.destination,
@@ -263,6 +284,7 @@ def _package_id(
     application_id: str,
     job_id: str,
     provider: str,
+    challenge_provider: str,
     reason_token: str,
     challenge_session_id: str,
     destination: str,
@@ -275,6 +297,7 @@ def _package_id(
         "application_id": application_id,
         "job_id": job_id,
         "provider": provider,
+        "challenge_provider": challenge_provider,
         "reason_token": reason_token,
         "challenge_session_id": challenge_session_id,
         "destination": destination,
@@ -319,9 +342,13 @@ class HumanHandoffService:
         attempt = self._recorded_rejection(application)
         observed = (attempt.evidence or {}).get("challenge")
         observed = observed if isinstance(observed, dict) else {}
-        provider = str(observed.get("provider", ""))
+        # A atribuicao vem dos sinais observados; o provider do pacote e o do
+        # ATS (quem hospeda a candidatura). Misturar os dois fazia o pacote
+        # dizer `provider: recaptcha_enterprise` — atribuicao lida como causa.
+        challenge_provider = str(observed.get("provider", ""))
+        provider = str(attempt.provider or "")
         reason_token = str(observed.get("reason_token", ""))
-        if not provider or not reason_token:
+        if not challenge_provider or not reason_token:
             raise HandoffError(
                 "the recorded rejection has no challenge provenance; "
                 "rerun the live flow so the observation is recorded"
@@ -329,7 +356,7 @@ class HumanHandoffService:
         job = self.database.get_job(application.job_id)
         page_url = self._apply_url(attempt.provider, job) if job is not None else ""
         handoff = recorded_handoff(
-            provider=provider,
+            provider=challenge_provider,
             reason_token=reason_token,
             session_id=str(observed.get("session_id", "")),
             page_url=page_url,
@@ -392,14 +419,18 @@ class HumanHandoffService:
         recorded = (attempt.evidence or {}).get("challenge")
         recorded = recorded if isinstance(recorded, dict) else {}
 
-        provider = str(challenge_handoff.get("provider") or recorded.get("provider") or "")
+        # `challenge_provider` e ATRIBUICAO (o que os sinais observados
+        # sugerem); `provider` e o ATS que hospeda a candidatura. O pacote
+        # carrega os dois separados, e so o segundo descreve o board.
+        challenge_provider = str(challenge_handoff.get("provider") or recorded.get("provider") or "")
+        provider = str(attempt.provider or "")
         reason_token = str(challenge_handoff.get("reason_token") or recorded.get("reason_token") or "")
         session_id = str(challenge_handoff.get("challenge_session_id") or recorded.get("session_id") or "")
-        if not provider or not reason_token:
+        if not challenge_provider or not reason_token:
             raise HandoffError("handoff requires the challenge provider and reason observed at the rejection")
         # A observacao do desafio vem do challenge-guard; ela nao pode contradizer
         # o que ficou registrado na tentativa.
-        for name, value in (("provider", provider), ("reason_token", reason_token)):
+        for name, value in (("provider", challenge_provider), ("reason_token", reason_token)):
             stored = str(recorded.get(name, ""))
             if stored and stored != value:
                 raise HandoffError(f"handoff {name} does not match the recorded rejection")
@@ -423,6 +454,7 @@ class HumanHandoffService:
             application_id=application.id,
             job_id=application.job_id,
             provider=provider,
+            challenge_provider=challenge_provider,
             reason_token=reason_token,
             challenge_session_id=session_id,
             destination=destination,
@@ -442,6 +474,7 @@ class HumanHandoffService:
             application_id=application.id,
             job_id=application.job_id,
             provider=provider,
+            challenge_provider=challenge_provider,
             reason_token=reason_token,
             challenge_session_id=session_id,
             destination=destination,

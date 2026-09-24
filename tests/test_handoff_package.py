@@ -212,7 +212,10 @@ def test_the_package_is_built_and_the_state_moves(tmp_path):
     assert world.database.get_application(world.application_id).state is ApplicationState.HANDOFF_IN_PROGRESS
     assert package.resume_sha256 == hashlib.sha256(world.resume.read_bytes()).hexdigest()
     assert package.destination == DESTINATION
-    assert package.provider == "hcaptcha"
+    # `provider` e o ATS que hospeda a candidatura; a atribuicao do detector
+    # fica em campo proprio, para nao ser lida como causa provada da recusa.
+    assert package.provider == "lever"
+    assert package.challenge_provider == "hcaptcha"
     assert package.reason_token == "provider_rejected_submission"
     assert package.challenge_session_id == "challenge-session-0001"
     assert package.continuation == "manual_final"
@@ -540,3 +543,44 @@ def test_the_recorded_challenge_evidence_keeps_its_provenance(tmp_path):
     for forbidden in ("sitekey", "token-never-persisted", "provider payload", CANDIDATE_EMAIL):
         assert forbidden not in serialized, f"a evidencia vazou {forbidden!r}"
     world.database.close()
+
+
+def test_a_package_recorded_before_the_attribution_split_is_still_readable():
+    """Pacotes gravados ANTES do campo `challenge_provider` nao podem quebrar.
+
+    Naquele formato `provider` carregava a ATRIBUICAO do detector. O digest
+    gravado foi calculado sem o campo novo; omitir o vazio mantem a verificacao
+    de integridade valida para os dois formatos.
+    """
+    from jobsearch_agent.handoff import HumanHandoffPackage, _content_of, _digest
+
+    legacy_fields = {
+        "application_id": "application-legacy",
+        "job_id": "job-legacy",
+        "provider": "hcaptcha",
+        "reason_token": "provider_rejected_submission",
+        "challenge_session_id": "challenge-session-0001",
+        "destination": DESTINATION,
+        "page_url": DESTINATION,
+        "company": "Acme",
+        "title": "Engineer",
+        "resume_path": "resume.pdf",
+        "resume_sha256": "a" * 64,
+        "answers_fingerprint": "b" * 64,
+        "approved_answers": [],
+        "continuation": "manual_final",
+        "instructions": ["Do not resend automatically: finish the application manually."],
+        "package_path": "job-legacy/handoff/hpkg-legacy/package.json",
+        "created_at": "2026-09-24T00:00:00+00:00",
+    }
+    # Digest como o formato ANTIGO calculava: sem o campo novo no conteudo.
+    legacy_sha = _digest(_content_of(legacy_fields))
+
+    package = HumanHandoffPackage.from_dict(
+        {"package_id": "hpkg-legacy", "package_sha256": legacy_sha, **legacy_fields}
+    )
+
+    assert package.package_sha256 == legacy_sha
+    assert package.provider == "hcaptcha"  # semantica do registro antigo
+    assert package.challenge_provider == ""
+    assert "challenge_provider" not in package.content()

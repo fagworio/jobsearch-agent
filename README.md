@@ -320,6 +320,29 @@ outro pacote, e o anterior continua auditável com exatamente o que foi aprovado
 guarda só referência e tokens curtos — nunca respostas, currículo ou PII. A saída do comando é a
 visão segura do pacote (sem respostas e sem caminhos absolutos).
 
+#### Qual é o caminho padrão quando o provedor não confirma
+
+O POST ter saído **não** é a candidatura ter sido registrada. Quando a tentativa chega ao provedor e
+ele não confirma (`NEEDS_HUMAN_CAPTCHA`), a ordem é:
+
+```text
+1. handoff para envio manual em navegador normal   <- padrão
+2. retry explícito no browser automatizado         <- avançado, diagnóstico
+3. encerrar mantendo a evidência
+```
+
+O handoff é o padrão porque tirar o ambiente automatizado da etapa inevitável é o único caminho que
+não depende de o provedor reapreciar a mesma classificação de ambiente. Repetir
+`Playwright + janela visível + humano resolvendo o desafio` não transforma aquele browser em um
+navegador normal — e já se observou recusa **depois** de um humano resolver o desafio numa sessão
+automatizada (ver [`docs/references/provider-certification.md`](docs/references/provider-certification.md)).
+
+O retry continua existindo para diagnóstico, ou quando houver evidência de que a recusa anterior não
+veio do ambiente. O que o agente **não** faz, em nenhum caminho: esconder `webdriver`, alterar
+fingerprint, forjar plugins/navegador, ou extrair, reutilizar e reinjetar token de desafio. Um humano
+pode interagir normalmente com um desafio apresentado; isso não é, e não é descrito como, solução
+para fingerprinting.
+
 A proveniência do desafio (provider, motivo no conjunto fechado do `challenge-guard` e id da sessão) é
 gravada na tentativa recusada. Sem ela o pacote não é reconstruível e o comando falha em vez de
 inventar o motivo. A forma que chega da biblioteca é a evidência **redigida**, com `sources` e

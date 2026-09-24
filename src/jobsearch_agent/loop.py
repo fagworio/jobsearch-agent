@@ -294,7 +294,7 @@ class ApplicationLoop:
             # `answers_fingerprint` = TODAS as respostas, de TODAS as etapas.
             form_fingerprint = live.form_fingerprint
             answers_fingerprint = journey.answers_fingerprint()
-            application = self._record_review(service, application, live)
+            application = self._record_review(service, application, live, journey)
             if not submit:
                 return self._result(
                     application,
@@ -563,8 +563,17 @@ class ApplicationLoop:
         service: ApplicationService,
         application: Application,
         live: LiveApplicationResult,
+        journey: ApplicationJourney | None = None,
     ) -> Application:
-        """Registra que o preenchimento chegou a superficie de revisao."""
+        """Registra que o preenchimento chegou a superficie de revisao.
+
+        Persiste o formulario ACUMULADO (`journey.as_form()`), o mesmo material
+        que o snapshot de review aprova. Gravar apenas a ultima tela deixava o
+        banco com um formulario diferente do snapshot, e o handoff humano
+        recusava por integridade ("approved answers changed after the review
+        snapshot") numa candidatura de mais de uma tela — exatamente o caminho
+        que fecha a funcao central do produto.
+        """
         if application.state is ApplicationState.MATERIALS_READY:
             application = service.transition(
                 application.id,
@@ -579,6 +588,8 @@ class ApplicationLoop:
                 "live_fill_review_reached",
                 {"network_access": "browser_guarded", "submission_attempted": False},
             )
+        if journey is not None and journey.steps:
+            self.database.save_application_form(application.id, journey.as_form())
         return application
 
     def _state(self, application_id: str) -> ApplicationState:

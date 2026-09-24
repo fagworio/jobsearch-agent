@@ -115,17 +115,78 @@ observação, o contexto de execução era destruído e o guard reprovava um
 formulário que estava **parado** (censo de 0 mutações em 4s). Agora uma navegação
 reobserva dentro do mesmo orçamento.
 
-### Desfecho observado
+### Desfecho observado — o que é FATO e o que é ATRIBUIÇÃO
 
 ```text
-upload_writes_used: 1        o currículo chegou ao board
-submission_writes: 1         o POST da candidatura saiu (exatamente uma escrita)
-state: NEEDS_HUMAN_CAPTCHA
-challenge: provider=recaptcha_enterprise  reason_token=provider_rejected_submission
-           decision=provider_rejected  confidence=0.85  session=challenge-session-0001
+resume upload        concluído            (upload_writes_used: 1)
+submission POST      enviado: 1           (submission_writes: 1)
+provider response    NÃO observado como aceite   (status_code: nenhum capturado)
+application          NÃO confirmada        (confirmed_submission: false)
+state                NEEDS_HUMAN_CAPTCHA
 ```
 
-O board aceitou o upload e o POST, e recusou a candidatura na verificação
-anti-bot — o mesmo desfecho do caso CI&T/Lever. O agente **não** contorna nem
-disfarça automação (ADR 0001/0003): o caminho previsto é o humano resolver o
-desafio numa janela visível, ou seguir com o pacote de handoff.
+O currículo foi enviado e a tentativa de submissão realizou exatamente um POST
+autorizado. O provedor processou a requisição, **mas não há evidência de
+candidatura aceita**: nenhuma resposta 2xx foi capturada e nenhum marcador de
+confirmação apareceu. O POST ter saído não é o mesmo que a candidatura ter sido
+registrada.
+
+O que sustenta a decisão de parar é a **atribuição do detector**, e ela não pode
+ser lida como causa provada:
+
+```text
+challenge attribution: recaptcha_enterprise
+decision:              provider_rejected_submission   (provider_rejected)
+confidence:            0.85
+signal kinds:          challenge_visible, challenge_traffic, verification_rejected
+sources:               dom, frames, network, response, recaptcha_enterprise
+session:               challenge-session-0001
+```
+
+Objetivamente: o POST ocorreu, o provedor não confirmou, e os sinais observados
+foram **compatíveis** com aquele desafio/provider. A causa interna da decisão do
+provedor continua não observável — "o reCAPTCHA Enterprise rejeitou" seria gravar
+a atribuição como fato.
+
+A submissão automática terminou em rejeição do provedor. O agente não mascara o
+ambiente automatizado nem reutiliza token de desafio (ADR 0001/0003). O caminho
+seguro daqui é concluir a candidatura em um **navegador normal** (handoff),
+porque o problema pode ser a classificação do próprio ambiente — e não
+simplesmente "resolver CAPTCHA" que falta.
+
+#### Correções de vocabulário e de registro (mesmo dia)
+
+- **Atribuição ≠ causa.** O texto do executor dizia "anti-bot verification
+  rejected a submission that was sent", lendo a atribuição como fato. Passou a
+  dizer que o POST saiu, que o provedor **não confirmou** e que os sinais
+  observados são *compatíveis* com um desafio — atribuição, não causa provada.
+- **Provider do ATS ≠ provider do desafio.** O pacote de handoff gravava
+  `provider: recaptcha_enterprise`, misturando os dois. O modelo agora tem
+  `provider` (o ATS que hospeda a candidatura) e `challenge_provider` (a
+  atribuição do detector), ambos no digest de conteúdo. Pacotes gravados antes
+  da separação continuam legíveis: o campo novo vazio fica fora do conteúdo, e o
+  digest antigo continua válido — há teste para isso.
+- **Formulário do review.** O loop persistia apenas a última tela, e o handoff
+  recusava por integridade ("approved answers changed after the review
+  snapshot") quando havia mais de uma tela. Agora o loop persiste o contrato
+  **acumulado**, o mesmo material que o snapshot aprova. O registro desta vaga
+  foi recomposto a partir do próprio snapshot, e o reparo só foi aceito porque o
+  fingerprint resultante bateu exatamente com o material aprovado.
+
+#### Certificação desta execução (por nível, não por "E2E")
+
+```text
+GREENHOUSE (vaga real da Fueled)
+  DISCOVERY_SUPPORTED     ok
+  INSPECTION_SUPPORTED    ok
+  FILL_SUPPORTED          ok   (20 respostas, unanswered_required = [])
+  UPLOAD_SUPPORTED        ok   (upload_writes_used = 1)
+  SUBMISSION_REACHED      ok   (POST enviado: 1)
+  PROVIDER_ACCEPTANCE     FALHOU  (sem confirmação; candidatura NÃO registrada)
+  E2E_CERTIFIED           NÃO
+```
+
+O mesmo padrão existe agora em **dois ATS externos diferentes** (Lever/CI&T e
+Greenhouse/Fueled): o caminho automatizado chega ao POST e o provedor não
+confirma. Isso muda a prioridade do roadmap — ver
+`docs/references/provider-certification.md`.
