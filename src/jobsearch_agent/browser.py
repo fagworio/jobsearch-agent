@@ -17,6 +17,10 @@ from urllib.parse import urlparse
 from .execution import ExecutionPlan, validate_execution_context
 from .inspector import FormBindings, fingerprint_html
 from .models import ApplicationContext, ValidationResult
+from .inspection import (
+    INSPECTION_STAGE_FORM_DISCOVERY,
+    AuthorizedInspectionRequest,
+)
 from .qa import AFFIRM_MARKERS, AFFIRM_SOURCE, DECLINE_MARKERS, DECLINE_SOURCE
 
 
@@ -89,6 +93,10 @@ class NetworkWriteGuard:
         self._pending_reads: set[int] = set()
         self._authorized_writes: list[AuthorizedWrite] = []
         self._authorized_usage: list[int] = []
+        # Orcamento separado do de escrita: uma inspecao read-only nao pode
+        # consumir nem liberar credito de upload ou de submissao.
+        self._authorized_inspections: list[AuthorizedInspectionRequest] = []
+        self._inspection_usage: list[int] = []
 
     @property
     def authorized_write(self) -> AuthorizedWrite | None:
@@ -137,6 +145,48 @@ class NetworkWriteGuard:
         """Revoga as permissoes mantendo o registro de uso (auditoria)."""
         self._authorized_writes = []
 
+    def arm_inspections(self, permits: list[AuthorizedInspectionRequest]) -> None:
+        """Autoriza requisicoes de inspecao read-only, com orcamento proprio."""
+        for permit in permits:
+            if permit.max_requests < 1:
+                raise ValueError("authorized inspection must allow at least one request")
+        self._authorized_inspections = list(permits)
+        self._inspection_usage = [0] * len(permits)
+
+    def disarm_inspections(self) -> None:
+        self._authorized_inspections = []
+
+    @property
+    def inspections_used(self) -> int:
+        return sum(self._inspection_usage)
+
+    @property
+    def inspection_usage(self) -> list[tuple[AuthorizedInspectionRequest, int]]:
+        return list(zip(self._authorized_inspections, self._inspection_usage))
+
+    def _inspect_authorized_request(self, method: str, url: str, body: str, resource_type: str) -> tuple[bool, str]:
+        """Tenta cobrir um POST por uma permissao de inspecao.
+
+        Devolve (coberto, motivo). O motivo sempre pertence ao conjunto fechado,
+        porque e o que sobrevive a redacao na auditoria.
+        """
+        last_reason = "INSPECTION_OPERATION_NOT_ALLOWED"
+        for position, permit in enumerate(self._authorized_inspections):
+            if self._inspection_usage[position] >= permit.max_requests:
+                last_reason = "INSPECTION_BUDGET_EXHAUSTED"
+                continue
+            verdict = permit.validate(
+                method=method,
+                url=url,
+                body=body,
+                stage=INSPECTION_STAGE_FORM_DISCOVERY,
+            )
+            if verdict.covered:
+                self._inspection_usage[position] += 1
+                return True, verdict.reason_token
+            last_reason = verdict.reason_token
+        return False, last_reason
+
     @property
     def blocked_writes(self) -> list[NetworkRequestEvent]:
         return [event for event in self.events if not event.allowed and (event.method not in self.READ_METHODS or event.resource_type == "websocket")]
@@ -170,6 +220,22 @@ class NetworkWriteGuard:
                     self._authorized_usage[position] += 1
                     self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, "authorized submission write"))
                     return True
+            # POST de inspecao read-only: a permissao depende do CONTEUDO
+            # (operacao, tipo de documento e vinculo com a vaga), nao so de
+            # metodo e URL. Vale apenas na fase de descoberta e tem orcamento
+            # proprio, que nao se confunde com o de escrita.
+            if self._authorized_inspections:
+                body = ""
+                try:
+                    body = str(getattr(request, "post_data", "") or "")
+                except Exception:
+                    body = ""
+                covered, token = self._inspect_authorized_request(method, url, body, resource_type)
+                if covered:
+                    self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, f"authorized read-only inspection: {token}"))
+                    return True
+                self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, token))
+                return False
             reason = (
                 "write method blocked in dry-run"
                 if not self._authorized_writes
@@ -916,6 +982,21 @@ class PlaywrightSessionManager:
     def arm_authorized_write(self, permit: AuthorizedWrite) -> None:
         """Autoriza exatamente uma escrita do browser nesta sessao."""
         self.arm_writes([permit])
+
+    def arm_inspections(self, permits: list[AuthorizedInspectionRequest]) -> None:
+        """Autoriza requisicoes de inspecao read-only (fase de descoberta).
+
+        Nao liga o flag de submit nativo: a pagina pode buscar o schema, mas
+        continua incapaz de enviar o formulario enquanto nao houver um permit de
+        submissao.
+        """
+        if not self.guarded or self.network_guard is None:
+            raise BrowserSessionError("cannot authorize an inspection on an unguarded session")
+        self.network_guard.arm_inspections(list(permits))
+
+    def disarm_inspections(self) -> None:
+        if self.network_guard is not None:
+            self.network_guard.disarm_inspections()
 
     def arm_writes(self, permits: list[AuthorizedWrite]) -> None:
         """Autoriza escritas especificas do browser, cada uma com seu orcamento."""

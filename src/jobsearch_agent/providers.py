@@ -26,6 +26,55 @@ class ProviderError(ValueError):
     pass
 
 
+#: Prefixo que marca um valor de binding como chave de contexto do job.
+_CONTEXT_PREFIX = "$"
+
+
+@dataclass(frozen=True)
+class InspectionOperation:
+    """Operação GraphQL read-only que a descoberta do formulário executa.
+
+    ``bindings`` liga o nome da variável ao que ela PODE valer: um valor
+    prefixado com ``$`` vem do contexto do job (``$board``, ``$external_id``);
+    qualquer outro é literal. É esse vínculo que prende a requisição à vaga
+    corrente — sem ele, um permit para o endpoint autorizaria consultar
+    qualquer organização ou qualquer vaga.
+    """
+
+    name: str
+    path: str
+    bindings: tuple[tuple[str, str], ...]
+    #: Variaveis que a operacao aceita mas nao exige. O SPA do Ashby chama
+    #: ApiOrganizationFromHostedJobsPageName com e sem `searchContext`; exigir
+    #: presenca recusaria uma chamada legitima da propria operacao permitida.
+    #: Se presentes, ainda precisam bater com o valor declarado.
+    optional_bindings: tuple[tuple[str, str], ...] = ()
+
+    def _resolve(self, pairs: tuple[tuple[str, str], ...], context: dict[str, str]) -> dict[str, str]:
+        resolved: dict[str, str] = {}
+        for variable, source in pairs:
+            if source.startswith(_CONTEXT_PREFIX):
+                key = source[len(_CONTEXT_PREFIX):]
+                value = str(context.get(key, ""))
+                if not value:
+                    raise ProviderError(f"inspection operation {self.name} requires context key: {key}")
+                resolved[variable] = value
+            else:
+                resolved[variable] = source
+        return resolved
+
+    def resolved_variables(self, context: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+        """(obrigatorias, opcionais) ja resolvidas contra o contexto do job."""
+        required = self._resolve(self.bindings, context)
+        optional = self._resolve(self.optional_bindings, context)
+        if not required:
+            raise ProviderError(f"inspection operation {self.name} declares no bindings")
+        overlap = set(required) & set(optional)
+        if overlap:
+            raise ProviderError(f"inspection operation {self.name} binds twice: {sorted(overlap)}")
+        return required, optional
+
+
 @dataclass(frozen=True)
 class ProviderProfile:
     provider: str
@@ -52,6 +101,15 @@ class ProviderProfile:
     apply_path_suffix: str = ""
     #: True quando o próprio formulário só existe após uma escrita na API.
     form_loaded_by_api_write: bool = False
+    #: Endpoint e operações GraphQL read-only necessárias para revelar o
+    #: formulário. Sem isso, `form_loaded_by_api_write` torna o board
+    #: inalcançável: a inspeção não teria como buscar o schema.
+    inspection_origin: str = ""
+    inspection_path: str = ""
+    inspection_method: str = "POST"
+    inspection_operations: tuple = ()
+    #: Quantas vezes cada operação pode ser pedida (retry do SPA é normal).
+    inspection_max_requests: int = 3
     #: Origens do widget anti-bot que precisam de POST para carregar o desafio.
     #: Não é a candidatura: é o próprio CAPTCHA, que o humano precisa ver para
     #: resolver. Sem estas escritas o desafio nem carrega (o widget chama
@@ -157,9 +215,28 @@ PROFILES: dict[str, ProviderProfile] = {
         confirmation_markers=_FALLBACK_CONFIRMATION,
         apply_path_suffix="/application",
         form_loaded_by_api_write=True,
+        inspection_origin="https://jobs.ashbyhq.com",
+        inspection_path="/api/non-user-graphql",
+        inspection_operations=(
+            InspectionOperation(
+                name="ApiJobPosting",
+                path="/api/non-user-graphql",
+                bindings=(
+                    ("organizationHostedJobsPageName", "$board"),
+                    ("jobPostingId", "$external_id"),
+                ),
+            ),
+            InspectionOperation(
+                name="ApiOrganizationFromHostedJobsPageName",
+                path="/api/non-user-graphql",
+                bindings=(("organizationHostedJobsPageName", "$board"),),
+                optional_bindings=(("searchContext", "JobPosting"),),
+            ),
+        ),
         notes=(
-            "SPA GraphQL: o formulário é carregado por POST para a API, então a "
-            "inspeção também exige uma escrita autorizada."
+            "SPA GraphQL: o formulário é montado a partir de POSTs read-only em "
+            "/api/non-user-graphql (ApiJobPosting). A inspeção usa a boundary de "
+            "inspeção, separada da de submissão."
         ),
     ),
 }
@@ -211,6 +288,17 @@ def apply_url(provider: str, job_url: str) -> str:
     return urlunsplit(
         (parts.scheme, parts.netloc, path + profile.apply_path_suffix, parts.query, parts.fragment)
     )
+
+
+def board_from_url(provider: str, job_url: str) -> str:
+    """Slug do board a partir da URL da vaga.
+
+    Os três providers hospedados usam ``/<board>/<job>``; derivar da URL evita
+    depender de ``job.company``, que é texto de exibição e pode divergir do slug.
+    """
+    profile_for(provider)
+    segments = [segment for segment in urlsplit(job_url).path.split("/") if segment]
+    return segments[0] if segments else ""
 
 
 def submit_destination(

@@ -290,9 +290,14 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   controle.
 - `apply` só existe para providers com adapter, `ProviderProfile` e `LiveNetworkPolicy`. Cada
   provider declara em `providers.py` os hosts que a página carrega, o endpoint de candidatura, os
-  rótulos do controle final e os marcadores de confirmação. Hoje: Greenhouse e Lever. Ashby é
-  reconhecido mas recusado: o formulário dele só existe depois de um POST na API, o que exigiria um
-  modelo de autorização de escrita na fase de inspeção.
+  rótulos do controle final e os marcadores de confirmação, e — quando o board monta o formulário a
+  partir de uma API — as operações GraphQL read-only da fase de descoberta. Hoje: Greenhouse e Lever
+  têm `apply` completo; o Ashby já tem **inspeção** autorizada (ADR 0004) e ainda não tem adapter nem
+  política de submissão.
+- Um `POST` de inspeção não é escrita: a autorização depende do conteúdo, não do método. O Ashby
+  passa por `InspectionNetworkPolicy`, que exige operação na allowlist, documento comprovadamente
+  `query` (nunca `mutation`) e vínculo exato com o board e a vaga corrente, com orçamento próprio —
+  separado do orçamento de upload e de submissão. Ver ADR 0004.
 - Greenhouse e Lever usam o mesmo `id="application-form"`; a escolha do adapter prioriza o host da
   URL e só cai na assinatura de HTML quando o host não é reconhecido.
 - LinkedIn não possui executor live: a política da plataforma proíbe automação de atividade por

@@ -592,3 +592,130 @@ def test_native_form_submit_reaches_the_network_only_with_an_armed_permit():
         manager.close()
         server.shutdown()
         thread.join(timeout=2)
+
+
+def test_ashby_style_read_only_post_is_blocked_unless_an_inspection_permit_is_armed():
+    """Fixture real: a SPA busca o schema por POST e o guard decide pelo conteudo.
+
+    Sem permissao a pagina nao consegue buscar o formulario (e o board fica
+    inalcancavel de proposito). Com a permissao de inspecao armada, a MESMA
+    requisicao passa — e uma mutacao no mesmo endpoint continua bloqueada.
+    """
+    from jobsearch_agent.inspection import AuthorizedInspectionRequest
+
+    origin_holder: list[str] = []
+    posted: list[str] = []
+    job_id = "d3bc1ced-3ce4-4086-a050-555055dbb1ff"
+    graphql = (
+        "query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) { "
+        "jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, "
+        "jobPostingId: $jobPostingId) { id } }"
+    )
+
+    def page_html() -> bytes:
+        return f"""<!doctype html><html><body><div id="out">PENDING</div>
+        <script>
+          const body = (query) => JSON.stringify({{
+            operationName: 'ApiJobPosting',
+            variables: {{organizationHostedJobsPageName: 'linear', jobPostingId: '{job_id}'}},
+            query: query || {json.dumps(graphql)}
+          }});
+          window.run = (query) => fetch('/api/non-user-graphql?op=ApiJobPosting', {{
+            method: 'POST', headers: {{'content-type': 'application/json'}}, body: body(query)
+          }}).then(r => r.json()).then(d => {{
+            document.getElementById('out').textContent = 'FIELDS:' + (d.data.fields || []).join(',');
+          }}).catch(() => {{ document.getElementById('out').textContent = 'BLOCKED'; }});
+        </script></body></html>""".encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = page_html()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length).decode("utf-8")
+            posted.append(payload)
+            body = json.dumps({"data": {"fields": ["name", "email", "resume"]}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = f"http://127.0.0.1:{server.server_port}"
+    origin_holder.append(origin)
+
+    class LoopbackSession(PlaywrightSessionManager):
+        def __init__(self, loopback_origin):
+            super().__init__(allowed_hosts={"127.0.0.1"})
+            self.origin = loopback_origin
+
+        def _guard_route(self, route):
+            if str(route.request.url).startswith(self.origin):
+                if self.network_guard.inspect(route.request):
+                    self.network_guard.begin_read(route.request)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+        def open(self, url):
+            self.page.goto(url, wait_until="domcontentloaded")
+
+    manager = LoopbackSession(origin)
+    manager.start()
+    try:
+        manager.open(origin + "/application")
+        # 1. Sem permissao: o POST read-only e recusado e a pagina nao recebe schema.
+        manager.page.evaluate("() => window.run()")
+        manager.page.wait_for_function("() => document.getElementById('out').textContent !== 'PENDING'")
+        assert manager.page.locator("#out").inner_text() == "BLOCKED"
+        assert posted == []
+
+        # 2. Com a permissao de inspecao: a mesma requisicao passa.
+        manager.arm_inspections([
+            AuthorizedInspectionRequest(
+                application_id="application-ashby-fixture",
+                provider="ashby",
+                origin=origin,
+                path_pattern=r"^/api/non-user-graphql$",
+                method="POST",
+                operation_names=("ApiJobPosting",),
+                expected_variables=(
+                    ("jobPostingId", job_id),
+                    ("organizationHostedJobsPageName", "linear"),
+                ),
+                max_requests=2,
+            )
+        ])
+        manager.page.evaluate("() => window.run()")
+        manager.page.wait_for_function(
+            "() => document.getElementById('out').textContent.startsWith('FIELDS:')"
+        )
+        assert manager.page.locator("#out").inner_text() == "FIELDS:name,email,resume"
+        assert len(posted) == 1
+        assert manager.network_guard.inspections_used == 1
+        # Nada disso consumiu credito de escrita, e o submit segue bloqueado.
+        assert manager.network_guard.authorized_writes_used == 0
+
+        # 3. Mutacao no MESMO endpoint continua recusada, com permissao armada.
+        manager.page.evaluate("() => window.run('mutation ApiJobPosting { drop { id } }')")
+        manager.page.wait_for_function("() => document.getElementById('out').textContent === 'BLOCKED'")
+        assert len(posted) == 1
+        assert manager.network_guard.inspections_used == 1
+    finally:
+        manager.close()
+        server.shutdown()
+        thread.join(timeout=2)
