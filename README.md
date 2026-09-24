@@ -39,6 +39,9 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli application status <application-id
 # monta o pacote de handoff humano e só então move para HANDOFF_IN_PROGRESS
 PYTHONPATH=src python3 -m jobsearch_agent.cli application handoff <application-id> --db data/jobsearch.db
 
+# registra o relato do envio manual; nunca marca SUBMITTED
+PYTHONPATH=src python3 -m jobsearch_agent.cli application report-manual-submit <application-id> --db data/jobsearch.db
+
 # cria/consulta o Review Snapshot; não envia dados
 PYTHONPATH=src python3 -m jobsearch_agent.cli application review <application-id>
 
@@ -172,7 +175,39 @@ visão segura do pacote (sem respostas e sem caminhos absolutos).
 
 A proveniência do desafio (provider, motivo no conjunto fechado do `challenge-guard` e id da sessão) é
 gravada na tentativa recusada. Sem ela o pacote não é reconstruível e o comando falha em vez de
-inventar o motivo. Ver ADR 0005.
+inventar o motivo. A forma que chega da biblioteca é a evidência **redigida**, com `sources` e
+`signal_kinds`: é o que permite auditar a atribuição do provider em vez de gravá-la como fato — ver a
+[nota do teste real na CI&T](docs/evidence/2026-09-24-lever-ciandt-antibot-refusal.md). Ver ADR 0005.
+
+### O relato do envio manual não confirma nada
+
+Depois de terminar a candidatura no seu navegador, o relato é um comando separado:
+
+```bash
+jobsearch-agent application report-manual-submit <application-id> --db data/jobsearch.db
+```
+
+Ele registra `MANUAL_SUBMISSION_REPORTED`, move `HANDOFF_IN_PROGRESS` para
+`AWAITING_SUBMISSION_CONFIRMATION` e aponta para o pacote usado — **nunca** marca `SUBMITTED`. O
+relato é o que cria a incerteza; não pode ser também o que a satisfaz. O pacote, a cópia do currículo
+e o fingerprint das respostas não são reescritos por ele.
+
+`SUBMITTED` exige `SubmissionConfirmationEvidence` de um observador independente:
+
+```text
+source       confirmation_email | provider_confirmation_page
+             | provider_application_status | externally_verified_record
+observed_at  ISO-8601 com fuso explícito, nunca no futuro
+reference    identificador opaco da evidência (nunca o conteúdo)
+provider     quem observou
+confidence   [0,1] — abaixo do piso 0.5 a evidência é registrada e recusada
+```
+
+`user_report`, `manual_checkbox`, `free_text` e `handoff_completion` são **declarações**, não
+evidência: não pertencem ao conjunto de fontes e são recusadas pelo nome. Não existe comando de CLI
+para confirmar — enquanto não houver um observador real (status do provider ou e-mail de confirmação),
+um comando que aceitasse fonte e referência digitadas seria exatamente o caminho de texto livre que o
+ADR 0005 recusa.
 
 `fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
 Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos

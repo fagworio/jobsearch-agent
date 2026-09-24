@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 import re
 from typing import Any
@@ -106,6 +106,46 @@ class ConfirmationSource(StrEnum):
     EXTERNALLY_VERIFIED_RECORD = "externally_verified_record"
 
 
+#: O que NUNCA satisfaz a aresta. Nao sao fontes: sao declaracoes do proprio
+#: interessado. A lista existe como DADO, e nao apenas como ausencia no enum,
+#: para que a recusa possa ser nomeada em teste e em mensagem de erro — `None`
+#: explicaria a mesma coisa, mas nao sobreviveria a uma fonte nova adicionada
+#: por engano ao conjunto aceito.
+REJECTED_EVIDENCE_KINDS = (
+    "user_report",
+    "manual_checkbox",
+    "free_text",
+    "handoff_completion",
+)
+
+#: Piso de confianca para a evidencia satisfazer a aresta: quem observou precisa
+#: afirmar que aquilo e melhor que acaso. Nao e um escore nem uma media — abaixo
+#: do piso a evidencia continua sendo REGISTRADA e e recusada, nunca descartada.
+CONFIRMATION_CONFIDENCE_FLOOR = 0.5
+
+_EVIDENCE_TOKEN = re.compile(r"[a-z0-9_.:-]{1,64}")
+
+
+def _observed_at(value: str) -> datetime:
+    """Instante ISO-8601 com fuso explicito.
+
+    Sem fuso o instante e ambiguo, e "quando isto foi observado" e justamente o
+    que distingue uma confirmacao de uma declaracao atemporal. Um instante no
+    futuro, alem de pequena tolerancia de relogio, e recusado: evidencia nao
+    pode descrever algo que ainda nao aconteceu.
+    """
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("evidence observed_at must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("evidence observed_at must carry an explicit timezone offset")
+    if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise ValueError("evidence cannot be observed in the future")
+    return parsed
+
+
 @dataclass(frozen=True)
 class SubmissionConfirmationEvidence:
     """Evidencia independente de que a candidatura foi aceita (ADR 0005).
@@ -114,16 +154,38 @@ class SubmissionConfirmationEvidence:
     objeto e o unico caminho para `SUBMITTED` a partir de
     `AWAITING_SUBMISSION_CONFIRMATION`, e a referencia e OPACA: guardamos o
     identificador da evidencia, nunca o conteudo (que traria dado do candidato).
+
+    `provider` diz QUEM observou (o ATS, o provedor de e-mail, o registro
+    externo) e `observed_at` diz QUANDO. Sem os dois, a evidencia nao e
+    rastreavel, e uma evidencia que nao se pode rastrear nao e evidencia.
     """
 
     source: ConfirmationSource
-    reference: str = ""
+    observed_at: str
+    reference: str
+    provider: str
+    confidence: float = 1.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, ConfirmationSource):
             raise ValueError(f"unsupported confirmation source: {self.source!r}")
-        if self.reference and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", self.reference):
+        if not self.reference or not _EVIDENCE_TOKEN.fullmatch(self.reference):
             raise ValueError("evidence reference must be an opaque short token")
+        if not self.provider or not _EVIDENCE_TOKEN.fullmatch(self.provider):
+            raise ValueError("evidence provider must be a short lowercase token")
+        if not 0.0 <= float(self.confidence) <= 1.0:
+            raise ValueError("evidence confidence must be between 0 and 1")
+        _observed_at(self.observed_at)
+
+    def safe_view(self) -> dict[str, Any]:
+        """Forma imprimivel: a referencia e opaca, o conteudo nunca entra."""
+        return {
+            "source": self.source.value,
+            "observed_at": self.observed_at,
+            "reference": self.reference,
+            "provider": self.provider,
+            "confidence": float(self.confidence),
+        }
 
 
 @domain_dataclass

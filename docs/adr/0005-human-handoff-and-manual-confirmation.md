@@ -94,15 +94,18 @@ The edge must not depend on one specific source, and it must not be satisfiable 
 It is defined against a conceptual interface:
 
 ```text
-SubmissionConfirmationEvidence
-    source: confirmation_email
-          | provider_confirmation_page
-          | provider_application_status
-          | externally_verified_record
-    reference: <opaque identifier of the evidence, never its content>
+SubmissionConfirmationEvidence        (JSA-CG-018, implemented)
+    source:       confirmation_email
+                | provider_confirmation_page
+                | provider_application_status
+                | externally_verified_record
+    observed_at:  ISO-8601, explicit timezone, never in the future
+    reference:    opaque identifier of the evidence, never its content
+    provider:     who observed it (the ATS, the mail provider, the external record)
+    confidence:   [0,1]
 ```
 
-Gmail integration (JSA-CG-018) is one future implementation of `confirmation_email`. The rule is:
+Gmail integration (JSA-CG-018's future work) is one implementation of `confirmation_email`. The rule is:
 
 ```text
 AWAITING_SUBMISSION_CONFIRMATION + accepted independent evidence -> SUBMITTED
@@ -113,6 +116,26 @@ and never:
 ```text
 user reported submission -> SUBMITTED
 ```
+
+Four things are **declarations**, not evidence, and are refused by name:
+
+```text
+user_report            manual_checkbox        free_text        handoff_completion
+```
+
+They are listed as data (`REJECTED_EVIDENCE_KINDS`), not merely omitted from the accepted set, so the
+refusal can be named in a test and in an error message. The source is a closed set, so a declaration
+cannot even be *constructed* as evidence; the confidence floor (`0.5`) additionally refuses evidence
+the observer itself places at the level of chance. Below the floor the evidence is still recorded and
+refused — never silently discarded.
+
+The rule lives in `assert_confirmation_evidence`, called from `ApplicationService.transition` whenever
+the target is `SUBMITTED`, and not in `confirm_submission`: `transition` is the only door that changes
+state, and a future command that tries to reach `SUBMITTED` must pass through the same check.
+
+There is deliberately **no CLI** for confirmation yet. A command that takes a source and a reference
+from the command line *is* the free-text path this ADR refuses; the operation becomes reachable from
+outside once a real observer exists (provider status, confirmation e-mail).
 
 ### Invariants, as testable rules
 
@@ -232,4 +255,28 @@ would assert a fact nobody observed, so the command fails closed and says so.
 The CLI is a thin shell over `HumanHandoffService.prepare_handoff`: it prints the package's safe view
 (no answers, no absolute paths) and never decides anything itself. Re-running it while the application
 is in `HANDOFF_IN_PROGRESS` re-reads the recorded package instead of creating a second one.
+
+### JSA-CG-017 and JSA-CG-018, as implemented
+
+```text
+application report-manual-submit <application-id>      HANDOFF_IN_PROGRESS -> AWAITING_SUBMISSION_CONFIRMATION
+ApplicationService.confirm_submission(id, evidence)    AWAITING_... -> SUBMITTED   (evidence required)
+```
+
+The report event carries the handoff package reference (`handoff_package_id`) and nothing else: it is
+what ties the declaration to the exact material the human says they used. The package, the resume copy
+and the answers fingerprint are **not** rewritten by the report — verified on real material — so the
+bundle that supported the claim stays auditable exactly as it was when the automation stopped.
+
+Three guarantees are tested, not assumed:
+
+```text
+report-manual-submit                     -> never SUBMITTED
+AWAITING_SUBMISSION_CONFIRMATION         -> no retry-submit, no new submission attempt
+MANUAL_SUBMISSION_REPORTED               -> package SHA, resume SHA and answers fingerprint unchanged
+```
+
+The real run that this design came from, including the corrected framing of the provider attribution,
+is recorded in [the CI&T evidence note](../evidence/2026-09-24-lever-ciandt-antibot-refusal.md).
+
 

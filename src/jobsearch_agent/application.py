@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, FormCapabilityIssue, SubmissionConfirmationEvidence
+from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, ConfirmationSource, CONFIRMATION_CONFIDENCE_FLOOR, FormCapabilityIssue, SubmissionConfirmationEvidence
 from .forms import validate_application_form
 from .persistence import ApplicationConflict, Database
 
@@ -40,6 +40,27 @@ def _assert_transition(previous: ApplicationState, target: ApplicationState) -> 
     """Unica regra de aresta valida. Nenhuma porta de escrita pode pular esta."""
     if target not in TRANSITIONS[previous]:
         raise ApplicationDomainError(f"invalid application transition: {previous.value} -> {target.value}")
+
+
+def assert_confirmation_evidence(evidence: SubmissionConfirmationEvidence) -> None:
+    """O que SATISFAZ a aresta para `SUBMITTED` (ADR 0005, JSA-CG-018).
+
+    Fica no unico lugar que muda estado, e nao na operacao de confirmacao: um
+    comando novo que alguem venha a expor amanha passa por aqui do mesmo jeito.
+    Uma declaracao do usuario (`user_report`, `manual_checkbox`, `free_text`,
+    `handoff_completion`) nem chega a ser construivel como evidencia — a fonte e
+    um conjunto fechado — e o piso de confianca recusa evidencia que o proprio
+    observador coloca no nivel do acaso.
+    """
+    if not isinstance(evidence, SubmissionConfirmationEvidence):
+        raise ApplicationDomainError("SUBMITTED requires SubmissionConfirmationEvidence")
+    if evidence.source not in set(ConfirmationSource):
+        raise ApplicationDomainError(f"unsupported confirmation source: {evidence.source!r}")
+    if evidence.confidence < CONFIRMATION_CONFIDENCE_FLOOR:
+        raise ApplicationDomainError(
+            f"confirmation evidence is too weak: {evidence.source.value} at confidence "
+            f"{float(evidence.confidence):.2f} (floor {CONFIRMATION_CONFIDENCE_FLOOR})"
+        )
 
 
 def _handoff_event_payload(previous: ApplicationState, package: "HumanHandoffPackage | None") -> dict[str, Any]:
@@ -204,11 +225,13 @@ class ApplicationService:
             raise ApplicationDomainError(f"application not found: {application_id}")
         previous_state = expected_state or application.state
         _assert_transition(previous_state, target)
-        if target is ApplicationState.SUBMITTED and confirmation_evidence is None:
-            raise ApplicationDomainError(
-                "SUBMITTED requires independent confirmation evidence; "
-                "a user declaration alone can never satisfy it"
-            )
+        if target is ApplicationState.SUBMITTED:
+            if confirmation_evidence is None:
+                raise ApplicationDomainError(
+                    "SUBMITTED requires independent confirmation evidence; "
+                    "a user declaration alone can never satisfy it"
+                )
+            assert_confirmation_evidence(confirmation_evidence)
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         application.state = target
         application.updated_at = now
@@ -364,6 +387,10 @@ class ApplicationService:
 
         NAO marca SUBMITTED. O relato e o que cria a necessidade de confirmacao;
         nao pode ser tambem o que a satisfaz.
+
+        O evento guarda a REFERENCIA do pacote de handoff, quando existe: e o que
+        liga a declaracao ao material exato que o humano afirma ter usado. O
+        conteudo do pacote (respostas, curriculo) continua fora do journal.
         """
         application = self.database.get_application(application_id)
         if not application:
@@ -372,17 +399,27 @@ class ApplicationService:
             raise ApplicationDomainError(
                 f"manual submission report requires HANDOFF_IN_PROGRESS, got {application.state.value}"
             )
+        payload: dict[str, Any] = {"previous_state": application.state.value}
+        packages = self.database.list_handoff_packages(application_id)
+        package_id = str(packages[-1].get("package_id", "")) if packages else ""
+        if package_id and _SAFE_EVENT_TOKEN.fullmatch(package_id):
+            payload["handoff_package_id"] = package_id
         return self.transition(
             application_id,
             ApplicationState.AWAITING_SUBMISSION_CONFIRMATION,
             "manual_submission_reported",
-            {"previous_state": application.state.value},
+            payload,
         )
 
     def confirm_submission(
         self, application_id: str, evidence: SubmissionConfirmationEvidence
     ) -> Application:
-        """event SUBMISSION_CONFIRMED: AWAITING_... -> SUBMITTED, SO com evidencia."""
+        """event SUBMISSION_CONFIRMED: AWAITING_... -> SUBMITTED, SO com evidencia.
+
+        A validacao da evidencia vive em :func:`assert_confirmation_evidence`, no
+        caminho de `transition` — esta operacao nao e a unica porta possivel para
+        `SUBMITTED`, e a regra nao pode depender de quem chama.
+        """
         application = self.database.get_application(application_id)
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
@@ -390,15 +427,14 @@ class ApplicationService:
             raise ApplicationDomainError(
                 f"confirmation requires AWAITING_SUBMISSION_CONFIRMATION, got {application.state.value}"
             )
+        assert_confirmation_evidence(evidence)
+        payload: dict[str, Any] = {"previous_state": application.state.value}
+        payload.update(evidence.safe_view())
         return self.transition(
             application_id,
             ApplicationState.SUBMITTED,
             "submission_confirmed",
-            {
-                "previous_state": application.state.value,
-                "evidence_source": evidence.source.value,
-                "evidence_reference": evidence.reference,
-            },
+            payload,
             confirmation_evidence=evidence,
         )
 

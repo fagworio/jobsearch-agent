@@ -66,6 +66,23 @@ CONFIRMATION_MARKERS = (
 # unica ponte para o challenge-guard. Aqui so existe `ChallengeOutcome`.
 
 
+def challenge_provenance(outcome: ChallengeOutcome) -> dict[str, Any]:
+    """Evidencia REDIGIDA do desafio, com procedencia — ou o veredito minimo.
+
+    `outcome.evidence` vem do redactor da biblioteca e carrega `sources` e
+    `signal_kinds`: e o que permite auditar POR QUE aquele provider foi
+    atribuido a recusa, em vez de gravar a atribuicao como fato. Sem ele, o
+    minimo continua sendo provider, motivo e sessao.
+    """
+    if outcome.evidence:
+        return dict(outcome.evidence)
+    return {
+        "provider": outcome.provider,
+        "reason_token": outcome.reason_token,
+        "session_id": outcome.session_id,
+    }
+
+
 class BrowserSubmitter:
     """Executa o POST de submissão pela própria aplicação, no browser.
 
@@ -235,11 +252,7 @@ class BrowserSubmitter:
                     submit_write=bool(writes_used),
                     # Proveniencia observada: sem ela o handoff humano posterior
                     # nao saberia QUAL desafio recusou o envio nem em que sessao.
-                    challenge={
-                        "provider": outcome.provider,
-                        "reason_token": outcome.reason_token,
-                        "session_id": outcome.session_id,
-                    },
+                    challenge=challenge_provenance(outcome),
                 ),
                 "NEEDS_HUMAN_CAPTCHA",
             )

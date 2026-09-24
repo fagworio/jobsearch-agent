@@ -13,11 +13,32 @@ import pytest
 from jobsearch_agent.application import ApplicationDomainError, ApplicationService, TRANSITIONS
 from jobsearch_agent.models import (
     ApplicationState,
+    CONFIRMATION_CONFIDENCE_FLOOR,
     ConfirmationSource,
     Job,
+    REJECTED_EVIDENCE_KINDS,
     SubmissionConfirmationEvidence,
 )
 from jobsearch_agent.persistence import Database
+
+OBSERVED_AT = "2026-09-24T16:00:00+00:00"
+
+
+def _evidence(
+    source: ConfirmationSource = ConfirmationSource.CONFIRMATION_EMAIL,
+    *,
+    reference: str = "msg-abc123",
+    provider: str = "gmail",
+    confidence: float = 1.0,
+    observed_at: str = OBSERVED_AT,
+) -> SubmissionConfirmationEvidence:
+    return SubmissionConfirmationEvidence(
+        source=source,
+        observed_at=observed_at,
+        reference=reference,
+        provider=provider,
+        confidence=confidence,
+    )
 
 
 def _service(tmp_path: Path, suffix: str) -> tuple[ApplicationService, str]:
@@ -100,9 +121,7 @@ def test_reporting_a_manual_submission_does_not_mark_submitted(tmp_path):
 
 def test_independent_evidence_is_what_reaches_submitted(tmp_path):
     service, application_id = _awaiting(tmp_path, "confirm")
-    evidence = SubmissionConfirmationEvidence(
-        source=ConfirmationSource.CONFIRMATION_EMAIL, reference="msg-abc123"
-    )
+    evidence = _evidence()
     assert service.confirm_submission(application_id, evidence).state is ApplicationState.SUBMITTED
     service.database.close()
 
@@ -198,7 +217,7 @@ def test_a_generic_transition_cannot_reach_submitted_without_evidence(tmp_path):
 
 def test_confirming_from_the_wrong_state_is_refused(tmp_path):
     service, application_id = _in_handoff(tmp_path, "confirm-wrong")
-    evidence = SubmissionConfirmationEvidence(source=ConfirmationSource.PROVIDER_APPLICATION_STATUS)
+    evidence = _evidence(ConfirmationSource.PROVIDER_APPLICATION_STATUS)
     with pytest.raises(ApplicationDomainError, match="confirmation requires"):
         service.confirm_submission(application_id, evidence)
     service.database.close()
@@ -228,12 +247,98 @@ def test_a_handoff_started_twice_is_refused(tmp_path):
 
 def test_an_invalid_evidence_source_is_refused(tmp_path):
     with pytest.raises(ValueError):
-        SubmissionConfirmationEvidence(source="o usuario disse", reference="x")
+        SubmissionConfirmationEvidence(
+            source="o usuario disse", observed_at=OBSERVED_AT, reference="x", provider="gmail"
+        )
     with pytest.raises(ValueError):
         SubmissionConfirmationEvidence(
             source=ConfirmationSource.CONFIRMATION_EMAIL,
+            observed_at=OBSERVED_AT,
             reference="Assunto: sua candidatura foi recebida",
+            provider="gmail",
         )
+
+
+# --- JSA-CG-018: o que NAO e evidencia ----------------------------------------
+
+
+def test_a_declaration_is_never_construable_as_evidence():
+    """`user_report`, `manual_checkbox`, `free_text`, `handoff_completion`.
+
+    Sao declaracoes do interessado, nao observacoes de terceiro. Nao entram no
+    conjunto aceito — a lista existe como dado para que a recusa seja nomeada.
+    """
+    accepted = {source.value for source in ConfirmationSource}
+    for kind in REJECTED_EVIDENCE_KINDS:
+        assert kind not in accepted, f"{kind} entrou no conjunto de fontes aceitas"
+        with pytest.raises(ValueError, match="unsupported confirmation source"):
+            SubmissionConfirmationEvidence(
+                source=kind, observed_at=OBSERVED_AT, reference="x", provider="gmail"
+            )
+
+
+def test_evidence_without_a_traceable_reference_is_refused():
+    for reference in ("", "Assunto: sua candidatura foi recebida", "a" * 80):
+        with pytest.raises(ValueError, match="reference"):
+            _evidence(reference=reference)
+
+
+def test_evidence_without_a_provider_or_timestamp_is_refused():
+    with pytest.raises(ValueError, match="provider"):
+        _evidence(provider="")
+    with pytest.raises(ValueError, match="timezone"):
+        _evidence(observed_at="2026-09-24T16:00:00")
+    with pytest.raises(ValueError, match="ISO-8601"):
+        _evidence(observed_at="ontem")
+    with pytest.raises(ValueError, match="future"):
+        _evidence(observed_at="2099-01-01T00:00:00+00:00")
+
+
+def test_evidence_below_the_confidence_floor_is_refused(tmp_path):
+    service, application_id = _awaiting(tmp_path, "weak")
+    weak = _evidence(confidence=CONFIRMATION_CONFIDENCE_FLOOR - 0.1)
+    with pytest.raises(ApplicationDomainError, match="too weak"):
+        service.confirm_submission(application_id, weak)
+    assert service.database.get_application(application_id).state is (
+        ApplicationState.AWAITING_SUBMISSION_CONFIRMATION
+    )
+    service.database.close()
+
+
+def test_the_transition_door_validates_the_evidence_too(tmp_path):
+    """A regra nao pode depender de qual comando chamou `transition`."""
+    service, application_id = _awaiting(tmp_path, "door")
+    weak = _evidence(confidence=0.1)
+    with pytest.raises(ApplicationDomainError, match="too weak"):
+        service.transition(
+            application_id,
+            ApplicationState.SUBMITTED,
+            "qualquer_coisa",
+            confirmation_evidence=weak,
+        )
+    assert service.database.get_application(application_id).state is (
+        ApplicationState.AWAITING_SUBMISSION_CONFIRMATION
+    )
+    service.database.close()
+
+
+def test_the_confirmation_event_records_what_was_observed(tmp_path):
+    service, application_id = _awaiting(tmp_path, "payload")
+    service.confirm_submission(
+        application_id,
+        _evidence(ConfirmationSource.PROVIDER_APPLICATION_STATUS, reference="status-9911", provider="lever"),
+    )
+    event = service.database.list_application_events(application_id)[-1]
+    assert event.event == "submission_confirmed"
+    assert event.payload == {
+        "previous_state": ApplicationState.AWAITING_SUBMISSION_CONFIRMATION.value,
+        "source": "provider_application_status",
+        "reference": "status-9911",
+        "provider": "lever",
+        "confidence": 1.0,
+        "observed_at": OBSERVED_AT,
+    }
+    service.database.close()
 
 
 def test_every_state_has_a_transition_entry():

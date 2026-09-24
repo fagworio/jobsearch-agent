@@ -43,7 +43,25 @@ CANDIDATE_EMAIL = "sentinel.candidate@example.invalid"
 
 DESTINATION = "https://jobs.lever.co/pavago/7f3a91c2-1e4b-4d5a-9c8f-2b6e5a1d0f33/apply"
 FORM_FINGERPRINT = "f" * 64
-CHALLENGE = {"provider": "hcaptcha", "reason_token": "provider_rejected_submission", "session_id": "cs-abc123"}
+#: A forma REAL que chega do challenge-guard: a evidencia redigida, com a
+#: procedencia do veredito (`sources`/`signal_kinds`). As chaves proibidas estao
+#: aqui de proposito — a allowlist tem de descarta-las.
+CHALLENGE = {
+    "session_id": "challenge-session-0001",
+    "provider": "hcaptcha",
+    "phase": "post_submit",
+    "decision": "provider_rejected",
+    "reason_token": "provider_rejected_submission",
+    "sources": ["dom", "frames", "network", "response"],
+    "signal_kinds": ["challenge_visible", "verification_rejected"],
+    "path_hashes": ["0123456789abcdef"],
+    "rounds_observed": 3,
+    "confidence": 0.9,
+    "http_status": 400,
+    "sitekey": "sitekey-never-persisted",
+    "response_token": "token-never-persisted",
+    "body": f"provider payload with {CANDIDATE_EMAIL}",
+}
 
 
 @dataclass
@@ -196,7 +214,7 @@ def test_the_package_is_built_and_the_state_moves(tmp_path):
     assert package.destination == DESTINATION
     assert package.provider == "hcaptcha"
     assert package.reason_token == "provider_rejected_submission"
-    assert package.challenge_session_id == "cs-abc123"
+    assert package.challenge_session_id == "challenge-session-0001"
     assert package.continuation == "manual_final"
     assert package.instructions, "o humano precisa da instrucao, que vem do challenge-guard"
     assert package.answers_fingerprint
@@ -429,7 +447,7 @@ def test_the_package_address_follows_the_recorded_handoff_event(tmp_path):
         challenge={
             "provider": "hcaptcha",
             "reason_token": "provider_rejected_submission",
-            "session_id": "cs-zzz999",
+            "session_id": "challenge-session-0002",
         },
     )
     one = first.service.prepare_handoff(first.application_id)
@@ -438,3 +456,87 @@ def test_the_package_address_follows_the_recorded_handoff_event(tmp_path):
     assert one.package_id != two.package_id
     first.database.close()
     second.database.close()
+
+
+# --- JSA-CG-017: o relato nao confirma nada -----------------------------------
+
+
+def test_reporting_a_manual_submission_keeps_the_package_immutable(tmp_path):
+    """O material que o humano AFIRMA ter usado fica preservado como estava.
+
+    O relato move o estado e aponta para o pacote; nao reescreve o bundle, nao
+    regenera o curriculo e nao recalcula fingerprint nenhum.
+    """
+    world = _build(tmp_path)
+    package = world.service.prepare_handoff(world.application_id)
+    bundle = world.artifacts / package.package_path
+    resume_copy = world.artifacts / package.resume_path
+    before = (bundle.read_bytes(), resume_copy.read_bytes(), world.resume.read_bytes())
+
+    application = ApplicationService(world.database).report_manual_submission(world.application_id)
+
+    assert application.state is ApplicationState.AWAITING_SUBMISSION_CONFIRMATION
+    assert application.state is not ApplicationState.SUBMITTED
+    assert (bundle.read_bytes(), resume_copy.read_bytes(), world.resume.read_bytes()) == before
+
+    after = world.service.load_package(package.package_id)
+    assert after.package_sha256 == package.package_sha256
+    assert after.resume_sha256 == package.resume_sha256
+    assert after.answers_fingerprint == package.answers_fingerprint
+    assert after.approved_answers == package.approved_answers
+
+    events = [event for event in world.database.list_application_events(world.application_id) if event.event == "manual_submission_reported"]
+    assert len(events) == 1
+    assert events[0].payload == {
+        "previous_state": ApplicationState.HANDOFF_IN_PROGRESS.value,
+        "handoff_package_id": package.package_id,
+    }
+    assert APPROVED_ANSWER not in json.dumps(events[0].payload)
+    world.database.close()
+
+
+def test_the_report_cli_never_prints_submitted(tmp_path, capsys):
+    world = _build(tmp_path)
+    world.service.prepare_handoff(world.application_id)
+    code = cli_main([
+        "--root", str(tmp_path),
+        "--db", str(world.database.path),
+        "--artifacts", str(world.artifacts),
+        "application", "report-manual-submit", world.application_id,
+    ])
+    printed = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert printed["application"]["state"] == ApplicationState.AWAITING_SUBMISSION_CONFIRMATION.value
+    assert "SUBMITTED" not in json.dumps(printed)
+    assert APPROVED_ANSWER not in json.dumps(printed)
+    assert CANDIDATE_EMAIL not in json.dumps(printed)
+    assert world.database.get_application(world.application_id).state is ApplicationState.AWAITING_SUBMISSION_CONFIRMATION
+    world.database.close()
+
+
+# --- JSA-CG-016: a atribuicao do provider precisa de procedencia --------------
+
+
+def test_the_recorded_challenge_evidence_keeps_its_provenance(tmp_path):
+    """`sources`/`signal_kinds` sao o que permite auditar a atribuicao.
+
+    Sem eles, "provider: hcaptcha" numa recusa seria correlacao gravada como
+    fato. E o que NAO e evidencia — sitekey, token de resposta, body — nao entra.
+    """
+    world = _build(tmp_path)
+    attempt = world.database.list_submission_attempts(world.application_id)[-1]
+    recorded = attempt.evidence["challenge"]
+
+    assert recorded["provider"] == "hcaptcha"
+    assert recorded["reason_token"] == "provider_rejected_submission"
+    assert recorded["decision"] == "provider_rejected"
+    assert recorded["phase"] == "post_submit"
+    assert recorded["sources"] == ["dom", "frames", "network", "response"]
+    assert recorded["signal_kinds"] == ["challenge_visible", "verification_rejected"]
+    assert recorded["confidence"] == 0.9
+    assert recorded["http_status"] == 400
+    serialized = json.dumps(attempt.evidence)
+    for forbidden in ("sitekey", "token-never-persisted", "provider payload", CANDIDATE_EMAIL):
+        assert forbidden not in serialized, f"a evidencia vazou {forbidden!r}"
+    world.database.close()

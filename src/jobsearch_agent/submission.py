@@ -423,6 +423,47 @@ def _safe_evidence_token(value: object) -> str:
     return text if _SAFE_EVIDENCE_TOKEN.fullmatch(text) else "redacted"
 
 
+#: Proveniencia anti-bot: subconjunto FECHADO do que a biblioteca de desafios
+#: redigiu. Tokens curtos, listas de tokens e numeros — nunca texto livre. O que
+#: nao casa com o formato e descartado em silencio, jamais gravado "para nao
+#: perder".
+_CHALLENGE_TOKENS = ("provider", "reason_token", "session_id", "decision", "phase")
+_CHALLENGE_TOKEN_LISTS = ("sources", "signal_kinds", "path_hashes")
+
+
+def _redacted_challenge(value: object) -> dict[str, object]:
+    """"O que o guard observou" — com procedencia, e nao apenas o veredito.
+
+    `sources` e `signal_kinds` sao o que separa uma ATRIBUICAO de um FATO: sem
+    eles, "provider: recaptcha_enterprise" numa recusa vira correlacao gravada
+    como certeza. `sources` diz de onde veio o sinal (dom, frames, rede,
+    resposta) e `signal_kinds` diz qual sinal autorizou a decisao.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    observed: dict[str, object] = {}
+    for key in _CHALLENGE_TOKENS:
+        token = str(value.get(key, "") or "")
+        if token and _SAFE_EVIDENCE_TOKEN.fullmatch(token):
+            observed[key] = token
+    for key in _CHALLENGE_TOKEN_LISTS:
+        raw = value.get(key)
+        if isinstance(raw, (list, tuple)):
+            safe = [str(item) for item in raw if _SAFE_EVIDENCE_TOKEN.fullmatch(str(item))]
+            if safe:
+                observed[key] = safe
+    rounds = value.get("rounds_observed")
+    if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds >= 0:
+        observed["rounds_observed"] = rounds
+    confidence = value.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and 0.0 <= float(confidence) <= 1.0:
+        observed["confidence"] = float(confidence)
+    status_code = value.get("http_status")
+    if isinstance(status_code, int) and not isinstance(status_code, bool) and 100 <= status_code <= 599:
+        observed["http_status"] = status_code
+    return observed
+
+
 def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object]:
     evidence: dict[str, object] = {}
     if verification.confirmation_type:
@@ -443,17 +484,10 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
         evidence["reason_token"] = reason_token
     # Proveniencia anti-bot: um subconjunto FECHADO de tokens curtos. O que a
     # biblioteca de desafios observou e o que permite reconstruir o handoff
-    # depois; o que nao casa com o formato e descartado em silencio, jamais
-    # gravado "para nao perder".
-    challenge = verification.evidence.get("challenge")
-    if isinstance(challenge, dict):
-        observed: dict[str, str] = {}
-        for key in ("provider", "reason_token", "session_id"):
-            token = str(challenge.get(key, "") or "")
-            if token and _SAFE_EVIDENCE_TOKEN.fullmatch(token):
-                observed[key] = token
-        if observed:
-            evidence["challenge"] = observed
+    # depois, e com que procedencia.
+    observed = _redacted_challenge(verification.evidence.get("challenge"))
+    if observed:
+        evidence["challenge"] = observed
     return evidence
 
 

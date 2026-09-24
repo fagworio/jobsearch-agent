@@ -131,6 +131,18 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_handoff)
     application_handoff.add_argument("application_id")
     application_handoff.set_defaults(handler="application_handoff")
+    application_report = application_sub.add_parser(
+        "report-manual-submit",
+        help="registra o relato de envio manual (nunca marca SUBMITTED)",
+        description=(
+            "Registra MANUAL_SUBMISSION_REPORTED e move de HANDOFF_IN_PROGRESS para "
+            "AWAITING_SUBMISSION_CONFIRMATION. O relato cria a incerteza; nao a "
+            "satisfaz. SUBMITTED exige evidencia independente."
+        ),
+    )
+    runtime_options(application_report)
+    application_report.add_argument("application_id")
+    application_report.set_defaults(handler="application_report_manual_submit")
     application_status = application_sub.add_parser("status", help="consulta uma Application")
     runtime_options(application_status)
     application_status.add_argument("application_id")
@@ -224,6 +236,21 @@ def _settings(args: argparse.Namespace) -> Settings:
 
 def _print(value: object) -> None:
     print(json.dumps(to_dict(value), ensure_ascii=False, indent=2))
+
+
+def _application_view(application: object) -> dict[str, str]:
+    """Projecao segura de uma Application para saida de comando.
+
+    `context.answers` carrega nome, e-mail e telefone do candidato. Quem precisa
+    disso usa `application status` e sabe que esta inspecionando PII; os comandos
+    de handoff nao devolvem respostas ao terminal.
+    """
+    return {
+        "id": str(getattr(application, "id", "")),
+        "job_id": str(getattr(application, "job_id", "")),
+        "state": str(getattr(getattr(application, "state", ""), "value", "")),
+        "updated_at": str(getattr(application, "updated_at", "")),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -345,16 +372,23 @@ def main(argv: list[str] | None = None) -> int:
                     "handoff": package.safe_view(),
                     # Projecao deliberada. Imprimir a Application inteira levava
                     # o `context.answers` para o terminal — exatamente o que a
-                    # visao segura do pacote existe para nao fazer. Quem precisa
-                    # das respostas tem o bundle no diretorio privado; quem usa
-                    # `application status` sabe que esta inspecionando PII.
-                    "application": {
-                        "id": application.id,
-                        "job_id": application.job_id,
-                        "state": application.state.value,
-                        "updated_at": application.updated_at,
-                    },
+                    # visao segura do pacote existe para nao fazer.
+                    "application": _application_view(application),
                     "events": db.list_application_events(args.application_id),
+                })
+            finally:
+                db.close()
+            return 0
+        if args.handler == "application_report_manual_submit":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                application = ApplicationService(db).report_manual_submission(args.application_id)
+                _print({
+                    "application": _application_view(application),
+                    "events": db.list_application_events(application.id),
+                    # Dito no proprio resultado: quem le o comando nao pode
+                    # confundir "relatei" com "confirmado".
+                    "next": "submission confirmation requires independent evidence",
                 })
             finally:
                 db.close()
