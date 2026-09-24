@@ -21,6 +21,7 @@ from .inspection import (
     INSPECTION_STAGE_FORM_DISCOVERY,
     AuthorizedInspectionRequest,
 )
+from .options import option_candidates
 from .qa import AFFIRM_MARKERS, AFFIRM_SOURCE, DECLINE_MARKERS, DECLINE_SOURCE
 
 
@@ -605,6 +606,144 @@ def choose_option_index(labels: list[str], expected: str, intent: str = "") -> i
     raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION" if not matches else "AMBIGUOUS_COMBOBOX_OPTION")
 
 
+def _combobox_queries(value: str) -> tuple[str, ...]:
+    """Textos para o filtro do typeahead, do mais completo ao mais curto.
+
+    "Betim, Minas Gerais, Brazil" nunca aparece como sugestao: o widget busca por
+    "Betim" e devolve "Betim, Minas Gerais, Brazil". Ja "Brazil +55" e alcancavel
+    digitando o valor inteiro. Digitar e o ULTIMO recurso: o filtro REDUZ a lista
+    de opcoes, e uma resposta correta escrita de outro jeito ("Immediately" para a
+    opcao "Available immediately") zerava a lista — a candidatura parava com um
+    campo obrigatorio vazio e a telemetria dizia "respondida".
+    """
+    text = " ".join(str(value).split())
+    if not text:
+        return ()
+    queries = [text]
+    head = text.split(",")[0].strip()
+    if head and head != text:
+        queries.append(head)
+    return tuple(queries)
+
+
+def _listbox_id(page: Any, locator: Any, binding: Any, field_key: str) -> str:
+    """Id do listbox associado ao combobox.
+
+    O binding estatico so conhece `aria-controls`/`aria-owns`; o react-select do
+    Greenhouse nao preenche nenhum dos dois e batiza o listbox com
+    `react-select-<id-do-input>-listbox`. Sem esta descoberta TODO combobox do
+    board terminava em `UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND`.
+    """
+    controls = str(locator.get_attribute("aria-controls") or locator.get_attribute("aria-owns") or "").split()
+    if len(controls) > 1:
+        raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field_key} has multiple associated listboxes")
+    if controls:
+        return controls[0]
+    if str(getattr(binding, "listbox_id", "") or ""):
+        return str(binding.listbox_id)
+    input_id = str(locator.get_attribute("id") or "")
+    listboxes = page.get_by_role("listbox")
+    visible_ids = [
+        str(listboxes.nth(index).get_attribute("id") or "")
+        for index in range(listboxes.count())
+        if listboxes.nth(index).is_visible()
+    ]
+    if input_id:
+        named = [item for item in visible_ids if item and input_id in item]
+        if len(named) == 1:
+            return named[0]
+    if len(visible_ids) == 1:
+        return visible_ids[0]
+    raise BrowserSessionError(f"UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND: {field_key}")
+
+
+def _visible_option_pairs(page: Any, locator: Any, binding: Any, field_key: str) -> list[tuple[str, Any]]:
+    """(rotulo, locator) das opcoes VISIVEIS do listbox deste combobox.
+
+    Lista vazia e um resultado legitimo: o typeahead de cidade so responde depois
+    da primeira letra.
+    """
+    listbox_id = _listbox_id(page, locator, binding, field_key)
+    listboxes = page.get_by_role("listbox")
+    visible_boxes = [
+        listboxes.nth(index)
+        for index in range(listboxes.count())
+        if listboxes.nth(index).is_visible() and str(listboxes.nth(index).get_attribute("id") or "") == listbox_id
+    ]
+    if len(visible_boxes) > 1:
+        raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field_key}")
+    if not visible_boxes:
+        return []
+    options = visible_boxes[0].get_by_role("option")
+    pairs: list[tuple[str, Any]] = []
+    for index in range(options.count()):
+        option = options.nth(index)
+        if option.is_visible():
+            pairs.append((" ".join((option.inner_text() or "").split()), option))
+    return pairs
+
+
+def _choose_combobox_option(
+    page: Any, locator: Any, binding: Any, field_key: str, candidates: tuple[str, ...], intent: str
+) -> Any | None:
+    """Locator da opcao escolhida, ou None se nenhum candidato casou."""
+    pairs = _visible_option_pairs(page, locator, binding, field_key)
+    if not pairs:
+        return None
+    labels = [label for label, _ in pairs]
+    ambiguous = False
+    for candidate in candidates:
+        try:
+            index = choose_option_index(labels, candidate, intent)
+        except OptionSelectionError as exc:
+            ambiguous = ambiguous or exc.code.startswith("AMBIGUOUS")
+            continue
+        return pairs[index][1]
+    if ambiguous:
+        raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_OPTION: {field_key}")
+    return None
+
+
+def _fill_combobox(page: Any, locator: Any, binding: Any, field: Any, value: Any, pending_read_count: Any = None) -> None:
+    """Escolhe uma OPCAO real do widget; digitar e apenas o ultimo recurso.
+
+    Ordem: abrir, casar contra as opcoes REAIS, e so entao digitar para o filtro
+    do typeahead. Quando nada casa, falha em voz alta — nunca digita um valor que
+    o board nao reconhece.
+    """
+    if binding.multiple or field.multiple:
+        raise BrowserSessionError(f"multiple combobox is unsupported: {field.key}")
+    if binding.autocomplete not in {"", "none", "list", "both"}:
+        raise BrowserSessionError(f"unsupported combobox autocomplete mode: {field.key}")
+    declared = " ".join(str(value).split())
+    if not declared:
+        raise BrowserSessionError(f"combobox value is empty: {field.key}")
+    # Consentimento e recusa nao sao valores pesquisaveis: o rotulo real e a
+    # opcao do ATS ("Yes", "Decline to self-identify"). Digitar o texto da
+    # resposta no filtro do combobox zeraria a lista de opcoes.
+    intent = str(getattr(getattr(field, "answer", None), "source", ""))
+    pick_from_list = intent in {AFFIRM_SOURCE, DECLINE_SOURCE}
+    answer = getattr(field, "answer", None)
+    candidates = option_candidates(
+        semantic_type=str(getattr(field, "semantic_type", "") or ""),
+        supported_by=tuple(getattr(answer, "supported_by", ()) or ()),
+        value=declared,
+    )
+    locator.click()
+    DOMStabilityGuard().wait(page, pending_read_count)
+    chosen = _choose_combobox_option(page, locator, binding, field.key, candidates, intent)
+    if chosen is None and binding.autocomplete in {"list", "both"} and not pick_from_list:
+        for query in _combobox_queries(declared):
+            locator.fill(query)
+            DOMStabilityGuard().wait(page, pending_read_count)
+            chosen = _choose_combobox_option(page, locator, binding, field.key, candidates, intent)
+            if chosen is not None:
+                break
+    if chosen is None:
+        raise BrowserSessionError(f"OPTION_NOT_FOUND_COMBOBOX_OPTION: {field.key}")
+    chosen.click()
+
+
 
 #: Banners de consentimento que aparecem antes de qualquer interacao e cujo
 #: overlay intercepta cliques no formulario.
@@ -956,49 +1095,7 @@ class PlaywrightFormFiller:
             if str(value).strip() and current is not None and not current.strip():
                 raise BrowserSessionError(f"VALUE_NOT_COMMITTED: {field.key}")
         elif field_type == "combobox":
-            if binding.multiple or field.multiple:
-                raise BrowserSessionError(f"multiple combobox is unsupported: {field.key}")
-            if binding.autocomplete not in {"", "none", "list", "both"}:
-                raise BrowserSessionError(f"unsupported combobox autocomplete mode: {field.key}")
-            expected = " ".join(str(value).split()).casefold()
-            if not expected:
-                raise BrowserSessionError(f"combobox value is empty: {field.key}")
-            # Consentimento e recusa nao sao valores pesquisaveis: o rotulo real
-            # e a opcao do ATS ("Yes", "Acknowledge/Confirm", "Decline to
-            # self-identify"). Digitar o texto da resposta no filtro do
-            # combobox zeraria a lista de opcoes.
-            intent = str(getattr(getattr(field, "answer", None), "source", ""))
-            pick_from_list = intent in {AFFIRM_SOURCE, DECLINE_SOURCE}
-            locator.click()
-            if binding.autocomplete in {"list", "both"} and not pick_from_list:
-                locator.fill(str(value))
-            DOMStabilityGuard().wait(page, pending_read_count)
-            controls = str(locator.get_attribute("aria-controls") or locator.get_attribute("aria-owns") or "").split()
-            if len(controls) > 1:
-                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field.key} has multiple associated listboxes")
-            listbox_id = controls[0] if controls else binding.listbox_id
-            if not listbox_id:
-                raise BrowserSessionError(f"UNSUPPORTED_COMBOBOX_LISTBOX_UNBOUND: {field.key}")
-            listboxes = page.get_by_role("listbox")
-            visible_boxes = [
-                listboxes.nth(index)
-                for index in range(listboxes.count())
-                if listboxes.nth(index).is_visible()
-                and listboxes.nth(index).get_attribute("id") == listbox_id
-            ]
-            if len(visible_boxes) != 1:
-                raise BrowserSessionError(f"AMBIGUOUS_COMBOBOX_LISTBOX: {field.key}")
-            options = visible_boxes[0].get_by_role("option")
-            visible_options: list[tuple[str, Any]] = []
-            for index in range(options.count()):
-                option = options.nth(index)
-                if option.is_visible():
-                    visible_options.append((" ".join((option.inner_text() or "").split()).casefold(), option))
-            try:
-                chosen = choose_option_index([label for label, _ in visible_options], expected, intent)
-            except OptionSelectionError as exc:
-                raise BrowserSessionError(f"{exc.code}: {field.key}") from None
-            visible_options[chosen][1].click()
+            _fill_combobox(page, locator, binding, field, value, pending_read_count)
         elif field_type == "radio":
             option_locator = binding.option_locators.get(str(value))
             if not option_locator:

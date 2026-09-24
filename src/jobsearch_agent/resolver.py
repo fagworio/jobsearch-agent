@@ -98,10 +98,14 @@ REGION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 #: Valores canonicos de `notice_period` -> como aparecem nas opcoes do ATS.
+#: O PRIMEIRO termo e a forma de exibicao quando o campo nao tem opcoes no DOM;
+#: os demais sao formas equivalentes que o widget pode usar. "available
+#: immediately" entrou depois da vaga real da Fueled: a opcao do board e
+#: "Available immediately" e "Immediately" nao casa com ela nem por prefixo.
 NOTICE_PERIOD_ALIASES: dict[str, tuple[str, ...]] = {
-    "immediate": ("immediately", "immediate", "as soon as possible", "asap", "0 days", "no notice"),
-    "1_week": ("1 week", "one week"),
-    "2_weeks": ("2 weeks", "two weeks"),
+    "immediate": ("immediately", "immediate", "as soon as possible", "asap", "0 days", "no notice", "available immediately"),
+    "1_week": ("1 week", "one week", "available in 1 week"),
+    "2_weeks": ("2 weeks", "two weeks", "available in 2 weeks"),
     "30_days": ("30 days", "1 month", "one month", "4 weeks"),
     "other": ("other", "negotiable"),
 }
@@ -833,14 +837,22 @@ class QuestionResolver:
         # `AnswerKnowledgeBase` ja implementa.
         known = self.knowledge.resolve_field(field, self.profile, self.preferences)
         if known is not None and str(known.answer).strip():
-            if _option_mismatch(known.answer, field):
+            answer = str(known.answer)
+            supported_by = tuple(known.supported_by or ())
+            # A resposta da politica e sobre o CANDIDATO; a pergunta pode ser
+            # sobre a situacao dele (sponsorship nos EUA). Quando sao coisas
+            # diferentes, a situacao e derivada de um fato do perfil.
+            situation = self._situation_answer(field, supported_by, answer)
+            if situation is not None:
+                answer, supported_by = situation
+            if _option_mismatch(answer, field):
                 return self._needs_human(field, "option_mismatch", semantic_type)
             return QuestionResolution(
                 status=ResolutionStatus.RESOLVED.value,
-                answer=str(known.answer),
+                answer=answer,
                 source=str(known.source or "knowledge_base"),
                 confidence=float(known.confidence or 1.0),
-                supported_by=tuple(known.supported_by),
+                supported_by=supported_by,
                 semantic_type=semantic_type,
                 field_key=field.key,
             )
@@ -867,12 +879,51 @@ class QuestionResolver:
         if reuse is not None:
             return reuse
 
-        # 6. Geracao grounded — so para pergunta DISCURSIVA.
+        # 6. Geracao grounded — so para pergunta DISCURSIVA em campo ABERTO.
         if self._is_sensitive(field, semantic_type):
             return self._needs_human(field, "sensitive_without_explicit_fact", semantic_type)
+        # Um combobox/select/radio so aceita as OPCOES do board: um paragrafo
+        # gerado nao e uma delas. Na vaga real da Fueled, "Which of the
+        # following best describes your experience...?" rendeu uma redacao de
+        # motivacao — o widget nao tinha o que escolher e o campo obrigatorio
+        # ficaria vazio, com a telemetria dizendo "respondida".
+        if _closed_widget(field):
+            return self._needs_human(field, "closed_option_without_declared_answer", semantic_type)
         if not self._is_discursive(field, semantic_type):
             return self._needs_human(field, "no_verifiable_fact", semantic_type)
         return self._generate(field, semantic_type)
+
+    # -- situacao do candidato -------------------------------------------------
+
+    def _situation_answer(
+        self, field: ApplicationField, supported_by: Sequence[str], answer: str
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """Reescreve a resposta da POLITICA para a SITUACAO declarada no perfil.
+
+        `requires_sponsorship: no` responde "voce precisa de sponsorship?". O
+        formulario da Fueled pergunta isso para trabalhar NOS EUA, e a opcao que
+        descreve um candidato que mora fora dos EUA e "Not applicable - I am
+        located outside of the U.S.". Manter "No" ali escolheria "No - I am
+        authorized to work in the U.S...." — um fato que o candidato nunca
+        declarou. A troca e derivada do pais, e o pais entra na evidencia.
+        """
+        # Import tardio de proposito: `options` reexporta as tabelas daqui, e um
+        # import no topo criaria ciclo.
+        from .options import option_forms, option_key
+
+        key = option_key(str(field.semantic_type or ""), supported_by)
+        if key != "sponsorship":
+            return None
+        if not _answers_no(answer):
+            return None
+        if not _us_question(field.label):
+            return None
+        if _candidate_in_us(self.profile):
+            return None
+        forms = option_forms(key, "outside_us")
+        if not forms:
+            return None
+        return forms[0], tuple(supported_by) + ("profile.identity.country",)
 
     # -- reuso aprovado --------------------------------------------------------
 
@@ -1346,6 +1397,40 @@ def _option_mismatch(answer: str, field: ApplicationField) -> bool:
         return False
     normalized = _normalize(answer)
     return all(normalized != _normalize(option) for option in field.options)
+
+
+def _closed_widget(field: ApplicationField) -> bool:
+    """O campo so aceita valores de uma lista fechada (nao aceita redacao).
+
+    `combobox` inclui os typeaheads que carregam as opcoes depois do clique
+    (Greenhouse/react-select): continuam sendo lista fechada.
+    """
+    field_type = str(field.field_type or "").casefold().strip()
+    if field_type in {"combobox", "select", "radio", "datalist"}:
+        return True
+    return field_type == "checkbox" and str(field.semantic_type or "") != "checkbox_boolean"
+
+
+def _answers_no(answer: str) -> bool:
+    return _normalize(answer) in {"no", "nao", "false", "never", "not required"}
+
+
+#: Como uma pergunta de sponsorship se limita aos EUA.
+_US_QUESTION_CUES = ("united states", " u s ", "usa", "u s a", "us work", "in the us")
+
+
+def _us_question(label: str) -> bool:
+    haystack = f" {_normalize(label)} "
+    return any(cue in haystack for cue in _US_QUESTION_CUES)
+
+
+def _candidate_in_us(profile: CareerProfile) -> bool:
+    identity = profile.identity or {}
+    country = _normalize(str(identity.get("country", "") or ""))
+    if not country:
+        location = _normalize(str(identity.get("current_location", "") or identity.get("location", "") or ""))
+        country = "united states" if "united states" in location or location.endswith(" usa") else ""
+    return country in {"united states", "united states of america", "usa", "us"}
 
 
 def _map_to_option(answer: str, field: ApplicationField) -> str | None:

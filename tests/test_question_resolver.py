@@ -19,7 +19,7 @@ from jobsearch_agent.models import (
     Experience,
     Job,
 )
-from jobsearch_agent.qa import AnswerKnowledgeBase
+from jobsearch_agent.qa import AnswerKnowledgeBase, AnswerRule
 from jobsearch_agent.resolver import (
     CandidateContextBuilder,
     FactValidator,
@@ -699,3 +699,100 @@ def test_cert_a05b_a_combobox_without_options_still_answers_a_declared_preferenc
     assert resolution.status == ResolutionStatus.RESOLVED.value
     assert resolution.answer == "Immediately"
     assert resolution.supported_by == ("preferences.notice_period",)
+
+
+def test_cert_a05c_sponsorship_outside_the_us_is_not_a_plain_no():
+    """A pergunta e sobre trabalhar NOS EUA; "No" ali afirma work authorization.
+
+    Achado real: o formulario da Fueled pergunta "will you require employer
+    sponsorship ... in the U.S.?" e a opcao "No" do board e "No - I am authorized
+    to work in the U.S. and will not require sponsorship". O candidato mora no
+    Brasil e nunca declarou isso; a resposta correta e a que descreve a situacao
+    dele, derivada do pais.
+    """
+    residency = _profile()
+    residency.identity["country"] = "Brazil"
+    policy = AnswerKnowledgeBase(
+        [], rules=[AnswerRule(name="sponsorship", match=("sponsorship",), source="requires_sponsorship")]
+    )
+    field = ApplicationField(
+        key="question_18722972008",
+        label="Will you require employer sponsorship or immigration support to work for Fueled in the U.S., either now or in the future? *",
+        field_type="combobox",
+        required=True,
+    )
+    resolution = _resolver(
+        answers=policy,
+        preferences=CandidatePreferences(requires_sponsorship="no"),
+        identity_profile=residency,
+    ).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "Not applicable - I am located outside of the U.S."
+    assert "profile.identity.country" in resolution.supported_by
+
+
+def test_cert_a05d_a_us_candidate_still_answers_the_plain_no():
+    residency = _profile()
+    residency.identity["country"] = "United States"
+    residency.identity["current_location"] = "Austin, United States"
+    policy = AnswerKnowledgeBase(
+        [], rules=[AnswerRule(name="sponsorship", match=("sponsorship",), source="requires_sponsorship")]
+    )
+    field = ApplicationField(
+        key="q-sponsorship",
+        label="Will you require employer sponsorship or immigration support to work in the U.S.? *",
+        field_type="combobox",
+        required=True,
+    )
+    resolution = _resolver(
+        answers=policy,
+        preferences=CandidatePreferences(requires_sponsorship="no"),
+        identity_profile=residency,
+    ).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "No"
+
+
+def test_cert_a06b_a_closed_widget_never_receives_a_written_answer():
+    """Um combobox so aceita as opcoes do board: redacao nao e uma delas.
+
+    Na vaga real da Fueled, "Which of the following best describes your
+    experience ...?" (combobox) recebeu um paragrafo de motivacao gerado. O
+    widget nao tinha o que escolher, o campo obrigatorio ficaria vazio e a
+    telemetria dizia "respondida".
+    """
+    field = ApplicationField(
+        key="question_18722968008",
+        label="Which of the following best describes your experience working in a digital agency or consulting firm? *",
+        field_type="combobox",
+        required=True,
+    )
+    resolution = _resolver(provider=GroundedTemplateProvider()).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.NEEDS_HUMAN.value
+    assert resolution.reason == "closed_option_without_declared_answer"
+
+
+def test_cert_a06c_an_open_text_question_still_accepts_a_grounded_answer():
+    field = ApplicationField(
+        key="q-motivation",
+        label="Why do you want to work here?",
+        field_type="textarea",
+        required=True,
+    )
+    resolution = _resolver(provider=GroundedTemplateProvider()).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.source == "generated_grounded"
+
+
+def test_cert_a02b_notice_period_aliases_cover_the_board_wording():
+    """A opcao real do board e "Available immediately"."""
+    from jobsearch_agent.options import option_candidates
+
+    candidates = option_candidates(semantic_type="notice_period", value="Immediately")
+
+    assert "available immediately" in candidates
+    assert candidates[0] == "Immediately"
