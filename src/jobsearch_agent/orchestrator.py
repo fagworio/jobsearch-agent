@@ -46,6 +46,7 @@ class DryRunApplicationOrchestrator:
         answers: AnswerKnowledgeBase,
         filler: PlaywrightFormFiller | None = None,
         max_cycles: int = 5,
+        resolver: Any | None = None,
     ):
         if max_cycles < 1:
             raise ValueError("max_cycles must be positive")
@@ -53,6 +54,9 @@ class DryRunApplicationOrchestrator:
         self.profile = profile
         self.preferences = preferences
         self.answers = answers
+        #: Resolvedor unificado (JSA-QA-001). Ausente = comportamento anterior,
+        #: com o `AnswerKnowledgeBase` como unico resolvedor.
+        self.resolver: Any = resolver
         self.filler = filler or PlaywrightFormFiller()
         self.max_cycles = max_cycles
 
@@ -114,17 +118,36 @@ class DryRunApplicationOrchestrator:
         return self.run(session, context, audit_dir)
 
     def _resolve_fields(self, context: ApplicationContext) -> None:
+        """Resolve cada campo. Com `QuestionResolver`, a decisao e dele.
+
+        O orquestrador nao sabe se a resposta veio de resposta aprovada, do
+        perfil, das preferencias ou de geracao grounded: ele so sabe que houve
+        RESOLVED ou NEEDS_HUMAN. A decisao fica registrada no contexto para
+        auditoria, sem o texto da resposta.
+        """
         resolved: list[ApplicationAnswer] = []
+        decisions: dict[str, dict[str, object]] = {}
         if context.form is None:
             return
         for field in context.form.fields:
             answer = field.answer if field.answer and field.answer.approved and field.answer.answer else None
-            if answer is None:
+            if answer is None and self.resolver is not None:
+                resolution = self.resolver.resolve_field(field)
+                decisions[field.key] = {
+                    "status": resolution.status,
+                    "source": resolution.source,
+                    "reason": resolution.reason,
+                    "supported_by": list(resolution.supported_by),
+                }
+                answer = resolution.to_answer(field)
+            elif answer is None:
                 answer = self.answers.resolve_field(field, self.profile, self.preferences)
             field.answer = answer
             if answer:
                 resolved.append(answer)
         context.answers = resolved
+        if decisions:
+            context.validation["question_resolution"] = decisions
 
     @classmethod
     def _carry_approved_answers(cls, previous_form: Any, current_form: Any, approved_answers: list[ApplicationAnswer]) -> None:
@@ -259,8 +282,9 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
         allow_advance: bool = True,
         artifact_root: str = "",
         default_resume: str = "",
+        resolver: Any | None = None,
     ):
-        super().__init__(adapter, profile, preferences, answers, filler, max_cycles)
+        super().__init__(adapter, profile, preferences, answers, filler, max_cycles, resolver)
         self.allow_advance = allow_advance
         self.artifact_root = artifact_root
         self.default_resume = default_resume

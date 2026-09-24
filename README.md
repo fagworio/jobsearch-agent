@@ -150,6 +150,44 @@ reenviado automaticamente; `SUBMIT_FAILED` é definitivo e pode ser retomado por
 `application retry-submit`. O executor HTTP (`GreenhouseSubmissionExecutor`) permanece como
 implementação controlada para testes e servidores locais.
 
+### Perguntas: uma decisão, nunca silêncio
+
+O agente responde com um resolvedor único (`resolver.py`, ADR 0007) que **sempre** devolve uma
+decisão explícita:
+
+```text
+RESOLVED      há resposta, com origem e suporte
+NEEDS_HUMAN   a pergunta é legítima e falta fato — e o motivo vem junto
+UNSUPPORTED   o formulário pede algo que o agente não sabe receber
+```
+
+A precedência é determinística, e geração é o último recurso:
+
+```text
+1 resposta exata já aprovada      5 reuso semântico de resposta aprovada
+2 AnswerRule explícita            6 geração grounded
+3 Career Profile / locked facts   7 NEEDS_HUMAN
+4 CandidatePreferences
+```
+
+O `AnswerKnowledgeBase` não foi substituído: virou a primeira etapa do resolvedor.
+
+O que entra no contexto é **material autorizado**, e cada item carrega a própria origem
+(`profile.skills.wordpress`, `fact_…`, `preferences.work_authorization`). O gerador recebe esse
+contexto e devolve estrutura — `answer`, `supported_by`, `confidence` — nunca texto solto. E o que
+volta passa pelo `FactValidator`: número, valor monetário e entidade capitalizada precisam ter
+respaldo no contexto, o que barra empregador, cargo, anos, certificação, métrica, tecnologia e
+salário inventados.
+
+Pergunta **factual** sem fato vira `NEEDS_HUMAN`; só pergunta **discursiva** pode ser escrita. E
+autodeclaração e tema legal (deficiência, raça/etnia, veterano, antecedentes, visto, autorização de
+trabalho) nunca são gerados: com fato explícito são respondidos, sem ele param.
+
+Sem chave de LLM o produto continua respondendo: entra o gerador determinístico, que monta a resposta
+apenas com itens do contexto autorizado. Com `JOBSEARCH_LLM_*` configurado, o `LLMAnswerProvider`
+assume o mesmo protocolo. Qualidade de geração, ranking de contexto e memória entre candidaturas são
+o JSA-QA-002.
+
 ### Um comando: da vaga ao desfecho
 
 ```bash

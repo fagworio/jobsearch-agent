@@ -20,6 +20,7 @@ from .greenhouse import GreenhouseSubmissionExecutor
 from .providers import apply_url as provider_apply_url, profile_for, provider_for_url
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .loop import LoopRuntime, PreparedMaterial
+from .resolver import GroundedTemplateProvider, LLMAnswerProvider
 from .llm import OpenAICompatibleProvider
 from .models import ApplicationContext, ApplicationState, CandidatePreferences, Job, JobState, now_iso, to_dict
 from .observability import append_event
@@ -829,6 +830,7 @@ def loop_runtime(
             resume_sha256=hashlib.sha256(resume.read_bytes()).hexdigest(),
             artifact_root=str(artifact_dir),
             validation=dict(prepared.get("validation", {})),
+            resume=dict(prepared.get("resume", {}) or {}),
         )
 
     def resolve_adapter(job: Job) -> Any:
@@ -866,10 +868,31 @@ def loop_runtime(
         answers=answers,
         prepare=prepare_material,
         open_session=open_session,
+        answer_provider=_answer_provider(settings),
         max_cycles=max_cycles,
         allow_advance=allow_advance,
         submission_timeout=submission_timeout,
     )
+
+
+def _answer_provider(settings: Settings):
+    """Gerador de resposta discursiva: LLM quando configurado, grounded caso contrario.
+
+    Sem LLM o produto NAO deixa de responder: entra o gerador deterministico, que
+    monta a resposta apenas com itens do contexto autorizado e devolve o
+    `supported_by` deles. O que ele nunca faz e inventar fato — e o validador
+    confere isso de qualquer forma. Melhorar a qualidade da geracao e o JSA-QA-002.
+    """
+    if settings.llm_base_url and settings.llm_api_key and settings.llm_model:
+        return LLMAnswerProvider(
+            OpenAICompatibleProvider(
+                settings.llm_base_url,
+                settings.llm_api_key,
+                settings.llm_model,
+                timeout=settings.request_timeout,
+            )
+        )
+    return GroundedTemplateProvider()
 
 
 def run(settings: Settings, payload: dict[str, Any] | None = None, url: str = "", language_override: str | None = None) -> dict[str, Any]:

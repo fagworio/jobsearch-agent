@@ -41,6 +41,7 @@ from jobsearch_agent.models import (
 )
 from jobsearch_agent.persistence import Database
 from jobsearch_agent.qa import AnswerKnowledgeBase
+from jobsearch_agent.resolver import GroundedTemplateProvider
 from jobsearch_agent.submission import LiveNetworkPolicy
 from tests.e2e.controlled_ats import JOB_ID, ControlledATS
 from tests.e2e.session import LoopbackSession
@@ -102,16 +103,13 @@ def _approved_answers() -> AnswerKnowledgeBase:
     """Respostas já aprovadas pelo candidato.
 
     Autorização de trabalho e sponsorship NÃO entram aqui: vêm das preferências,
-    que são a fonte canônica. O motor unificado de respostas é o JSA-QA-001.
+    que são a fonte canônica. E a pergunta aberta **também não**: ela precisa ser
+    GERADA a partir do contexto autorizado, que é o aceite do JSA-QA-001.
     """
     rows = [
         ("Years of experience with WordPress", "5"),
         ("Salary expectation", "USD 3000 per month"),
         ("How did you hear about this job?", "LinkedIn"),
-        (
-            "Why are you interested in this role?",
-            "I build WordPress products and want to keep working on the platform.",
-        ),
         ("I agree to the processing of my personal data", "Yes"),
     ]
     return AnswerKnowledgeBase(
@@ -174,6 +172,10 @@ def _runtime(
         ),
         open_session=open_session,
         policy_for=policy_for,
+        # Gerador deterministico: monta a resposta apenas com itens do contexto
+        # autorizado e devolve o `supported_by` deles. Um LLM entra no mesmo
+        # protocolo (`LLMAnswerProvider`) sem mudar o resolvedor.
+        answer_provider=GroundedTemplateProvider(),
         allow_insecure_destination=True,
         allow_advance=False,
     )
@@ -253,8 +255,28 @@ def test_loop_takes_a_job_id_to_submitted_without_manual_steps(tmp_path: Path):
         assert fields["job_application[authorized_to_work_in_brazil]"] == "Yes"
         assert fields["job_application[requires_sponsorship]"] == "No"
         assert fields["job_application[source]"] == "LinkedIn"
-        assert fields["job_application[why_this_role]"].strip()
+        open_answer = fields["job_application[why_this_role]"].strip()
+        assert open_answer, "a pergunta aberta chegou vazia"
         assert "consent" in "".join(fields)
+
+        # 6. A pergunta aberta foi GERADA, e a geracao tem proveniencia: nao basta
+        # "algum texto foi escrito", tem de ter saido de contexto verificavel.
+        persisted_form = database.get_application_form(result.application_id)
+        answers_by_key = {
+            field["key"]: (field.get("answer") or {})
+            for field in persisted_form["fields"]
+        }
+        generated = answers_by_key["job_application[why_this_role]"]
+        assert generated.get("source") == "generated_grounded", generated
+        assert generated.get("supported_by"), "resposta gerada sem proveniencia"
+        assert generated.get("answer", "").strip() == open_answer
+
+        decisions = database.get_application(result.application_id).context.get("validation", {}).get(
+            "question_resolution", {}
+        )
+        assert decisions["job_application[why_this_role]"]["status"] == "RESOLVED"
+        assert decisions["job_application[why_this_role]"]["source"] == "generated_grounded"
+        assert decisions["job_application[salary_expectation]"]["source"] != "generated_grounded"
 
         # 3. Estado persistido: tentativa e Application em SUBMITTED.
         attempts = database.list_submission_attempts(result.application_id)

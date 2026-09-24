@@ -37,6 +37,7 @@ from .models import (
 from .orchestrator import LiveApplicationOrchestrator, LiveApplicationResult
 from .persistence import Database
 from .qa import AnswerKnowledgeBase
+from .resolver import QuestionResolver
 from .submission import compute_answers_fingerprint
 
 #: Estados em que o loop PARA e nao ha nada mais a fazer sozinho.
@@ -99,6 +100,8 @@ class PreparedMaterial:
     resume_sha256: str
     artifact_root: str = ""
     validation: dict[str, Any] = field(default_factory=dict)
+    #: Curriculo dinamico (dict serializado): contexto autorizado para geracao.
+    resume: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,9 @@ class LoopRuntime:
     prepare: MaterialPreparer
     #: Abre e JA INICIA a sessao; o loop fecha no `finally`.
     open_session: Callable[[Job, ATSAdapter], Any]
+    #: Gerador de resposta discursiva (JSA-QA-001E). Ausente = perguntas abertas
+    #: sem gerador caem em NEEDS_HUMAN, e nao em texto inventado.
+    answer_provider: Any | None = None
     #: Ausente = politica declarada pelo provider (`LiveNetworkPolicy.for_submission`).
     #: A politica continua sendo validada contra a intent em `begin_submission`:
     #: injetar a CONSTRUCAO dela nao afrouxa a boundary.
@@ -214,6 +220,7 @@ class ApplicationLoop:
                 default_resume=material.resume_path,
                 max_cycles=self.runtime.max_cycles,
                 allow_advance=self.runtime.allow_advance,
+                resolver=self._resolver(job, material),
             )
             live = orchestrator.run(session, context, form_url)
             phases.extend([LoopPhase.RESOLVE.value, LoopPhase.FILL.value])
@@ -272,6 +279,19 @@ class ApplicationLoop:
             close = getattr(session, "close", None)
             if callable(close):
                 close()
+
+    # -- resolucao -------------------------------------------------------------
+
+    def _resolver(self, job: Job, material: PreparedMaterial):
+        """Um resolvedor por execucao: ele conhece a vaga e o material corrente."""
+        return QuestionResolver(
+            knowledge=self.runtime.answers,
+            profile=self.runtime.profile,
+            preferences=self.runtime.preferences,
+            job=job,
+            resume=material.resume,
+            provider=self.runtime.answer_provider,
+        )
 
     # -- decisoes --------------------------------------------------------------
 
@@ -406,8 +426,20 @@ class ApplicationLoop:
     ) -> Application:
         """Persiste a decisao do Safety Gate — inclusive quando ela nao e sucesso."""
         readiness = live.readiness or evaluate_safety_gate(context)
+        # O contexto do orquestrador volta para a Application: e nele que ficam a
+        # decisao por campo, as respostas resolvidas e o formulario corrente. O
+        # `resume_sha256` e reaplicado porque ele vem do material, nao da inspecao.
+        merged = to_dict(context)
+        merged["resume_sha256"] = str(application.context.get("resume_sha256", ""))
+        application.context = merged
         application.context["readiness"] = to_dict(readiness)
         self.database.save_application(application)
+        # O formulario resolvido e material de auditoria: e dele que saem o
+        # snapshot, os fingerprints e a proveniencia de cada resposta. Sem
+        # persisti-lo, "por que este campo foi preenchido assim" nao tem resposta
+        # depois do fato.
+        if live.form is not None:
+            self.database.save_application_form(application.id, live.form)
         decision = readiness.decision
         if decision is not application.state and decision in TRANSITIONS[application.state]:
             application = service.transition(
