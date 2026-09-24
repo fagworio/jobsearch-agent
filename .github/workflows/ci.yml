@@ -83,5 +83,5 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Run local Chromium dry-run fixture
         run: pytest -q tests/test_playwright_runtime.py
-      - name: Run the controlled-ATS end-to-end submission (JSA-E2E-001)
-        run: pytest -q tests/e2e/test_e2e_001_controlled_submit.py
+      - name: Run the controlled-ATS end-to-end submissions (JSA-E2E-001/002)
+        run: pytest -q tests/e2e/

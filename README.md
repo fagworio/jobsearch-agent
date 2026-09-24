@@ -226,6 +226,30 @@ por `LoopRuntime`, montado por `pipeline.loop_runtime` em produção e por um
 runtime sintético nos testes. A sequência de submissão existe em um só lugar
 (`SubmissionCoordinator`), compartilhada com `apply_live`.
 
+### Multi-step: a autorização cobre a candidatura, não a última tela
+
+Um formulário de várias etapas substitui o DOM a cada avanço. O `ApplicationForm` continua
+significando **o que está na tela agora**; quem responde pela candidatura inteira é o
+`ApplicationJourney`, que acumula cada etapa com fingerprint, URL e a decisão de cada campo.
+
+```text
+form_fingerprint      a superfície FINAL onde o Submit acontece
+answers_fingerprint   TODAS as respostas aprovadas, de TODAS as etapas
+```
+
+Sem essa separação, o browser preencheria quatro telas e a `SubmissionIntent` validaria uma — sem
+erro nenhum, com a auditoria errada. O `ReviewSnapshot` passa a ser montado do contrato acumulado, e
+um campo que reaparece com **valor diferente** vira `CONTRACT_CONFLICT` em vez de "a última tela
+vence".
+
+Avanço de etapa continua local: `Next`/`Continue`/`Review` só são clicados como `type="button"`, e
+qualquer escrita que tentem é bloqueada. Boards que salvam etapa por API exigem boundary própria
+(JSA-LOOP-003), nunca um `POST` genérico durante o `Next`.
+
+```bash
+make test-browser-runtime      # E2E-001 (uma tela) e E2E-002 (cinco telas)
+```
+
 ### E2E controlado: o POST real até `SUBMITTED`
 
 `tests/e2e/test_e2e_001_controlled_submit.py` sobe um ATS controlado em loopback

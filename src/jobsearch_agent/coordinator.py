@@ -77,13 +77,21 @@ class SubmissionCoordinator:
         ttl_seconds: int = 300,
         allow_insecure_destination: bool = False,
         policy_factory: "PolicyFactory | None" = None,
+        journey: Any | None = None,
     ) -> SubmissionResult:
-        """Executa UMA submissao autorizada. Nao decide se deve submeter."""
+        """Executa UMA submissao autorizada. Nao decide se deve submeter.
+
+        `journey` e o contrato ACUMULADO (JSA-LOOP-002). O browser submete o
+        formulario real da tela final; o snapshot, que e o que autoriza e audita,
+        precisa cobrir todas as etapas — senao a autorizacao valida apenas a
+        ultima tela de uma candidatura que respondeu em quatro.
+        """
         if not all((resume_sha256, form_fingerprint, answers_fingerprint)):
             raise SubmissionBoundaryError(
                 "submission requires form fingerprint, answers fingerprint and resume SHA256"
             )
-        resolved_fields, manual_questions = review_field_rows(form)
+        source = journey.as_form() if journey is not None else form
+        resolved_fields, manual_questions = review_field_rows(source)
         service = SubmissionService(self.database)
         service.save_review_snapshot(
             build_review_snapshot(

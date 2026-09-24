@@ -11,6 +11,7 @@ from .application import evaluate_safety_gate
 from .ats import ATSAdapter, adapter_for
 from .browser import BrowserExecutionResult, DOMStabilityGuard, GuardedBrowserSession, PlaywrightFormFiller
 from .execution import ExecutionPlan, build_execution_plan
+from .journey import ApplicationJourney
 from .inspector import FormBindings, InspectionError, compute_form_fingerprint
 from .models import ApplicationAnswer, ApplicationContext, ApplicationForm, ApplicationReadiness, ApplicationState, CareerProfile, CandidatePreferences
 from .qa import AnswerKnowledgeBase, question_key
@@ -47,6 +48,7 @@ class DryRunApplicationOrchestrator:
         filler: PlaywrightFormFiller | None = None,
         max_cycles: int = 5,
         resolver: Any | None = None,
+        journey: Any | None = None,
     ):
         if max_cycles < 1:
             raise ValueError("max_cycles must be positive")
@@ -57,6 +59,11 @@ class DryRunApplicationOrchestrator:
         #: Resolvedor unificado (JSA-QA-001). Ausente = comportamento anterior,
         #: com o `AnswerKnowledgeBase` como unico resolvedor.
         self.resolver: Any = resolver
+        #: Contrato acumulado (JSA-LOOP-002). O formulario e "o DOM agora"; o
+        #: journey e "a candidatura inteira" — e a autorizacao cobre a inteira.
+        self.journey = journey if journey is not None else ApplicationJourney(
+            provider=getattr(adapter, "provider", "")
+        )
         self.filler = filler or PlaywrightFormFiller()
         self.max_cycles = max_cycles
 
@@ -80,11 +87,18 @@ class DryRunApplicationOrchestrator:
             self._carry_artifacts(previous_form, inspected.form)
             self._carry_approved_answers(previous_form, inspected.form, list(context.answers))
             context.form = inspected.form
-            self._resolve_fields(context)
+            decisions = self._resolve_fields(context)
             fingerprint = compute_form_fingerprint(inspected.form, inspected.bindings)
             if fingerprint in seen:
                 return DryRunApplicationResult("LOOP_DETECTED", history, error=f"form fingerprint repeated at cycle {cycle}")
             seen.add(fingerprint)
+            self.journey.add_step(
+                index=cycle,
+                form=inspected.form,
+                form_fingerprint=fingerprint,
+                url=str(page.url),
+                decisions=decisions,
+            )
 
             readiness = evaluate_safety_gate(context)
             entry = DryRunCycle(cycle, fingerprint, readiness.decision)
@@ -117,7 +131,7 @@ class DryRunApplicationOrchestrator:
         session = session_factory()
         return self.run(session, context, audit_dir)
 
-    def _resolve_fields(self, context: ApplicationContext) -> None:
+    def _resolve_fields(self, context: ApplicationContext) -> dict[str, dict[str, object]]:
         """Resolve cada campo. Com `QuestionResolver`, a decisao e dele.
 
         O orquestrador nao sabe se a resposta veio de resposta aprovada, do
@@ -128,7 +142,7 @@ class DryRunApplicationOrchestrator:
         resolved: list[ApplicationAnswer] = []
         decisions: dict[str, dict[str, object]] = {}
         if context.form is None:
-            return
+            return decisions
         for field in context.form.fields:
             answer = field.answer if field.answer and field.answer.approved and field.answer.answer else None
             if answer is None and self.resolver is not None:
@@ -146,8 +160,7 @@ class DryRunApplicationOrchestrator:
             if answer:
                 resolved.append(answer)
         context.answers = resolved
-        if decisions:
-            context.validation["question_resolution"] = decisions
+        return decisions
 
     @classmethod
     def _carry_approved_answers(cls, previous_form: Any, current_form: Any, approved_answers: list[ApplicationAnswer]) -> None:
@@ -226,6 +239,12 @@ _ADVANCE_LABELS = frozenset(
         "continuar",
         "avancar",
         "avançar",
+        # Controle de etapa que leva a tela de revisao. Ele e `type="button"`:
+        # `_advance` nunca clica em controle de envio.
+        "review",
+        "review application",
+        "revisar",
+        "revisar candidatura",
     }
 )
 
@@ -283,8 +302,9 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
         artifact_root: str = "",
         default_resume: str = "",
         resolver: Any | None = None,
+        journey: Any | None = None,
     ):
-        super().__init__(adapter, profile, preferences, answers, filler, max_cycles, resolver)
+        super().__init__(adapter, profile, preferences, answers, filler, max_cycles, resolver, journey)
         self.allow_advance = allow_advance
         self.artifact_root = artifact_root
         self.default_resume = default_resume
@@ -325,7 +345,7 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
                 for candidate in inspected.form.fields:
                     if candidate.attachment_path:
                         attachments[candidate.key] = candidate.attachment_path
-                self._resolve_fields(context)
+                decisions = self._resolve_fields(context)
                 fingerprint = compute_form_fingerprint(inspected.form, inspected.bindings)
                 if fingerprint in seen:
                     return LiveApplicationResult(
@@ -336,6 +356,36 @@ class LiveApplicationOrchestrator(DryRunApplicationOrchestrator):
                         error=f"form fingerprint repeated at cycle {cycle}",
                     )
                 seen.add(fingerprint)
+                step = self.journey.add_step(
+                    index=cycle,
+                    form=inspected.form,
+                    form_fingerprint=fingerprint,
+                    url=str(page.url),
+                    decisions=decisions,
+                )
+                # Acumulado, nunca sobrescrito: a decisao da PRIMEIRA aparicao do
+                # campo e a que fica registrada, com a etapa onde ela aconteceu.
+                # A fonte e o passo do acumulador, que ja carrega `step`.
+                if step.decisions:
+                    accumulated = dict(context.validation.get("question_resolution", {}))
+                    for key, value in step.decisions.items():
+                        accumulated.setdefault(key, value)
+                    context.validation["question_resolution"] = accumulated
+                if self.journey.conflicts:
+                    conflict = self.journey.conflicts[0]
+                    return LiveApplicationResult(
+                        "CONTRACT_CONFLICT",
+                        provider=inspected.form.provider,
+                        url=str(page.url),
+                        cycles=history,
+                        form=inspected.form,
+                        form_fingerprint=fingerprint,
+                        error=(
+                            f"{conflict.field_key}: step {conflict.first_index} said "
+                            f"{conflict.first_value!r} and step {conflict.later_index} said "
+                            f"{conflict.later_value!r}"
+                        ),
+                    )
 
                 readiness = evaluate_safety_gate(context)
                 entry = DryRunCycle(cycle, fingerprint, readiness.decision)

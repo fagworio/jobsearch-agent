@@ -1,18 +1,23 @@
-"""O loop unico de candidatura (JSA-LOOP-001).
+"""O loop unico de candidatura (JSA-LOOP-001 / JSA-LOOP-002).
 
 Um objetivo de produto: **dada uma vaga, chegar a um desfecho comprovado.** O
 loop coordena as pecas que ja existiam — material, browser, orquestrador de
-inspecao/preenchimento, coordenador de submissao, dominio — e nao reimplementa
-nenhuma delas.
+inspecao/preenchimento, resolvedor de perguntas, coordenador de submissao,
+dominio — e nao reimplementa nenhuma delas.
 
 Ele NAO conhece ATS: nada de `if greenhouse`, seletor, marcador de desafio ou
-corpo de POST. Adapter, sessao, material e politica de escrita entram por
-`LoopRuntime`, injetados. Producao monta o runtime a partir de `Settings`
-(`pipeline.loop_runtime`); o E2E monta um runtime sintetico. Sem `if testing`.
+corpo de POST. Adapter, sessao, material, gerador de resposta e politica de
+escrita entram por `LoopRuntime`, injetados. Producao monta o runtime a partir de
+`Settings` (`pipeline.loop_runtime`); o E2E monta um sintetico. Sem `if testing`.
 
-Os conceitos de fase (inspecionar, resolver, preencher, avancar, submeter,
-observar) sao INTERNOS: eles nao viram `ApplicationState`, porque o enum
-representa decisoes de dominio, nao etapas de implementacao.
+**Multi-step (JSA-LOOP-002).** O `ApplicationForm` significa "o que esta no DOM
+agora"; quem responde pela candidatura inteira e o `ApplicationJourney`, que
+acumula cada etapa. A autorizacao final cobre o contrato acumulado — se ela
+cobrisse so a ultima tela, o browser teria preenchido quatro telas e a intent
+valido uma.
+
+`LoopPhase` (prepare/inspect/resolve/fill/advance/submit/observe) e interno:
+nenhum `ApplicationState` novo, porque o enum representa decisao de dominio.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Any, Callable, Protocol
 from .application import TRANSITIONS, ApplicationService, evaluate_safety_gate
 from .ats import ATSAdapter
 from .coordinator import SubmissionCoordinator, SubmissionResult
+from .journey import ApplicationJourney, is_answered
 from .models import (
     Application,
     ApplicationContext,
@@ -38,7 +44,6 @@ from .orchestrator import LiveApplicationOrchestrator, LiveApplicationResult
 from .persistence import Database
 from .qa import AnswerKnowledgeBase
 from .resolver import QuestionResolver
-from .submission import compute_answers_fingerprint
 
 #: Estados em que o loop PARA e nao ha nada mais a fazer sozinho.
 TERMINAL_STATES: frozenset[ApplicationState] = frozenset(
@@ -106,7 +111,12 @@ class PreparedMaterial:
 
 @dataclass(frozen=True)
 class ApplicationLoopResult:
-    """Contrato final do loop: o mesmo em qualquer caminho de saida, sem PII."""
+    """Contrato final do loop: o mesmo em qualquer caminho de saida, sem PII.
+
+    Em multi-step, `cycles` e o numero de telas inspecionadas,
+    `steps_completed` os avancos concluidos, e `questions_answered` /
+    `unanswered_required` vem do contrato ACUMULADO — nunca da ultima tela.
+    """
 
     application_id: str
     job_id: str
@@ -151,12 +161,10 @@ class LoopRuntime:
     prepare: MaterialPreparer
     #: Abre e JA INICIA a sessao; o loop fecha no `finally`.
     open_session: Callable[[Job, ATSAdapter], Any]
-    #: Gerador de resposta discursiva (JSA-QA-001E). Ausente = perguntas abertas
-    #: sem gerador caem em NEEDS_HUMAN, e nao em texto inventado.
+    #: Gerador de resposta discursiva (JSA-QA-001E). Ausente = pergunta aberta
+    #: cai em NEEDS_HUMAN, e nao em texto inventado.
     answer_provider: Any | None = None
     #: Ausente = politica declarada pelo provider (`LiveNetworkPolicy.for_submission`).
-    #: A politica continua sendo validada contra a intent em `begin_submission`:
-    #: injetar a CONSTRUCAO dela nao afrouxa a boundary.
     policy_for: PolicyFactory | None = None
     allow_insecure_destination: bool = False
     max_cycles: int = 5
@@ -200,6 +208,8 @@ class ApplicationLoop:
         material = self.runtime.prepare(job)
         application = self._record_materials(service, application, material)
         adapter = self.runtime.adapter_for(job)
+        # Um acumulador por execucao: e ele que responde pelo TODO.
+        journey = ApplicationJourney(provider=str(getattr(adapter, "provider", "")), job_id=job.id)
         form_url = self.runtime.form_url(job, adapter)
         session: Any = None
         try:
@@ -221,27 +231,40 @@ class ApplicationLoop:
                 max_cycles=self.runtime.max_cycles,
                 allow_advance=self.runtime.allow_advance,
                 resolver=self._resolver(job, material),
+                journey=journey,
             )
             live = orchestrator.run(session, context, form_url)
+            if not journey.steps and live.form is not None:
+                # Blindagem: se algum caminho devolver formulario sem registrar a
+                # etapa, o contrato passa a valer mesmo assim. Sem isto os totais
+                # do resultado sairiam zerados em silencio.
+                journey.add_step(
+                    index=1,
+                    form=live.form,
+                    form_fingerprint=live.form_fingerprint or "",
+                    url=live.url,
+                    decisions=dict(context.validation.get("question_resolution", {})),
+                )
             phases.extend([LoopPhase.RESOLVE.value, LoopPhase.FILL.value])
             if live.advanced_steps:
                 phases.append(LoopPhase.ADVANCE.value)
 
-            # A decisao de dominio vem do Safety Gate que o orquestrador ja
-            # rodou; ela e persistida ANTES de qualquer ramificacao. Sem isto o
-            # caminho de falha nao deixava rastro: um formulario com pergunta sem
-            # resposta ficava em MATERIALS_READY, e o loop nao tinha estado para
-            # reportar.
-            application = self._record_decision(service, application, live, context)
+            # A decisao de dominio vem do Safety Gate que o orquestrador rodou; o
+            # contrato acumulado fica registrado junto, ANTES de qualquer
+            # ramificacao — o caminho de falha tambem precisa de rastro.
+            application = self._record_decision(service, application, live, context, journey)
+
             if live.status != "FILLED_REVIEW_REQUIRED":
                 # O orquestrador ja decidiu: preenchimento incompleto, formulario
-                # nao suportado, loop de etapas detectado ou erro de browser.
-                # Nao se forca a resolucao "de qualquer jeito".
-                return self._without_submit(application, job, live, phases)
+                # nao suportado, loop de etapas, contradicao de contrato ou erro
+                # de browser. Nao se forca a resolucao "de qualquer jeito".
+                return self._without_submit(application, job, live, journey, phases)
 
             form = live.form
+            # `form_fingerprint` = superficie FINAL onde o Submit acontece.
+            # `answers_fingerprint` = TODAS as respostas, de TODAS as etapas.
             form_fingerprint = live.form_fingerprint
-            answers_fingerprint = compute_answers_fingerprint(form)
+            answers_fingerprint = journey.answers_fingerprint()
             application = self._record_review(service, application, live)
             if not submit:
                 return self._result(
@@ -249,6 +272,7 @@ class ApplicationLoop:
                     job,
                     status="READY_TO_SUBMIT",
                     live=live,
+                    journey=journey,
                     phases=phases,
                     resume_sha256=material.resume_sha256,
                     answers_fingerprint=answers_fingerprint,
@@ -270,10 +294,19 @@ class ApplicationLoop:
                 answers_fingerprint=answers_fingerprint,
                 allow_insecure_destination=self.runtime.allow_insecure_destination,
                 policy_factory=self.runtime.policy_for,
+                journey=journey,
             )
             phases.append(LoopPhase.OBSERVE.value)
             return self._from_submission(
-                application, job, live, submission, material, form_fingerprint, answers_fingerprint, phases
+                application,
+                job,
+                live,
+                journey,
+                submission,
+                material,
+                form_fingerprint,
+                answers_fingerprint,
+                phases,
             )
         finally:
             close = getattr(session, "close", None)
@@ -282,7 +315,7 @@ class ApplicationLoop:
 
     # -- resolucao -------------------------------------------------------------
 
-    def _resolver(self, job: Job, material: PreparedMaterial):
+    def _resolver(self, job: Job, material: PreparedMaterial) -> QuestionResolver:
         """Um resolvedor por execucao: ele conhece a vaga e o material corrente."""
         return QuestionResolver(
             knowledge=self.runtime.answers,
@@ -317,6 +350,7 @@ class ApplicationLoop:
         application: Application,
         job: Job,
         live: LiveApplicationResult,
+        journey: ApplicationJourney,
         submission: SubmissionResult,
         material: PreparedMaterial,
         form_fingerprint: str,
@@ -330,6 +364,7 @@ class ApplicationLoop:
             job,
             status=submission.status,
             live=live,
+            journey=journey,
             phases=phases,
             resume_sha256=material.resume_sha256,
             answers_fingerprint=answers_fingerprint,
@@ -342,22 +377,31 @@ class ApplicationLoop:
         )
 
     def _without_submit(
-        self, application: Application, job: Job, live: LiveApplicationResult, phases: list[str]
+        self,
+        application: Application,
+        job: Job,
+        live: LiveApplicationResult,
+        journey: ApplicationJourney,
+        phases: list[str],
     ) -> ApplicationLoopResult:
         state = self._state(application.id)
         recoverable = state in RECOVERABLE_STATES
         status = live.status
-        if status == "LOOP_DETECTED":
-            # Repetir o mesmo formulario nao e para tentar de novo: e defeito de fluxo.
+        requires_action = state.value if recoverable else ""
+        if status in {"LOOP_DETECTED", "CONTRACT_CONFLICT"}:
+            # Repetir o mesmo formulario, ou conviver com respostas contraditorias,
+            # nao e para tentar de novo: e defeito de fluxo e exige uma pessoa.
             recoverable = False
+            requires_action = status
         return self._result(
             application,
             job,
             status=status,
             live=live,
+            journey=journey,
             phases=phases,
             terminal=not recoverable,
-            requires_action=state.value if recoverable else "",
+            requires_action=requires_action,
             reason=live.error or status,
         )
 
@@ -369,6 +413,7 @@ class ApplicationLoop:
         status: str,
         live: LiveApplicationResult,
         phases: list[str],
+        journey: ApplicationJourney | None = None,
         resume_sha256: str = "",
         answers_fingerprint: str = "",
         terminal: bool,
@@ -378,20 +423,22 @@ class ApplicationLoop:
         submission_writes: int = 0,
         form_fingerprint: str = "",
     ) -> ApplicationLoopResult:
-        form = live.form
+        # Os totais vem do CONTRATO acumulado, nao da ultima tela: numa
+        # candidatura de quatro etapas, "respondi 13 perguntas" tem de ser 13.
         return ApplicationLoopResult(
             application_id=application.id,
             job_id=job.id,
             state=self._state(application.id),
             status=status,
-            provider=str(live.provider or ""),
-            cycles=len(live.cycles),
-            steps_completed=live.advanced_steps,
-            questions_answered=_answered(form),
-            unanswered_required=tuple(item["question"] for item in _pending(form)),
+            provider=str(getattr(journey, "provider", "") or live.provider or ""),
+            cycles=journey.cycles if journey is not None else len(live.cycles),
+            steps_completed=journey.steps_completed if journey is not None else live.advanced_steps,
+            questions_answered=journey.answered_count() if journey is not None else 0,
+            unanswered_required=journey.pending_required() if journey is not None else (),
             resume_sha256=resume_sha256,
             form_fingerprint=form_fingerprint or live.form_fingerprint,
-            answers_fingerprint=answers_fingerprint,
+            answers_fingerprint=answers_fingerprint
+            or (journey.answers_fingerprint() if journey is not None else ""),
             submission_attempted=submission_attempted,
             submission_writes=submission_writes,
             terminal=terminal,
@@ -423,21 +470,19 @@ class ApplicationLoop:
         application: Application,
         live: LiveApplicationResult,
         context: ApplicationContext,
+        journey: ApplicationJourney,
     ) -> Application:
-        """Persiste a decisao do Safety Gate — inclusive quando ela nao e sucesso."""
+        """Persiste a decisao do Safety Gate, o formulario e o contrato acumulado."""
         readiness = live.readiness or evaluate_safety_gate(context)
         # O contexto do orquestrador volta para a Application: e nele que ficam a
-        # decisao por campo, as respostas resolvidas e o formulario corrente. O
-        # `resume_sha256` e reaplicado porque ele vem do material, nao da inspecao.
+        # decisao por campo e as respostas resolvidas. O `resume_sha256` e
+        # reaplicado porque ele vem do material, nao da inspecao.
         merged = to_dict(context)
         merged["resume_sha256"] = str(application.context.get("resume_sha256", ""))
+        merged["journey"] = journey.to_dict()
         application.context = merged
         application.context["readiness"] = to_dict(readiness)
         self.database.save_application(application)
-        # O formulario resolvido e material de auditoria: e dele que saem o
-        # snapshot, os fingerprints e a proveniencia de cada resposta. Sem
-        # persisti-lo, "por que este campo foi preenchido assim" nao tem resposta
-        # depois do fato.
         if live.form is not None:
             self.database.save_application_form(application.id, live.form)
         decision = readiness.decision
@@ -480,34 +525,16 @@ class ApplicationLoop:
         return application.state
 
 
-def _is_answered(field: Any) -> bool:
-    """Um campo esta respondido por valor, por resposta OU por artefato anexado.
-
-    O campo de curriculo nao tem `value` nem `answer`: o que ele tem e
-    `attachment_path`. Sem contar o anexo, um formulario completo reportava
-    "Resume" como pergunta sem resposta — e o relatorio do loop mentia sobre o
-    unico campo que o proprio loop acabou de preencher.
-    """
-    if field.value not in (None, ""):
-        return True
-    if field.answer is not None and field.answer.answer:
-        return True
-    return bool(str(getattr(field, "attachment_path", "") or "").strip())
-
-
-def _pending(form: Any) -> list[dict[str, str]]:
-    """Perguntas obrigatorias sem resposta. Vazio quando o formulario esta completo."""
-    if form is None:
-        return []
-    pending: list[dict[str, str]] = []
-    for field in form.fields:
-        if not field.required or _is_answered(field):
-            continue
-        pending.append({"key": field.key, "question": (field.label or field.key).strip()})
-    return pending
-
-
-def _answered(form: Any) -> int:
-    if form is None:
-        return 0
-    return sum(1 for field in form.fields if _is_answered(field))
+__all__ = [
+    "ApplicationJourney",
+    "ApplicationLoop",
+    "ApplicationLoopResult",
+    "LoopError",
+    "LoopPhase",
+    "LoopRuntime",
+    "NO_RESEND_STATES",
+    "PreparedMaterial",
+    "RECOVERABLE_STATES",
+    "TERMINAL_STATES",
+    "is_answered",
+]

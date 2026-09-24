@@ -257,7 +257,9 @@ def test_a_repeated_form_is_terminal_and_not_retried(tmp_path: Path, monkeypatch
 
     assert result.status == "LOOP_DETECTED"
     assert result.terminal is True
-    assert result.requires_action == ""
+    # `requires_action` pode nomear uma ACAO, e nao apenas um estado: aqui o que
+    # falta nao e uma resposta, e sim corrigir o fluxo.
+    assert result.requires_action == "LOOP_DETECTED"
     database.close()
 
 
