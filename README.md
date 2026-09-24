@@ -150,6 +150,44 @@ reenviado automaticamente; `SUBMIT_FAILED` é definitivo e pode ser retomado por
 `application retry-submit`. O executor HTTP (`GreenhouseSubmissionExecutor`) permanece como
 implementação controlada para testes e servidores locais.
 
+### Um comando: da vaga ao desfecho
+
+```bash
+jobsearch-agent apply-to-completion <job-id> --submit
+```
+
+O loop único recebe **só o `job-id`** e conduz tudo: prepara o material, abre o
+browser, inspeciona o formulário, resolve as respostas, preenche, faz upload,
+cria e autoriza a intent, executa UM POST e observa o desfecho. Sem `--submit`
+ele para na superfície de revisão.
+
+```text
+ApplicationLoopResult
+  status · state · terminal · requires_action
+  cycles · steps_completed · questions_answered · unanswered_required
+  resume_sha256 · form_fingerprint · answers_fingerprint
+  submission_attempted · submission_writes · phases
+```
+
+As decisões que importam ficam no resultado, não no terminal:
+
+```text
+SUBMITTED                        terminal=true                sucesso
+ALREADY_SUBMITTED / NO_RESEND    terminal conforme o estado   nunca reenvia
+NEEDS_ANSWER / NEEDS_CAPTCHA …   terminal=false, requires_action
+SUBMIT_UNKNOWN / REJECTED …      terminal=true                sem retry automático
+```
+
+Rodar de novo depois de um desfecho **não abre browser e não envia nada**: a
+porta de não-reenvio (`NO_RESEND_STATES`) para o loop antes de preparar material.
+Uma Application em `AWAITING_SUBMISSION_CONFIRMATION` nunca é reenviada, mas
+**não** é terminal — ela ainda chega a `SUBMITTED` por evidência independente.
+
+O loop não conhece ATS: adapter, sessão, material e política de escrita entram
+por `LoopRuntime`, montado por `pipeline.loop_runtime` em produção e por um
+runtime sintético nos testes. A sequência de submissão existe em um só lugar
+(`SubmissionCoordinator`), compartilhada com `apply_live`.
+
 ### E2E controlado: o POST real até `SUBMITTED`
 
 `tests/e2e/test_e2e_001_controlled_submit.py` sobe um ATS controlado em loopback

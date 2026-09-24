@@ -241,6 +241,24 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--intent-ttl", type=int, default=300, help="validade da autorização em segundos")
     apply_parser.set_defaults(handler="apply")
 
+    completion_parser = sub.add_parser(
+        "apply-to-completion",
+        help="leva uma vaga ate o desfecho: material, browser, preenchimento e envio",
+        description=(
+            "Loop unico: prepara o material, abre o browser, inspeciona, responde, "
+            "preenche, faz upload, cria/autoriza a intent e (com --submit) executa UM "
+            "POST observando o desfecho. Sem --submit, para no review."
+        ),
+    )
+    runtime_options(completion_parser)
+    completion_parser.add_argument("job_id")
+    completion_parser.add_argument("--submit", action="store_true", help="autoriza e executa UM POST ao final do preenchimento")
+    completion_parser.add_argument("--no-headless", dest="headless", action="store_false", default=True)
+    completion_parser.add_argument("--no-advance", dest="advance", action="store_false", default=True, help="não clicar em Next/Continue")
+    completion_parser.add_argument("--max-cycles", type=int, default=5)
+    completion_parser.add_argument("--timeout", type=float, default=45.0)
+    completion_parser.set_defaults(handler="apply_to_completion")
+
     status = sub.add_parser("status", help="lista vagas e estados")
     runtime_options(status)
     status.set_defaults(handler="status")
@@ -500,6 +518,25 @@ def main(argv: list[str] | None = None) -> int:
                 "content_logged": False,
             })
             return 0
+        if args.handler == "apply_to_completion":
+            from .loop import ApplicationLoop
+            from .pipeline import loop_runtime
+
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                runtime = loop_runtime(
+                    settings,
+                    headless=args.headless,
+                    allow_advance=args.advance,
+                    max_cycles=args.max_cycles,
+                    submission_timeout=args.timeout,
+                )
+                result = ApplicationLoop(db, runtime).run(args.job_id, submit=args.submit)
+                application = db.get_application(result.application_id)
+                _print({"result": result.to_dict(), "application": _application_view(application) if application else None})
+                return 0 if result.status in {"SUBMITTED", "ALREADY_SUBMITTED"} else 2
+            finally:
+                db.close()
         if args.handler == "status":
             db = Database(settings.resolve(settings.db_path))
             try:

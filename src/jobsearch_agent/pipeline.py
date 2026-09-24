@@ -14,13 +14,14 @@ from .ats import GreenhouseAdapter, adapter_for
 from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
 from .challenges import JobsearchChallengeAdapter
 from .config import Settings
+from .coordinator import SubmissionCoordinator
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
 from .providers import apply_url as provider_apply_url, profile_for, provider_for_url
-from .submission_browser import BrowserSubmitter
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
+from .loop import LoopRuntime, PreparedMaterial
 from .llm import OpenAICompatibleProvider
-from .models import ApplicationContext, ApplicationState, JobState, now_iso, to_dict
+from .models import ApplicationContext, ApplicationState, CandidatePreferences, Job, JobState, now_iso, to_dict
 from .observability import append_event
 from .orchestrator import LiveApplicationOrchestrator
 from .persistence import Database
@@ -31,12 +32,8 @@ from .schemas import validate_contract
 from .serialization import canonical_json
 from .sources import JOBSPY, canonical_job_key, fetch_payload, normalize_payload
 from .submission import (
-    LiveNetworkPolicy,
-    SubmissionService,
-    build_review_snapshot,
     build_submission_payload,
     compute_answers_fingerprint,
-    review_field_rows,
     submission_destination,
 )
 
@@ -713,7 +710,11 @@ def _unanswered_questions(form) -> list[dict[str, str]]:
     for field in form.fields:
         if not field.required:
             continue
+        # O campo de curriculo responde por artefato anexado, nao por valor: sem
+        # isto um formulario completo reportava o resume como pendente.
         if field.value not in (None, "") or (field.answer and field.answer.answer):
+            continue
+        if str(getattr(field, "attachment_path", "") or "").strip():
             continue
         pending.append({"key": field.key, "question": (field.label or "").strip(), "type": field.field_type})
     return pending
@@ -773,7 +774,6 @@ def _submit_live_in_browser(
     resume_sha256 = str(application.context.get("resume_sha256", ""))
     if not all((form_fingerprint, answers_fingerprint, resume_sha256)):
         raise PipelineError("live submission requires form, answers and resume fingerprints")
-    resolved_fields, manual_questions = review_field_rows(form)
     destination = submission_destination(
         provider,
         job.company,
@@ -781,51 +781,95 @@ def _submit_live_in_browser(
         job.url,
         form_action=str(getattr(form, "action", "") or ""),
     )
-    submission_service = SubmissionService(db)
-    submission_service.save_review_snapshot(
-        build_review_snapshot(
-            application_id=application.id,
-            job_id=application.job_id,
-            company=job.company,
-            title=job.title,
-            provider=provider,
-            destination=destination,
-            resume_filename="resume.pdf",
-            resume_sha256=resume_sha256,
-            form_fingerprint=form_fingerprint,
-            answers_fingerprint=answers_fingerprint,
-            resolved_fields=resolved_fields,
-            manual_questions=manual_questions,
-        )
-    )
-    intent = submission_service.create_intent(
-        application_id=application.id,
-        job_id=application.job_id,
+    # Uma unica implementacao da sequencia snapshot -> intent -> autorizacao ->
+    # POST -> observacao, compartilhada com o ApplicationLoop. Duplicar aqui era
+    # o caminho para as duas copias divergirem.
+    outcome = SubmissionCoordinator(db, timeout_seconds=timeout).submit(
+        application=application,
+        job=job,
+        form=form,
+        session=session,
         provider=provider,
         destination=destination,
-        form_fingerprint=form_fingerprint,
         resume_sha256=resume_sha256,
+        form_fingerprint=form_fingerprint,
         answers_fingerprint=answers_fingerprint,
-        expires_in_seconds=ttl_seconds,
+        ttl_seconds=ttl_seconds,
     )
-    submission_service.authorize_submission(intent.id)
-    policy = LiveNetworkPolicy.for_submission(provider, application.id, intent.id)
-    outcome = BrowserSubmitter(db, timeout_seconds=timeout).submit(
-        session,
-        intent.id,
-        current_form_fingerprint=form_fingerprint,
-        current_resume_sha256=resume_sha256,
-        current_answers_fingerprint=answers_fingerprint,
-        policy=policy,
+    return outcome.to_dict()
+
+
+def loop_runtime(
+    settings: Settings,
+    *,
+    headless: bool = True,
+    allow_advance: bool = True,
+    max_cycles: int = 5,
+    submission_timeout: float = 45.0,
+) -> LoopRuntime:
+    """Monta o runtime de PRODUCAO do `ApplicationLoop` a partir das Settings.
+
+    Fica aqui, e nao no loop, porque este modulo e o que conhece Settings,
+    perfis, adapters e sessao. O loop recebe tudo pronto e continua sem saber o
+    que e um provider.
+    """
+    candidate_profile, _facts = _load_profile_data(settings)
+    preferences = candidate_profile.candidate_preferences or CandidatePreferences()
+    answers = _answer_base(settings)
+    provider_profile = profile_for  # alias local apenas para leitura
+
+    def prepare_material(job: Job) -> PreparedMaterial:
+        prepared = prepare(settings, job.id)
+        artifact_dir = Path(str(prepared["artifacts"]))
+        resume = artifact_dir / "resume.pdf"
+        if not resume.is_file():
+            raise PipelineError(f"missing resume artifact for live apply: {job.id}")
+        return PreparedMaterial(
+            resume_path=str(resume),
+            resume_sha256=hashlib.sha256(resume.read_bytes()).hexdigest(),
+            artifact_root=str(artifact_dir),
+            validation=dict(prepared.get("validation", {})),
+        )
+
+    def resolve_adapter(job: Job) -> Any:
+        adapter = adapter_for(job.url, "")
+        if adapter is None:
+            known = provider_for_url(job.url)
+            if known and provider_profile(known).form_loaded_by_api_write:
+                raise PipelineError(
+                    f"{known}: o formulario e carregado por POST na API "
+                    f"({provider_profile(known).notes}); nao suportado ainda"
+                )
+            raise PipelineError(f"no supported ATS adapter for live apply: {job.url}")
+        return adapter
+
+    def open_session(job: Job, adapter: Any) -> Any:
+        profile_here = provider_profile(adapter.provider)
+        resource_hosts = (
+            set(profile_here.resource_hosts)
+            | set(getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url))
+            | JobsearchChallengeAdapter().runtime_read_hosts()
+        )
+        session = PlaywrightSessionManager(
+            headless=headless,
+            allowed_hosts=adapter.allowed_hosts(job.url),
+            allowed_resource_hosts=resource_hosts,
+        )
+        session.start()
+        return session
+
+    return LoopRuntime(
+        adapter_for=resolve_adapter,
+        form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
+        profile=candidate_profile,
+        preferences=preferences,
+        answers=answers,
+        prepare=prepare_material,
+        open_session=open_session,
+        max_cycles=max_cycles,
+        allow_advance=allow_advance,
+        submission_timeout=submission_timeout,
     )
-    return {
-        "intent_id": intent.id,
-        "status": outcome.status,
-        "http_status": outcome.http_status,
-        "transport": "browser",
-        "evidence": outcome.evidence,
-        "error": outcome.error,
-    }
 
 
 def run(settings: Settings, payload: dict[str, Any] | None = None, url: str = "", language_override: str | None = None) -> dict[str, Any]:
