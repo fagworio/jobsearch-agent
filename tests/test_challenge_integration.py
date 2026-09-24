@@ -148,6 +148,74 @@ def test_the_acl_binds_a_requirement_to_a_scoped_permission():
     assert not any(permission.covers("POST", "https://exemplo.com/getcaptcha/abc") for permission in permissions)
 
 
+def test_the_acl_only_imports_the_public_api():
+    """A biblioteca precisa poder ser refatorada por dentro sem quebrar isto."""
+    tree = ast.parse((SOURCE / "challenges.py").read_text(encoding="utf-8"))
+    internals: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("challenge_guard"):
+            if node.module != "challenge_guard":
+                internals.append(f"{node.module}:{node.lineno}")
+    assert not internals, f"a ACL importa internals: {internals}"
+
+
+def test_an_unknown_provider_does_not_widen_the_pre_detection_union():
+    """`PreDetectionChallengeRuntimePolicy`: uniao FINITA das capabilities conhecidas."""
+    adapter = JobsearchChallengeAdapter()
+    union = adapter.pre_detection_runtime_permissions()
+    extended = adapter.pre_detection_runtime_permissions() + adapter.runtime_permissions(["inexistente", ""])
+    assert len(extended) == len(union)
+    assert adapter.runtime_permissions(["inexistente"]) == []
+
+
+def test_generic_adds_no_permit_to_the_union():
+    """`GENERIC` nao declara requisito: 'nao sei' nunca vira 'pode tudo'."""
+    adapter = JobsearchChallengeAdapter()
+    with_generic = adapter.runtime_permissions(["hcaptcha", "generic"])
+    without = adapter.runtime_permissions(["hcaptcha"])
+    assert len(with_generic) == len(without)
+
+
+def test_an_unused_permit_consumes_nothing():
+    adapter = JobsearchChallengeAdapter()
+    guard = NetworkWriteGuard({"hcaptcha.com"})
+    guard.arm_challenge_runtime(adapter.pre_detection_runtime_permissions())
+    assert guard.challenge_runtime_used == 0
+    assert guard.authorized_writes_used == 0
+    assert guard.inspections_used == 0
+
+
+def test_a_presented_challenge_produces_a_handoff_the_host_can_enrich():
+    """O handoff e neutro: sem vaga, sem curriculo, sem candidato."""
+    outcome = _outcome(
+        page=_Page(iframes=[_Iframe("https://www.recaptcha.net/recaptcha/enterprise/bframe")]),
+        writes=0,
+    )
+    assert outcome.decision == "needs_human"
+    assert outcome.handoff["continuation"] == "manual"
+    assert outcome.handoff["provider"] == "recaptcha_enterprise"
+    assert outcome.session_id
+    blob = str(outcome.handoff).casefold()
+    for forbidden in ("job", "resume", "candidate", "curriculo", "vaga", "@"):
+        assert forbidden not in blob
+
+
+def test_a_rejection_produces_a_final_handoff():
+    outcome = _outcome(
+        page_errors=["There was an error verifying your application."], http_status=400, writes=1
+    )
+    assert outcome.handoff["continuation"] == "manual_final"
+
+
+def test_observe_and_resolution_produce_no_handoff():
+    """Nada a pedir a ninguem: nao ha handoff para observar nem para resolvido."""
+    watching = _outcome(
+        page=_Page(iframes=[_Iframe("https://www.recaptcha.net/recaptcha/enterprise/anchor")]), writes=0
+    )
+    assert watching.decision == "observe"
+    assert watching.handoff == {}
+
+
 def test_the_acl_offers_the_read_hosts_the_widget_needs():
     hosts = JobsearchChallengeAdapter().runtime_read_hosts()
     assert any("hcaptcha" in host for host in hosts)

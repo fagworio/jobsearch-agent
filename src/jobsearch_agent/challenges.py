@@ -18,24 +18,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
+# Somente API PUBLICA: nada de `challenge_guard.observers`,
+# `challenge_guard.providers.registry` nem `challenge_guard.browser`. Assim a
+# biblioteca pode ser refatorada por dentro sem quebrar este consumidor.
 from challenge_guard import (
     ChallengeDecisionStatus,
-    ChallengeObservation,
+    ChallengeMonitor,
     ChallengePhase,
-    ChallengePolicy,
     ChallengeProvider,
-    ChallengeSessionTracker,
-    DOMObserver,
-    FrameObserver,
-    NetworkObserver,
-    ResponseObserver,
-    merge,
     redact,
     requirements_for,
+    runtime_read_hosts,
 )
-from challenge_guard.providers import profile_for as challenge_profile_for
-from challenge_guard.browser import PlaywrightChallengeAdapter
-from challenge_guard.observers import ResponseRecord
 
 from .browser import ChallengeRuntimePermission
 from .models import ApplicationState
@@ -70,10 +64,14 @@ class ChallengeOutcome:
     human_required: bool = False
     application_state: str | None = None
     evidence: dict[str, Any] = None  # type: ignore[assignment]
+    handoff: dict[str, Any] = None  # type: ignore[assignment]
+    session_id: str = ""
 
     def __post_init__(self) -> None:
         if self.evidence is None:
             object.__setattr__(self, "evidence", {})
+        if self.handoff is None:
+            object.__setattr__(self, "handoff", {})
 
 
 def application_state_for(decision: str, *, browser_write_sent: bool) -> str | None:
@@ -93,27 +91,24 @@ class JobsearchChallengeAdapter:
     """Compoe observadores, sessao e policy num veredito para o executor."""
 
     def __init__(self, *, confidence_threshold: float = 0.5) -> None:
-        self._browser = PlaywrightChallengeAdapter()
-        self._policy = ChallengePolicy(confidence_threshold=confidence_threshold)
-        self._tracker = ChallengeSessionTracker()
-        self._session = None
+        self._monitor = ChallengeMonitor(confidence_threshold=confidence_threshold)
 
     # -- ciclo de vida ---------------------------------------------------------
 
     def attach(self, page: Any) -> None:
-        self._browser.attach(page)
+        if page is not None:
+            self._monitor.attach(page)
 
     def detach(self) -> None:
-        self._browser.detach()
+        self._monitor.detach()
 
     @property
     def attached(self) -> bool:
-        return self._browser.attached
+        return self._monitor.attached
 
     def reset(self) -> None:
         """Nova tentativa nao herda sessao nem observacao transitoria."""
-        self._browser.reset()
-        self._session = None
+        self._monitor.reset()
 
     # -- observacao ------------------------------------------------------------
 
@@ -126,42 +121,27 @@ class JobsearchChallengeAdapter:
         browser_write_sent: bool = False,
         submission_confirmed: bool = False,
     ) -> ChallengeOutcome:
-        phase = _PHASE_BY_STEP.get(step, ChallengePhase.PRE_SUBMIT)
-        dom = DOMObserver().observe(self._browser.collect_dom())
-        frames = FrameObserver().observe(self._browser.collect_frames())
-        network = NetworkObserver().observe(self._browser.collect_network())
+        """Um veredito anti-bot, do monitor publico do challenge-guard.
 
-        # O texto que a propria pagina mostra apos o clique e a evidencia de
-        # recusa que existe no browser. O observer converte em conceito; o texto
-        # nao e guardado.
-        records = [ResponseRecord(status=http_status, text=str(text)) for text in page_errors]
-        records += [ResponseRecord(status=item.status, text=item.text) for item in self._browser.collect_responses()]
-        response = ResponseObserver().observe(records)
-
-        merged = merge([dom, frames, network, response])
-        observation = ChallengeObservation(
-            detected=merged.detected,
-            phase=phase,
-            provider=merged.provider,
-            challenge_type=merged.challenge_type,
-            visible=merged.detected,
+        A composicao (DOM, frames, rede, resposta) e responsabilidade da
+        biblioteca: este modulo nao monta observadores nem interpreta nada.
+        """
+        observation = self._monitor.observe(
+            phase=_PHASE_BY_STEP.get(step, ChallengePhase.PRE_SUBMIT),
+            http_status=http_status,
+            response_texts=page_errors,
             browser_write_sent=browser_write_sent,
-            http_status=http_status if isinstance(http_status, int) else None,
-            dom_signals=dom.structure,
-            frame_signals=frames.structure,
-            signals=merged.signals,
-            confidence=merged.confidence,
+            submission_confirmed=submission_confirmed,
         )
-
-        if merged.detected and self._session is None:
-            self._session = self._tracker.start(observation)
-        elif self._session is not None:
-            self._tracker.observe(self._session, observation)
-
-        decision = self._policy.decide(
-            observation, self._session, submission_confirmed=submission_confirmed
-        )
-        evidence = redact(session=self._session, observation=observation, decision=decision)
+        decision = self._monitor.decide(submission_confirmed=submission_confirmed)
+        handoff = self._monitor.handoff()
+        # A evidencia persistivel e produzida pelo redactor da biblioteca: o
+        # consumidor nao monta esse objeto sozinho.
+        evidence = redact(
+            session=self._monitor.session,
+            observation=observation,
+            decision=decision,
+        ).to_dict()
         return ChallengeOutcome(
             decision=decision.status.value,
             reason_token=decision.reason_token,
@@ -170,7 +150,9 @@ class JobsearchChallengeAdapter:
             application_state=application_state_for(
                 decision.status.value, browser_write_sent=browser_write_sent
             ),
-            evidence=evidence.to_dict(),
+            evidence=evidence,
+            handoff=handoff.to_dict() if handoff is not None else {},
+            session_id=observation.session_id,
         )
 
     # -- requisitos de rede ----------------------------------------------------
@@ -218,27 +200,30 @@ class JobsearchChallengeAdapter:
         return permissions
 
     def runtime_read_hosts(self, providers: Sequence[str] | None = None) -> set[str]:
-        """Hosts que a pagina precisa ALCANCAR (leitura) para o widget carregar.
+        """Hosts que a pagina precisa ALCANCAR para o widget carregar.
 
-        Sem eles o desafio nem aparece e "resolver manualmente" fica impossivel —
-        o humano veria um botao que nao faz nada. Vem do challenge-guard porque e
-        conhecimento do provedor de desafio, nao do ATS: um board que troque de
-        anti-bot nao deve exigir edicao em `providers.py`.
+        Vem do challenge-guard porque e conhecimento do provedor de desafio, nao
+        do ATS: um board que troque de anti-bot nao deve exigir edicao em
+        `providers.py`.
         """
-        names = list(providers) if providers is not None else [item.value for item in ChallengeProvider]
-        hosts: set[str] = set()
-        for name in names:
-            try:
-                provider = ChallengeProvider(name)
-            except ValueError:
-                continue
-            profile = challenge_profile_for(provider)
-            if profile is None:
-                continue
-            hosts.update(profile.frame_hosts)
-            hosts.update(profile.runtime_hosts)
-            hosts.update(profile.widget_hosts)
-        return hosts
+        names = None if providers is None else list(providers)
+        return runtime_read_hosts(names)
+
+    def pre_detection_runtime_permissions(self) -> list[ChallengeRuntimePermission]:
+        """`PreDetectionChallengeRuntimePolicy`.
+
+        Existe um bootstrap paradox real: para identificar o provider e preciso
+        que o trafego dele carregue, mas so se sabe qual e o provider depois de
+        observar. A resposta NAO e liberar genericamente.
+
+        Antes da identificacao, o host arma a UNIAO FINITA dos requisitos de
+        runtime dos providers explicitamente suportados. Isso nao e autorizacao
+        generica de escrita: cada requisicao continua tendo de satisfazer um
+        requirement provider-specific, limitado por origem, metodo, caminho e
+        orcamento. Provider desconhecido nao amplia a uniao, e `GENERIC` nao
+        declara requisito — logo nao adiciona permit nenhum.
+        """
+        return self.runtime_permissions()
 
     def tracked_session_status(self) -> str:
-        return self._session.status.value if self._session is not None else ""
+        return self._monitor.session.status.value if self._monitor.session is not None else ""
