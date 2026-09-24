@@ -208,6 +208,13 @@ class LiveNetworkPolicy:
     allowed_stage: str
     application_id: str
     submission_intent_id: str
+    #: Origens adicionais do MESMO provider aceitas para o POST (ver
+    #: `ProviderProfile.submit_origins`).
+    allowed_origins: tuple[str, ...] = ()
+
+    @property
+    def origins(self) -> tuple[str, ...]:
+        return self.allowed_origins or (self.allowed_origin,)
 
     @classmethod
     def for_submission(cls, provider: str, application_id: str, submission_intent_id: str) -> "LiveNetworkPolicy":
@@ -225,6 +232,7 @@ class LiveNetworkPolicy:
             "SUBMIT",
             application_id,
             submission_intent_id,
+            tuple(origin for origin in (profile.submit_origin, *profile.submit_origins) if origin),
         )
 
     def validate(self, method: str, url: str, stage: str) -> ValidationResult:
@@ -233,7 +241,7 @@ class LiveNetworkPolicy:
         origin = f"{parsed.scheme}://{parsed.netloc}"
         if method.upper() != self.allowed_method.upper():
             errors.append("unexpected submission method")
-        if origin != self.allowed_origin:
+        if origin not in self.origins:
             errors.append("unexpected submission origin")
         if not re.fullmatch(self.allowed_path_pattern, parsed.path):
             errors.append("unexpected submission path")

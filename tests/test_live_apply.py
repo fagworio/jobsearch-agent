@@ -1194,3 +1194,43 @@ def test_a_redirect_to_the_confirmation_page_is_a_confirmed_submission():
 
     # Erro do servidor com confirmação ambígua não vira sucesso.
     assert classifier(submitter, {"http_status": 500, "confirmation_reached": True}, 1, None)[1] == "SUBMIT_FAILED"
+
+
+def test_retry_submit_releases_an_intent_that_never_fired(tmp_path: Path):
+    """Autorizada e NUNCA disparada: a ausencia de tentativa e a prova.
+
+    Achado na vaga real da Fueled: o formulario ficou pronto, a intent foi
+    autorizada e a submissao morreu ANTES do POST (a boundary recusou o destino).
+    Sem tentativa registrada nada saiu — e o retry exigia uma tentativa, entao a
+    candidatura ficava presa em SUBMIT_AUTHORIZED para sempre.
+    """
+    from jobsearch_agent.application import ApplicationService
+    from jobsearch_agent.submission import SubmissionService
+
+    with SubmissionTestServer() as server:
+        _SERVER_URL[:] = [server.origin]
+        db = Database(tmp_path / "submission.db")
+        application_id = _ready_application(db, "unfired")
+        destination = server.url("/submit/ok")
+        intent, _policy = _authorized_intent(db, application_id, destination, "/submit/ok")
+        assert db.get_application(application_id).state == ApplicationState.SUBMIT_AUTHORIZED
+        assert db.list_submission_attempts(application_id) == []
+
+        released = ApplicationService(db).retry_submit(application_id)
+
+        assert released.state == ApplicationState.REVIEW_REACHED
+        assert db.get_submission_intent(intent.id).status == "CANCELLED"
+        events = [event.event for event in db.list_application_events(application_id)]
+        assert "submit_retry_before_any_attempt" in events
+        db.close()
+
+
+def test_retry_submit_still_refuses_a_state_that_was_never_armed(tmp_path: Path):
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "never-armed")
+    with pytest.raises(ApplicationDomainError, match="requires SUBMIT_FAILED"):
+        ApplicationService(db).retry_submit(application_id)
+    assert db.get_application(application_id).state == ApplicationState.READY_TO_APPLY
+    db.close()

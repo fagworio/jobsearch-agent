@@ -89,8 +89,15 @@ class ProviderProfile:
     #: orçamento da subida do currículo e evita que a permissão de upload
     #: cubra o endpoint de candidatura, que no Lever fica na mesma origem.
     upload_write_paths: tuple[tuple[str, str], ...] = ()
-    #: Origem e caminho do POST de candidatura.
+    #: Origem e caminho do POST de candidatura. `submit_origin` e a origem
+    #: canonica (e a que forma o destino quando a vaga nao diz outra coisa);
+    #: `submit_origins` sao origens ADICIONAIS do MESMO provider que o POST pode
+    #: usar legitimamente. O Greenhouse tem dois hosts de board (o legado
+    #: `boards.greenhouse.io` e o SPA `job-boards.greenhouse.io`) e a submissao no
+    #: SPA sai da propria origem da pagina — recusar isso travava a candidatura
+    #: real depois de o formulario estar preenchido (achado na vaga da Fueled).
     submit_origin: str = ""
+    submit_origins: tuple[str, ...] = ()
     submit_path_pattern: str = ""
     submit_method: str = "POST"
     #: Rótulos aceitos para o controle final, do mais específico ao mais genérico.
@@ -138,6 +145,7 @@ PROFILES: dict[str, ProviderProfile] = {
         ),
         upload_write_origins=("*.s3.amazonaws.com",),
         submit_origin="https://boards.greenhouse.io",
+        submit_origins=("https://job-boards.greenhouse.io",),
         submit_path_pattern=r"^/[^/]+/jobs/[^/]+/?$",
         submit_control_names=("Submit application", "Submit Application", "Submit"),
         confirmation_markers=_FALLBACK_CONFIRMATION,
@@ -331,7 +339,13 @@ def submit_destination(
     if provider == "greenhouse":
         if not board or not external_id:
             raise ProviderError("greenhouse submission requires board and job id")
-        return f"{profile.submit_origin}/{board}/jobs/{external_id}"
+        # O destino tem de ser a origem em que a pagina REALMENTE vive: no SPA o
+        # POST sai de `job-boards.greenhouse.io`, e um destino no host legado
+        # seria recusado pela propria boundary.
+        parsed = urlsplit(job_url)
+        job_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+        origin = job_origin if job_origin in {profile.submit_origin, *profile.submit_origins} else profile.submit_origin
+        return f"{origin}/{board}/jobs/{external_id}"
     if provider == "lever":
         # O formulario declara o destino exato no `action`. Ele pode vir
         # relativo (`/apply`): sem resolver contra a URL da pagina, o valor

@@ -196,3 +196,23 @@ def test_lever_upload_permit_cannot_authorise_the_submission():
     )
     # O storage do board continua aceito em qualquer caminho (URL pre-assinada).
     assert any(permit.covers("POST", "https://acme.s3.amazonaws.com/upload/xyz") for permit in permits)
+
+
+def test_greenhouse_job_boards_spa_is_accepted_and_forms_the_destination():
+    """O board novo vive em `job-boards.greenhouse.io` e o POST sai da PROPRIA
+    origem da pagina; um destino no host legado era recusado pela boundary
+    depois do formulario preenchido."""
+    job_url = "https://job-boards.greenhouse.io/fueledcareers/jobs/5428960008"
+    assert submit_destination("greenhouse", job_url, "fueledcareers", "5428960008") == job_url
+    # O host legado continua valendo como destino canonico.
+    assert submit_destination("greenhouse", "https://x/1", "canonical", "5150422") == "https://boards.greenhouse.io/canonical/jobs/5150422"
+
+    policy = LiveNetworkPolicy.for_submission("greenhouse", "application-1", "intent-1")
+    assert policy.allowed_origin == "https://boards.greenhouse.io"
+    assert "https://job-boards.greenhouse.io" in policy.origins
+    assert policy.validate("POST", job_url, "SUBMIT").valid
+    assert policy.validate("POST", "https://boards.greenhouse.io/fueledcareers/jobs/5428960008", "SUBMIT").valid
+    # A lista nao afrouxa a fronteira: outra origem continua recusada.
+    foreign = policy.validate("POST", "https://greenhouse.io.evil.example/fueledcareers/jobs/5428960008", "SUBMIT")
+    assert not foreign.valid
+    assert "unexpected submission origin" in foreign.errors

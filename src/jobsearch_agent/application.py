@@ -238,6 +238,27 @@ class ApplicationService:
         self.database.save_application_transition(application, ApplicationEvent(application.id, previous_state, target, event, payload or {}, now))
         return application
 
+    def _release_unfired_intent(self, application: Application, event: str) -> Application:
+        """Desarma uma intent autorizada que NUNCA disparou.
+
+        A operacao so e permitida quando nao existe tentativa registrada — o
+        unico fato que prova que nenhuma requisicao de candidatura saiu. A intent
+        vira CANCELLED para nao confundir a auditoria, e a Application volta para
+        REVIEW_REACHED, onde o loop pode re-armar (e onde a submissao ainda exige
+        uma nova autorizacao explicita).
+        """
+        intents = self.database.list_submission_intents(application.id)
+        armed = [item for item in intents if item.status in {"CREATED", "AUTHORIZED"}]
+        for item in armed:
+            item.status = "CANCELLED"
+            self.database.save_submission_intent(item)
+        return self.transition(
+            application.id,
+            ApplicationState.REVIEW_REACHED,
+            event,
+            {"released_intents": [item.id for item in armed]},
+        )
+
     def retry_submit(self, application_id: str) -> Application:
         """Reabre uma Application cuja submissao falhou de forma definitiva.
 
@@ -264,6 +285,15 @@ class ApplicationService:
             )
         attempts = self.database.list_submission_attempts(application_id)
         if not attempts:
+            # Armada e nunca disparada: a ausencia de tentativa e a PROVA de que
+            # nada saiu (o POST so existe depois de `begin_submission`, que grava
+            # a tentativa). Sem este caminho, uma falha ANTES do POST — uma
+            # boundary que recusou o destino, por exemplo — deixava a
+            # candidatura presa em SUBMIT_AUTHORIZED para sempre, porque o
+            # proprio retry exigia uma tentativa. Achado na vaga real da Fueled:
+            # formulario preenchido, intent autorizada, zero escritas.
+            if application.state is ApplicationState.SUBMIT_AUTHORIZED:
+                return self._release_unfired_intent(application, "submit_retry_before_any_attempt")
             raise ApplicationDomainError("submit retry requires a recorded attempt")
         last = attempts[-1]
         stranded = last.status == ApplicationState.SUBMITTING.value

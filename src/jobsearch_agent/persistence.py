@@ -530,6 +530,13 @@ class Database:
         row = self.connection.execute("SELECT intent_json FROM submission_intents WHERE id=?", (intent_id,)).fetchone()
         return SubmissionIntent(**json.loads(row[0])) if row else None
 
+    def list_submission_intents(self, application_id: str) -> list[SubmissionIntent]:
+        rows = self.connection.execute(
+            "SELECT intent_json FROM submission_intents WHERE application_id=? ORDER BY created_at",
+            (application_id,),
+        ).fetchall()
+        return [SubmissionIntent(**json.loads(row[0])) for row in rows]
+
     def save_review_snapshot(self, snapshot: ReviewSnapshot) -> None:
         self.connection.execute(
             """INSERT INTO review_snapshots(application_id, snapshot_json, updated_at)
