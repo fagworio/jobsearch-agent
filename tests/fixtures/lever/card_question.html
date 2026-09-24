@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><title>Vaga - Lever</title></head>
+<body>
+<form action="" method="post" id="application-form">
+  <div class="application">
+    <div class="application-question">
+      <input type="text" name="name" id="name" required>
+      <label for="name">Nome completo</label>
+    </div>
+
+    <ul>
+      <li class="application-question custom-question">
+        <input type="hidden" name="cards[901d99b3-8bc5-45de-838b-d6bcf0300654][baseTemplate]" value='{"type":"dropdown"}'>
+        <div>
+          <div class="application-label full-width dropdown">
+            <div class="text">Como ficou sabendo da nossa vaga?<span class="required">&#10033;</span></div>
+          </div>
+          <div class="application-field">
+            <select name="cards[901d99b3-8bc5-45de-838b-d6bcf0300654][field0]" required>
+              <option value="">Selecione</option>
+              <option value="linkedin">LinkedIn</option>
+              <option value="indicacao">Indica&ccedil;&atilde;o</option>
+            </select>
+          </div>
+        </div>
+      </li>
+
+      <li class="application-question custom-question">
+        <div>
+          <div class="application-label full-width text">
+            <div class="text">Quais tecnologias voc&ecirc; domina?<span class="required">&#10033;</span></div>
+            <div class="description">Liste as principais.</div>
+          </div>
+          <div class="application-field">
+            <textarea name="cards[46937f62-1111-2222-3333-444455556666][field0]" required></textarea>
+          </div>
+        </div>
+      </li>
+
+      <li class="application-question custom-question">
+        <div>
+          <div class="application-label full-width file-upload">
+            <div class="text">Anexe aqui o laudo m&eacute;dico<span class="required">&#10033;</span></div>
+          </div>
+          <div class="application-field">
+            <input type="file" name="cards[377b7c9a-7777-8888-9999-000011112222][field0]">
+          </div>
+        </div>
+      </li>
+    </ul>
+
+    <div class="application-question">
+      <label class="application-label">
+        <input type="checkbox" name="consent[store]" value="1">
+        <span class="text">Concordo que meus dados sejam armazenados</span>
+      </label>
+    </div>
+  </div>
+  <button type="submit">Enviar</button>
+</form>
+</body>
+</html>

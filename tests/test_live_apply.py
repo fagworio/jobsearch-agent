@@ -994,8 +994,14 @@ def test_classification_of_the_browser_outcome():
     assert status == "NEEDS_CAPTCHA" and verification is None
 
 
-def test_classification_treats_a_server_captcha_demand_as_needs_captcha():
-    """O reCAPTCHA Enterprise e invisivel: o 428 com a mensagem e o sinal."""
+def test_classification_treats_a_server_captcha_demand_as_human_handoff():
+    """O reCAPTCHA Enterprise e invisivel: o 428 com a mensagem e o sinal.
+
+    Com uma escrita entregue, o provedor recusou uma submissao real por nao
+    conseguir verificar o navegador. Repetir nao muda o veredito e disfarcar os
+    sinais de automacao esta fora de escopo, entao o desfecho e handoff humano —
+    distinto de NEEDS_CAPTCHA, que e um desafio nem chegado a ser resolvido.
+    """
     from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
 
     submitter = GreenhouseBrowserSubmitter.__new__(GreenhouseBrowserSubmitter)
@@ -1003,12 +1009,185 @@ def test_classification_treats_a_server_captcha_demand_as_needs_captcha():
 
     demand = {"http_status": 428, "page_errors": ["Please complete the reCAPTCHA and resubmit your application."]}
     verification, status = classifier(submitter, demand, 1)
-    assert status == "NEEDS_CAPTCHA" and verification is None
+    assert status == "NEEDS_HUMAN_CAPTCHA"
+    assert verification.status == "challenged"
+    assert verification.evidence["reason_token"] == "captcha_verification_failed"
+    assert verification.evidence["submit_write"] is True
+    assert verification.evidence["confirmed_submission"] is False
+    assert verification.evidence["status_code"] == 428
 
     only_message = {"http_status": 400, "page_errors": ["Please complete the reCAPTCHA."]}
-    assert classifier(submitter, only_message, 1)[1] == "NEEDS_CAPTCHA"
+    assert classifier(submitter, only_message, 1)[1] == "NEEDS_HUMAN_CAPTCHA"
+
+    # Sem escrita entregue nao ha submissao recusada: e o desafio a resolver.
+    unsent = {"captcha_challenge": True, "confirmation_reached": False}
+    verification, status = classifier(submitter, unsent, 0)
+    assert status == "NEEDS_CAPTCHA" and verification is None
 
     # Uma rejeicao comum continua sendo falha definitiva, nao CAPTCHA.
     plain = {"http_status": 422, "page_errors": ["Resume/CV is required."]}
     verification, status = classifier(submitter, plain, 1)
     assert status == "SUBMIT_FAILED"
+
+
+def test_classification_keeps_a_confirmed_submission_after_a_solved_captcha():
+    """Um desafio resolvido por humano nao pode rebaixar uma candidatura aceita.
+
+    O widget de CAPTCHA continua no DOM depois de resolvido. Antes, a mera
+    presenca dele forçava NEEDS_CAPTCHA mesmo com escrita confirmada, entao uma
+    submissao bem-sucedida era reportada como pendente de humano.
+    """
+    from jobsearch_agent.submission_browser import GreenhouseBrowserSubmitter
+
+    submitter = GreenhouseBrowserSubmitter.__new__(GreenhouseBrowserSubmitter)
+    classifier = GreenhouseBrowserSubmitter.__dict__["_classify"]
+
+    solved = {"http_status": 200, "confirmation_reached": True, "captcha_challenge": True}
+    verification, status = classifier(submitter, solved, 1)
+    assert status == "SUBMITTED" and verification.status == "confirmed"
+
+    # Sem escrita, o desafio visivel segue sendo o desfecho a reportar.
+    unsolved = {"http_status": None, "confirmation_reached": False, "captcha_challenge": True}
+    assert classifier(submitter, unsolved, 0)[1] == "NEEDS_CAPTCHA"
+
+
+def _strand(db: Database, application_id: str, attempt_status: str, state: ApplicationState) -> str:
+    """Simula um processo morto no meio da submissao.
+
+    Deixa uma tentativa sem desfecho registrado e o estado avancado, que era
+    exatamente o que travava a candidatura para sempre: SUBMITTING so transita
+    para um dos tres desfechos, e a tentativa presa bloqueia o guard de
+    duplicidade em toda tentativa seguinte.
+    """
+    service = SubmissionService(db)
+    application = db.get_application(application_id)
+    intent = service.create_intent(
+        application_id=application_id,
+        job_id=application.job_id,
+        provider="greenhouse",
+        destination="https://boards.greenhouse.io/acme/jobs/1",
+        form_fingerprint="f" * 64,
+        resume_sha256="a" * 64,
+        answers_fingerprint="b" * 64,
+        expires_in_seconds=300,
+        require_ready=False,
+    )
+    intent.status = "AUTHORIZED"
+    db.save_submission_intent(intent)
+    from jobsearch_agent.models import SubmissionAttempt, now_iso
+
+    attempt = SubmissionAttempt(
+        id=f"attempt-stranded-{attempt_status}",
+        intent_id=intent.id,
+        application_id=application_id,
+        provider="greenhouse",
+        method="POST",
+        origin="https://boards.greenhouse.io",
+        path_hash="0123456789abcdef",
+        status=attempt_status,
+        started_at=now_iso(),
+    )
+    from jobsearch_agent.models import ApplicationEvent
+
+    db.begin_submission_attempt(
+        intent,
+        attempt,
+        ApplicationEvent(application_id, ApplicationState.SUBMIT_AUTHORIZED, state, "submission_started", {}, now_iso()),
+    )
+    application = db.get_application(application_id)
+    application.state = state
+    db.save_application(application)
+    return intent.id
+
+
+def test_retry_submit_recovers_a_stranded_submission(tmp_path: Path):
+    """Um processo interrompido no meio nao pode prender a candidatura."""
+    from jobsearch_agent.application import ApplicationService
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "retry-stranded")
+    application = db.get_application(application_id)
+    application.state = ApplicationState.SUBMIT_AUTHORIZED
+    db.save_application(application)
+    _strand(db, application_id, "SUBMITTING", ApplicationState.SUBMITTING)
+
+    recovered = ApplicationService(db).retry_submit(application_id)
+    assert recovered.state == ApplicationState.REVIEW_REACHED
+    assert db.list_submission_attempts(application_id)[-1].status == "INTERRUPTED"
+    # Idempotente: repetir apenas conclui a limpeza, sem nova transicao.
+    again = ApplicationService(db).retry_submit(application_id)
+    assert again.state == ApplicationState.REVIEW_REACHED
+    db.close()
+
+
+def test_retry_submit_reopens_an_authorized_submission_never_started(tmp_path: Path):
+    from jobsearch_agent.application import ApplicationService
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "retry-authorized")
+    application = db.get_application(application_id)
+    application.state = ApplicationState.SUBMIT_AUTHORIZED
+    db.save_application(application)
+    _strand(db, application_id, "INTERRUPTED", ApplicationState.SUBMIT_AUTHORIZED)
+
+    recovered = ApplicationService(db).retry_submit(application_id)
+    assert recovered.state == ApplicationState.REVIEW_REACHED
+    db.close()
+
+
+def test_retry_submit_still_refuses_a_recorded_unknown_outcome(tmp_path: Path):
+    """A regra central continua: desfecho desconhecido nunca e reenviado."""
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "retry-unknown-guard")
+    application = db.get_application(application_id)
+    application.state = ApplicationState.SUBMIT_AUTHORIZED
+    db.save_application(application)
+    _strand(db, application_id, "SUBMIT_UNKNOWN", ApplicationState.SUBMIT_AUTHORIZED)
+
+    with pytest.raises(ApplicationDomainError, match="must never be resent"):
+        ApplicationService(db).retry_submit(application_id)
+    db.close()
+
+
+def test_anti_bot_rejection_becomes_an_explicit_human_handoff_state(tmp_path: Path):
+    """O bloqueio anti-bot deixa de ser SUBMIT_FAILED generico.
+
+    O dominio precisa distinguir "a submissao foi entregue e o provedor recusou
+    a verificacao do navegador" de "o formulario falhou". O primeiro exige
+    humano e o agente nao deve insistir nem disfarcar automacao.
+    """
+    from jobsearch_agent.application import ApplicationDomainError, ApplicationService
+    from jobsearch_agent.models import ApplicationState as State
+    from jobsearch_agent.submission import SubmissionVerification
+
+    db = Database(tmp_path / "submission.db")
+    application_id = _ready_application(db, "anti-bot")
+    application = db.get_application(application_id)
+    application.state = State.SUBMIT_AUTHORIZED
+    db.save_application(application)
+    _strand(db, application_id, "SUBMITTING", State.SUBMITTING)
+
+    attempt = db.list_submission_attempts(application_id)[-1]
+    service = SubmissionService(db)
+    service.record_result(
+        attempt.id,
+        SubmissionVerification.challenged("captcha_verification_failed", http_status=400),
+    )
+
+    stored = db.get_application(application_id)
+    assert stored.state == State.NEEDS_HUMAN_CAPTCHA
+    saved = db.list_submission_attempts(application_id)[-1]
+    assert saved.status == "NEEDS_HUMAN_CAPTCHA"
+    assert saved.evidence["reason_token"] == "captcha_verification_failed"
+    assert saved.evidence["submit_write"] is True
+    assert saved.evidence["confirmed_submission"] is False
+    assert saved.evidence["status_code"] == 400
+
+    # Nao e retomavel automaticamente: so por operacao explicita.
+    with pytest.raises(ApplicationDomainError, match="cannot be resumed"):
+        ApplicationService(db).resume(application_id)
+    reopened = ApplicationService(db).retry_submit(application_id)
+    assert reopened.state == State.REVIEW_REACHED
+    db.close()

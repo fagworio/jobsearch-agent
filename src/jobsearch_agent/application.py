@@ -22,6 +22,9 @@ class ApplicationDomainError(ValueError):
     pass
 
 
+ABANDONED_ATTEMPT_STATUS = "INTERRUPTED"
+
+
 TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.DRAFT: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.PREPARING: {ApplicationState.MATERIALS_READY, ApplicationState.READY_FOR_REVIEW, ApplicationState.READY_TO_APPLY, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.NEEDS_LOGIN, ApplicationState.NEEDS_MFA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
@@ -29,8 +32,12 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.READY_FOR_REVIEW: {ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REACHED, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.READY_TO_APPLY: {ApplicationState.PREPARING, ApplicationState.REVIEW_REACHED, ApplicationState.SUBMIT_AUTHORIZED, ApplicationState.NEEDS_ANSWER, ApplicationState.NEEDS_ARTIFACT, ApplicationState.UNSUPPORTED_FORM, ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.REVIEW_REACHED: {ApplicationState.READY_TO_APPLY, ApplicationState.SUBMIT_AUTHORIZED, ApplicationState.POLICY_BLOCKED},
-    ApplicationState.SUBMIT_AUTHORIZED: {ApplicationState.SUBMITTING, ApplicationState.POLICY_BLOCKED},
-    ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN},
+    ApplicationState.SUBMIT_AUTHORIZED: {ApplicationState.SUBMITTING, ApplicationState.POLICY_BLOCKED, ApplicationState.REVIEW_REACHED},
+    # REVIEW_REACHED existe para a tentativa ESTRANDADA: um processo morto no
+    # meio da submissao deixa o estado em SUBMITTING sem desfecho registrado, e
+    # sem essa aresta a candidatura ficava presa para sempre. A operacao e
+    # explicita (retry-submit) e registra que nao havia desfecho.
+    ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN, ApplicationState.NEEDS_HUMAN_CAPTCHA, ApplicationState.REVIEW_REACHED},
     ApplicationState.SUBMITTED: set(),
     # Nao e terminal: uma falha definitiva pode ser retomada por operacao
     # explicita. SUBMIT_UNKNOWN continua terminal — nao se sabe se foi aceita.
@@ -41,6 +48,10 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     ApplicationState.NEEDS_LOGIN: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
     ApplicationState.NEEDS_MFA: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
     ApplicationState.NEEDS_CAPTCHA: {ApplicationState.PREPARING, ApplicationState.POLICY_BLOCKED},
+    # Handoff humano. A submissao chegou a sair e o provedor recusou a
+    # verificacao anti-bot: o agente nao insiste sozinho. Reabrir exige a
+    # operacao explicita `retry-submit`.
+    ApplicationState.NEEDS_HUMAN_CAPTCHA: {ApplicationState.REVIEW_REACHED},
     ApplicationState.UNSUPPORTED_FORM: {ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.POLICY_BLOCKED: {ApplicationState.PREPARING, ApplicationState.REJECTED},
     ApplicationState.REJECTED: set(),
@@ -145,29 +156,79 @@ class ApplicationService:
     def retry_submit(self, application_id: str) -> Application:
         """Reabre uma Application cuja submissao falhou de forma definitiva.
 
-        So vale para SUBMIT_FAILED: um SUBMIT_UNKNOWN nunca volta
-        automaticamente, porque nao se sabe se a candidatura foi aceita e
-        reenviar poderia duplicar. A operacao e explicita e registrada.
+        Vale para SUBMIT_FAILED e tambem para uma tentativa **estrandada** em
+        SUBMITTING (processo interrompido no meio, sem desfecho registrado): sem
+        isso a candidatura ficava presa para sempre, porque SUBMITTING so
+        transita para um dos tres desfechos. Um desfecho definitivo desconhecido
+        (SUBMIT_UNKNOWN) nunca volta, porque nao se sabe se a candidatura foi
+        aceita e reenviar poderia duplicar. A operacao e explicita e registrada,
+        e o evento diz se havia desfecho registrado.
         """
         application = self.database.get_application(application_id)
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
-        if application.state != ApplicationState.SUBMIT_FAILED:
-            raise ApplicationDomainError(f"submit retry requires SUBMIT_FAILED, got {application.state.value}")
+        reopenable = {
+            ApplicationState.SUBMIT_FAILED,
+            ApplicationState.SUBMITTING,
+            ApplicationState.SUBMIT_AUTHORIZED,
+            ApplicationState.NEEDS_HUMAN_CAPTCHA,
+        }
+        if application.state not in reopenable and application.state != ApplicationState.REVIEW_REACHED:
+            raise ApplicationDomainError(
+                f"submit retry requires SUBMIT_FAILED, SUBMITTING or SUBMIT_AUTHORIZED, got {application.state.value}"
+            )
         attempts = self.database.list_submission_attempts(application_id)
         if not attempts:
             raise ApplicationDomainError("submit retry requires a recorded attempt")
         last = attempts[-1]
-        if last.status != ApplicationState.SUBMIT_FAILED.value:
+        stranded = last.status == ApplicationState.SUBMITTING.value
+        if application.state == ApplicationState.REVIEW_REACHED:
+            if not stranded:
+                # Ja reaberta numa chamada anterior e sem tentativa presa: nada
+                # a fazer. Repetir a operacao e seguro.
+                return application
+            # Reparo idempotente: o estado ja foi reaberto numa chamada anterior
+            # e so a tentativa estranda ficou para tras, bloqueando o guard de
+            # duplicidade. Fechar a tentativa e o unico efeito que falta.
+            self.database.abandon_submission_attempt(last.id, last.intent_id)
+            return application
+        allowed = {
+            ApplicationState.SUBMIT_FAILED: {ApplicationState.SUBMIT_FAILED.value},
+            ApplicationState.SUBMITTING: {ApplicationState.SUBMITTING.value},
+            # Autorizada mas nunca iniciada: a tentativa anterior e que ficou
+            # presa. INTERRUPTED ja foi adjudicada por uma operacao explicita
+            # anterior, entao nao bloqueia uma nova tentativa.
+            ApplicationState.SUBMIT_AUTHORIZED: {
+                ApplicationState.SUBMITTING.value,
+                ApplicationState.SUBMIT_FAILED.value,
+                ABANDONED_ATTEMPT_STATUS,
+            },
+            # O provedor ja recusou de forma clara uma submissao entregue: nao ha
+            # ambiguidade sobre duplicidade, entao o operador pode reabrir.
+            ApplicationState.NEEDS_HUMAN_CAPTCHA: {
+                "NEEDS_HUMAN_CAPTCHA",
+                ApplicationState.SUBMIT_FAILED.value,
+            },
+        }[application.state]
+        if last.status not in allowed:
             raise ApplicationDomainError(
                 f"submit retry refused: last attempt is {last.status}; "
                 "a submission with unknown outcome must never be resent"
             )
+        if stranded:
+            # Sem isso a tentativa estrandada continuava em SUBMITTING e o guard
+            # de duplicidade recusava toda tentativa seguinte.
+            self.database.abandon_submission_attempt(last.id, last.intent_id)
         return self.transition(
             application_id,
             ApplicationState.REVIEW_REACHED,
             "submit_retry_authorized",
-            {"previous_state": application.state.value, "attempt_id": last.id, "attempt_status": last.status},
+            {
+                "previous_state": application.state.value,
+                "attempt_id": last.id,
+                "attempt_status": last.status,
+                "attempt_outcome_recorded": last.status != ApplicationState.SUBMITTING.value,
+            },
         )
 
     def resume(self, application_id: str) -> Application:

@@ -570,6 +570,34 @@ class Database:
                 (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
             )
 
+    def abandon_submission_attempt(self, attempt_id: str, intent_id: str) -> None:
+        """Fecha uma tentativa estrandada sem inventar um desfecho.
+
+        Um processo interrompido no meio da submissao deixa a tentativa em
+        SUBMITTING para sempre, e o guard de duplicidade passava a recusar
+        qualquer nova tentativa. O status registrado e ``INTERRUPTED``: nao
+        afirma que falhou nem que foi enviada, apenas que nao houve desfecho.
+        O ``attempt_json`` e reescrito com o modelo completo porque e dele que as
+        leituras desserializam — mudar so a coluna nao teria efeito nenhum.
+        """
+        attempt = self.get_submission_attempt(attempt_id)
+        if attempt is None:
+            return
+        attempt.status = "INTERRUPTED"
+        attempt.completed_at = now_iso()
+        intent = self.get_submission_intent(intent_id)
+        with self.connection:
+            self.connection.execute(
+                "UPDATE submission_attempts SET status=?, attempt_json=?, completed_at=? WHERE id=?",
+                (attempt.status, canonical_json(attempt), attempt.completed_at, attempt.id),
+            )
+            if intent is not None:
+                intent.status = "INTERRUPTED"
+                self.connection.execute(
+                    "UPDATE submission_intents SET status=?, intent_json=? WHERE id=?",
+                    (intent.status, canonical_json(intent), intent.id),
+                )
+
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}
         updated_at = str(values.get("updated_at", ""))

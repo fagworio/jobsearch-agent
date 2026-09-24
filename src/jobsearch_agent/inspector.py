@@ -189,6 +189,24 @@ def _key(element: Tag, index: int) -> str:
     return str(element.get("name") or element.get("id") or f"field-{index}")
 
 
+def _marker_free_text(node: Tag) -> str:
+    """Text of a label node, ignoring the inline required marker.
+
+    Lever renders ``<span class="required">*</span>`` inside the label text,
+    so a plain get_text would leak the asterisk into every question.
+    """
+    parts = [
+        text
+        for text in node.find_all(string=True)
+        if not (
+            text.parent is not None
+            and text.parent.name == "span"
+            and "required" in (text.parent.get("class") or [])
+        )
+    ]
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
 def _label_for(soup: BeautifulSoup, element: Tag) -> str:
     element_id = element.get("id")
     if element_id:
@@ -198,6 +216,16 @@ def _label_for(soup: BeautifulSoup, element: Tag) -> str:
     parent = element.find_parent("label")
     if parent:
         return parent.get_text(" ", strip=True)
+    # Lever groups each custom question in <li class="application-question"> and
+    # prints the prompt in a sibling div instead of a label[for]; without this
+    # the field degrades to its raw key ("cards[<uuid>][field0]").
+    question = element.find_parent(class_="application-question")
+    if question is not None:
+        prompt = question.select_one(".application-label .text")
+        if prompt is not None:
+            text = _marker_free_text(prompt)
+            if text:
+                return text
     return str(element.get("aria-label") or element.get("placeholder") or element.get("name") or element.get("id") or "")
 
 

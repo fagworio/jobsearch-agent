@@ -190,8 +190,13 @@ def validate_application_field(field: ApplicationField, artifact_root: str = "")
     elif field_type == "file":
         errors.extend(_validate_file(field, artifact_root))
     elif field_type == "checkbox":
-        if field.required and _is_blank(value):
-            errors.append("MISSING_VALUE: required checkbox has no value")
+        if _is_blank(value):
+            # Um checkbox opcional em branco significa "nao marcado", nao um
+            # valor invalido. Exigir booleano aqui reprovava formularios reais
+            # por causa de um simples opt-in opcional (ex.: consentimento de
+            # marketing), bloqueando a candidatura mesmo com tudo respondido.
+            if field.required:
+                errors.append("MISSING_VALUE: required checkbox has no value")
         else:
             errors.extend(_validate_checkbox(field, value))
             option_error = _validate_options(field, value)

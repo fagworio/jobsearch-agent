@@ -34,6 +34,12 @@ class ProviderProfile:
     #: Origens para onde a aplicação envia o currículo (POST), com permissão
     #: one-shot durante uma submissão autorizada.
     upload_write_origins: tuple[str, ...] = ()
+    #: Caminho aceito em cada origem de upload, no formato (origem, regex).
+    #: Origens ausentes usam ``^/.*$``. Restringir por caminho impede que um
+    #: POST de infraestrutura (ex.: o desafio do Cloudflare) consuma o
+    #: orçamento da subida do currículo e evita que a permissão de upload
+    #: cubra o endpoint de candidatura, que no Lever fica na mesma origem.
+    upload_write_paths: tuple[tuple[str, str], ...] = ()
     #: Origem e caminho do POST de candidatura.
     submit_origin: str = ""
     submit_path_pattern: str = ""
@@ -46,6 +52,12 @@ class ProviderProfile:
     apply_path_suffix: str = ""
     #: True quando o próprio formulário só existe após uma escrita na API.
     form_loaded_by_api_write: bool = False
+    #: Origens do widget anti-bot que precisam de POST para carregar o desafio.
+    #: Não é a candidatura: é o próprio CAPTCHA, que o humano precisa ver para
+    #: resolver. Sem estas escritas o desafio nem carrega (o widget chama
+    #: ``hcaptcha.com/getcaptcha`` por POST) e "resolver manualmente" fica
+    #: impossível. O endpoint de submissão continua protegido pelo permit único.
+    challenge_write_origins: tuple[str, ...] = ()
     notes: str = ""
 
 
@@ -90,8 +102,26 @@ PROFILES: dict[str, ProviderProfile] = {
             "fonts.gstatic.com",
             "www.gstatic.com",
             "*.s3.amazonaws.com",
+            # O formulario do Lever carrega o hCaptcha. Sem o script o handler
+            # de submit espera por um token que nunca chega e o clique nao
+            # produz escrita alguma — falha silenciosa. O script entra como
+            # LEITURA; um desafio real continua sendo reportado como
+            # NEEDS_CAPTCHA, nunca contornado.
+            "js.hcaptcha.com",
+            "hcaptcha.com",
+            "*.hcaptcha.com",
         ),
+        # O desafio do hCaptcha so carrega se o widget puder falar com o
+        # provedor por POST. Bloquear isso tornava o CAPTCHA invisivel — o
+        # humano via um botao "Submit" que nao fazia nada.
+        challenge_write_origins=("hcaptcha.com", "*.hcaptcha.com"),
         upload_write_origins=("*.s3.amazonaws.com", "*.lever.co"),
+        # O Lever sobe o curriculo por POST em /parseResume, na MESMA origem do
+        # endpoint de candidatura. Sem esta restricao o permit de upload (que e
+        # um curinga de caminho) autorizaria o proprio submit, e um POST de
+        # infraestrutura do Cloudflare (/cdn-cgi/challenge-platform/...) gastava
+        # o unico credito e o curriculo nunca subia.
+        upload_write_paths=(("*.lever.co", r"^/parseResume$"),),
         submit_origin="https://jobs.lever.co",
         submit_path_pattern=r"^/[^/]+/[0-9a-fA-F-]{8,}/apply/?$",
         submit_control_names=("SUBMIT APPLICATION", "Submit Application", "Submit application"),

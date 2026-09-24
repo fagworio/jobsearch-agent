@@ -269,6 +269,18 @@ class SubmissionVerification:
     def unknown(cls, reason: str = "") -> "SubmissionVerification":
         return cls("unknown", "", {"reason": reason} if reason else {})
 
+    @classmethod
+    def challenged(cls, reason_token: str, *, http_status: int | None = None, submit_write: bool = True) -> "SubmissionVerification":
+        """A submissao saiu e o provedor recusou por verificacao anti-bot.
+
+        Nao e ``failed`` (o pedido estava correto e foi entregue) nem
+        ``unknown`` (o provedor respondeu com clareza): e um handoff humano.
+        """
+        evidence: dict[str, object] = {"reason_token": reason_token, "submit_write": submit_write, "confirmed_submission": False}
+        if http_status is not None:
+            evidence["status_code"] = http_status
+        return cls("challenged", "", evidence)
+
 
 def build_review_snapshot(
     *,
@@ -387,7 +399,7 @@ _SAFE_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 #: Estados de auditoria do dominio. Diferente de `provider_status`, que vem do
 #: fornecedor e so passa por saneamento, estes sao nossos e devem ser um
 #: conjunto fechado: um valor novo exige decisao explicita.
-SAFE_REASON_TOKENS = frozenset({"captcha_no_write", "captcha_write_refused"})
+SAFE_REASON_TOKENS = frozenset({"captcha_no_write", "captcha_write_refused", "captcha_verification_failed"})
 
 
 def _safe_evidence_token(value: object) -> str:
@@ -404,6 +416,10 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
         evidence["status_code"] = status_code
     if "provider_status" in verification.evidence:
         evidence["provider_status"] = _safe_evidence_token(verification.evidence["provider_status"])
+    for flag in ("submit_write", "confirmed_submission"):
+        value = verification.evidence.get(flag)
+        if isinstance(value, bool):
+            evidence[flag] = value
     reason_token = verification.evidence.get("reason_token")
     if reason_token is not None and reason_token not in SAFE_REASON_TOKENS:
         raise SubmissionBoundaryError(f"unsupported failure reason token: {reason_token}")
@@ -573,7 +589,14 @@ class SubmissionService:
         intent = self.database.get_submission_intent(attempt.intent_id)
         if not intent:
             raise SubmissionBoundaryError(f"submission intent not found: {attempt.intent_id}")
-        targets = {"confirmed": (ApplicationState.SUBMITTED, "SUBMITTED"), "failed": (ApplicationState.SUBMIT_FAILED, "FAILED"), "unknown": (ApplicationState.SUBMIT_UNKNOWN, "UNKNOWN")}
+        targets = {
+            "confirmed": (ApplicationState.SUBMITTED, "SUBMITTED"),
+            "failed": (ApplicationState.SUBMIT_FAILED, "FAILED"),
+            "unknown": (ApplicationState.SUBMIT_UNKNOWN, "UNKNOWN"),
+            # Handoff humano: nem sucesso nem falha comum. O estado proprio faz
+            # o agente parar de insistir e deixa a evidencia para o operador.
+            "challenged": (ApplicationState.NEEDS_HUMAN_CAPTCHA, "NEEDS_HUMAN_CAPTCHA"),
+        }
         if verification.status not in targets:
             raise SubmissionBoundaryError(f"unsupported submission verification: {verification.status}")
         target, intent_status = targets[verification.status]

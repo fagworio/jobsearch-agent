@@ -119,8 +119,11 @@ A escrita continua sob a Submission Boundary: a intent é validada, o destino, o
 fingerprints têm de coincidir, a tentativa é persistida **antes** do clique, e o `NetworkWriteGuard`
 é armado para **exatamente um** POST na origem e no caminho autorizados (`AuthorizedWrite`). Esgotada
 a permissão, o guard volta a bloquear toda escrita. Nenhum token é forjado, extraído para replay ou
-contornado: se a página apresentar um desafio de CAPTCHA, a execução para em `NEEDS_CAPTCHA` e nada
-sai do browser.
+contornado. Se a página apresentar um desafio antes de qualquer escrita, a execução para em
+`NEEDS_CAPTCHA` e nada sai do browser. Se a submissão **sair** e o provedor recusá-la por não
+conseguir verificar o navegador, o desfecho é `NEEDS_HUMAN_CAPTCHA`: handoff humano explícito, com
+evidência registrada. Disfarçar sinais de automação (`navigator.webdriver`, plugins, fingerprint)
+está deliberadamente fora de escopo — ver ADR 0003.
 
 O resultado é observado no browser — resposta do POST, mudança para o `confirmationPath` e DOM de
 confirmação. Confirmação inequívoca vira `SUBMITTED`; escrita efetuada sem confirmação vira
@@ -188,8 +191,8 @@ matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
   superestimar a cobertura. Para requisitos em texto livre, configure o provider LLM
   (`JOBSEARCH_LLM_*`), que substitui `required_skills` por extração semântica grounded.
 - `Job` e `Application` possuem ciclos de vida independentes; interrupções como
-  `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA` e `UNSUPPORTED_FORM`
-  são estados de domínio, não erros técnicos.
+  `NEEDS_ANSWER`, `NEEDS_LOGIN`, `NEEDS_MFA`, `NEEDS_CAPTCHA`, `NEEDS_HUMAN_CAPTCHA` e
+  `UNSUPPORTED_FORM` são estados de domínio, não erros técnicos.
 - `NEEDS_ARTIFACT` representa um upload ausente ou inválido e pode ser retomado depois da
   correção do artefato.
 - `ApplicationPolicy` controla autonomia e segurança separadamente de `CandidatePreferences`.

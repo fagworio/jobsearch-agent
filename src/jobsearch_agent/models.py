@@ -73,6 +73,12 @@ class ApplicationState(StrEnum):
     NEEDS_LOGIN = "NEEDS_LOGIN"
     NEEDS_MFA = "NEEDS_MFA"
     NEEDS_CAPTCHA = "NEEDS_CAPTCHA"
+    # O provedor RECUSOU uma submissao que chegou a sair, por nao conseguir
+    # verificar o navegador (anti-bot). Diferente de NEEDS_CAPTCHA, que e um
+    # desafio ainda nao resolvido sem nenhuma escrita: aqui a candidatura foi
+    # enviada e rejeitada. O agente nao deve tentar de novo sozinho nem
+    # disfarcar sinais de automacao — e handoff humano explicito.
+    NEEDS_HUMAN_CAPTCHA = "NEEDS_HUMAN_CAPTCHA"
     UNSUPPORTED_FORM = "UNSUPPORTED_FORM"
     POLICY_BLOCKED = "POLICY_BLOCKED"
     REJECTED = "REJECTED"

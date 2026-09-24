@@ -107,6 +107,16 @@ class NetworkWriteGuard:
             for permit, used in zip(self._authorized_writes, self._authorized_usage)
         )
 
+    @property
+    def authorized_write_usage(self) -> list[tuple[AuthorizedWrite, int]]:
+        """Uso por permissao, na ordem em que foram armadas.
+
+        Necessario quando ha permissoes simultaneas: o desafio anti-bot escreve
+        para o provedor dele e o contador agregado deixaria de dizer se o POST
+        da candidatura realmente saiu.
+        """
+        return list(zip(self._authorized_writes, self._authorized_usage))
+
     def arm_write(self, permit: AuthorizedWrite) -> None:
         self.arm_writes([permit])
 
@@ -191,11 +201,19 @@ class GuardedBrowserSession(Protocol):
     network_guard: NetworkWriteGuard
     guarded: bool
 
+    def arm_writes(self, permits: list[AuthorizedWrite]) -> None: ...
+
 
 class DOMStabilityGuard:
-    """Wait for a minimum observation window, DOM quietness and idle reads."""
+    """Wait for a minimum observation window, DOM quietness and idle reads.
 
-    def __init__(self, quiet_ms: int = 250, min_observation_ms: int = 600, max_ms: int = 3000):
+    ``max_ms`` e o teto de paciencia, nao a exigencia: continua sendo preciso um
+    periodo real de quietude (``quiet_ms``) para liberar. O teto e generoso
+    porque um desafio de CAPTCHA vivo muda o DOM continuamente — com uma janela
+    visivel isso e normal e nao significa que o formulario esteja instavel.
+    """
+
+    def __init__(self, quiet_ms: int = 250, min_observation_ms: int = 600, max_ms: int = 12000):
         self.quiet_ms = quiet_ms
         self.min_observation_ms = min_observation_ms
         self.max_ms = max_ms
@@ -420,6 +438,91 @@ def choose_option_index(labels: list[str], expected: str, intent: str = "") -> i
     raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION" if not matches else "AMBIGUOUS_COMBOBOX_OPTION")
 
 
+def _read_back(locator: Any) -> str | None:
+    """Valor que realmente ficou no controle, ou None se nao der para ler.
+
+    ``None`` e diferente de ``""``: um widget sem leitura suportada nao pode ser
+    declarado vazio, senao a conferencia reprovaria formularios corretos.
+    """
+    try:
+        return str(locator.input_value())
+    except Exception:
+        return None
+
+
+def _confirm_typeahead(page: Any, locator: Any, value: str, field_key: str) -> bool:
+    """Escolhe a sugestao quando o campo e um typeahead que se limpa sozinho.
+
+    O widget "Current location" do Lever aceita a digitacao e depois apaga o
+    texto se nenhuma sugestao for escolhida — o valor real vai num input
+    escondido (``selectedLocation``). Digitar e sair deixa o campo obrigatorio
+    vazio, o formulario fica ``:invalid`` e o navegador recusa o submit sem
+    disparar evento algum. Devolve True quando havia sugestoes e uma foi
+    escolhida.
+    """
+    container = locator.locator("xpath=..")
+    results = container.locator(".dropdown-results")
+    if results.count() == 0:
+        return False
+    locator.click()
+    # O autocomplete consulta pelo texto digitado: a resposta completa
+    # ("Springfield, Minas Gerais, Brazil") nao devolve sugestao alguma. O primeiro
+    # segmento e a consulta que um humano digitaria; a escolha continua sendo
+    # feita contra o valor completo. A digitacao precisa ser tecla a tecla: o
+    # widget so dispara a busca (GET /searchLocations) em eventos de teclado.
+    query = str(value).split(",")[0].strip() or str(value)
+    locator.fill("")
+    locator.press_sequentially(query, delay=60)
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        # As sugestoes sao divs (`.dropdown-location`), nao itens de lista; o
+        # container fica vazio quando nao ha resultado.
+        options = results.locator("xpath=./*")
+        visible = [options.nth(index) for index in range(options.count()) if options.nth(index).is_visible()]
+        if visible:
+            labels = [" ".join((option.inner_text() or "").split()) for option in visible]
+            try:
+                chosen = choose_option_index(labels, str(value))
+            except OptionSelectionError:
+                return False
+            visible[chosen].click()
+            return True
+        page.wait_for_timeout(200)
+    return False
+
+
+def _write_and_confirm(locator: Any, value: str, field_key: str) -> None:
+    """Escreve e confirma que o valor sobreviveu no DOM.
+
+    O ``fill`` do Playwright nao garante que a escrita persista: um input
+    controlado pelo React pode ser re-renderizado e voltar a ficar vazio entre o
+    preenchimento e o submit. Sem esta conferencia o pipeline anunciava
+    "formulario preenchido" com campos obrigatorios vazios, o navegador recusava
+    o submit por validacao nativa e nenhum evento ``submit`` era disparado — ou
+    seja, a falha era completamente silenciosa.
+    """
+    if not str(value).strip():
+        locator.fill(str(value))
+        return
+    page = getattr(locator, "page", None)
+    if page is not None:
+        _confirm_typeahead(page, locator, value, field_key)
+    for attempt in range(3):
+        current = _read_back(locator)
+        if current is None:
+            # Widget sem leitura suportada: nao ha como conferir, mas tambem nao
+            # ha motivo para reprovar um formulario correto.
+            if attempt == 0:
+                locator.fill(str(value))
+            return
+        if current.strip():
+            return
+        locator.fill(str(value))
+        if page is not None:
+            DOMStabilityGuard().wait(page)
+    raise BrowserSessionError(f"VALUE_NOT_COMMITTED: {field_key}")
+
+
 class PlaywrightFormFiller:
     """Fill only validated controls; this class intentionally has no submit method."""
 
@@ -519,6 +622,7 @@ class PlaywrightFormFiller:
                 if audit_path:
                     self._persist_audit(page, audit_path, operations, report)
                 return BrowserExecutionResult(plan.application_id, operations, True, "FORM_CHANGED", initial_fingerprint, current_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
+        self._repair_missing_values(page, plan, fields, bindings, lambda: session.network_guard.pending_read_count)
         report = self._report(session, plan, operations, "COMPLETED", len(plan.actions) - 1, initial_fingerprint, initial_fingerprint)
         result = BrowserExecutionResult(plan.application_id, operations, True, "COMPLETED", initial_fingerprint, initial_fingerprint, False, False, True, report.blocked_write_count, report.blocked_websocket_count, report.pending_read_count)
         if audit_path:
@@ -564,6 +668,51 @@ class PlaywrightFormFiller:
         write_dry_run_report(audit_path / "dry-run-report.json", report)
 
     @staticmethod
+    def _missing_values(page: Any, plan: Any, fields: dict[str, Any], bindings: Any) -> list[tuple[Any, Any, Any, Any]]:
+        """Acoes de preenchimento cujo valor nao esta no DOM."""
+        missing: list[tuple[Any, Any, Any, Any]] = []
+        for action in plan.actions:
+            if action.action_type != "fill" or not str(action.value).strip():
+                continue
+            field = fields[action.field_key]
+            if field.field_type.casefold().strip() in {"combobox", "radio", "checkbox"}:
+                continue
+            binding = bindings.for_field(action.field_key)
+            if binding is None:
+                continue
+            locator = page.locator(binding.locator)
+            if locator.count() != 1:
+                continue
+            current = _read_back(locator)
+            if current is not None and not current.strip():
+                missing.append((action, field, binding, locator))
+        return missing
+
+    def _repair_missing_values(self, page: Any, plan: Any, fields: dict[str, Any], bindings: Any, pending_read_count: Any = None) -> None:
+        """Reescreve os campos que se perderam e so entao confirma.
+
+        Um widget controlado aceita a digitacao e depois limpa o campo sozinho:
+        o typeahead de "Current location" do Lever faz isso quando nenhuma
+        sugestao e escolhida, e o autopreenchimento do proprio board reescreve
+        ``email``/``location`` quando a resposta do /parseResume chega depois do
+        nosso preenchimento. Sem esta conferencia o pipeline anunciava
+        "formulario preenchido" com campos obrigatorios vazios, o navegador
+        recusava o submit por validacao nativa e nenhum evento ``submit`` era
+        disparado — a falha era completamente silenciosa.
+        """
+        for _ in range(3):
+            DOMStabilityGuard().wait(page, pending_read_count)
+            missing = self._missing_values(page, plan, fields, bindings)
+            if not missing:
+                return
+            for action, field, binding, locator in missing:
+                self._fill_value(page, locator, binding, field, action.value, pending_read_count)
+        DOMStabilityGuard().wait(page, pending_read_count)
+        remaining = [action.field_key for action, _field, _binding, _locator in self._missing_values(page, plan, fields, bindings)]
+        if remaining:
+            raise BrowserSessionError(f"VALUE_NOT_COMMITTED: {', '.join(remaining)}")
+
+    @staticmethod
     def _fill_value(page: Any, locator: Any, binding: FormBindings | Any, field: Any, value: Any, pending_read_count: Any = None) -> None:
         field_type = field.field_type.casefold().strip()
         if field_type == "select":
@@ -571,6 +720,12 @@ class PlaywrightFormFiller:
             if option_value is None:
                 raise BrowserSessionError(f"select option is not bound: {field.key}")
             locator.select_option(option_value)
+            # Um select obrigatorio que continua no placeholder ("Select...")
+            # deixa o formulario :invalid e o navegador recusa o submit sem
+            # disparar evento algum; conferir o valor evita o falso "preenchido".
+            current = _read_back(locator)
+            if str(value).strip() and current is not None and not current.strip():
+                raise BrowserSessionError(f"VALUE_NOT_COMMITTED: {field.key}")
         elif field_type == "combobox":
             if binding.multiple or field.multiple:
                 raise BrowserSessionError(f"multiple combobox is unsupported: {field.key}")
@@ -636,7 +791,7 @@ class PlaywrightFormFiller:
                     else:
                         option.uncheck()
         else:
-            locator.fill(str(value))
+            _write_and_confirm(locator, str(value), field.key)
 
 
 class PlaywrightSessionManager:
@@ -654,16 +809,36 @@ class PlaywrightSessionManager:
         self.page = None
         self.network_guard: NetworkWriteGuard | None = None
         self.guarded = False
+        self._client_write_armed = False
 
     _DRY_RUN_INIT_SCRIPT = """
         (() => {
           window.__jobsearchDryRun = true;
+          // O bloqueio no cliente e apenas defesa em profundidade: ele nao tem
+          // como saber se a escrita foi autorizada. Quem decide de fato e o
+          // NetworkWriteGuard, que valida origem, caminho, metodo e o limite de
+          // escritas. Enquanto um permit esta armado, o submit nativo e
+          // liberado para que a requisicao exista e seja auditada — em vez de
+          // morrer dentro do JavaScript do board e o clique nao produzir nada.
+          const armed = () => window.__jobsearchWriteArmed === true;
           const blocked = () => { throw new Error('blocked by jobsearch-agent dry-run'); };
           if (window.HTMLFormElement) {
-            window.HTMLFormElement.prototype.submit = blocked;
-            window.HTMLFormElement.prototype.requestSubmit = blocked;
+            const nativeSubmit = window.HTMLFormElement.prototype.submit;
+            const nativeRequestSubmit = window.HTMLFormElement.prototype.requestSubmit;
+            window.HTMLFormElement.prototype.submit = function (...args) {
+              if (!armed()) blocked();
+              return nativeSubmit.apply(this, args);
+            };
+            window.HTMLFormElement.prototype.requestSubmit = function (...args) {
+              if (!armed()) blocked();
+              return nativeRequestSubmit.apply(this, args);
+            };
           }
-          document.addEventListener('submit', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+          document.addEventListener('submit', event => {
+            if (armed()) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }, true);
           if (navigator.sendBeacon) navigator.sendBeacon = () => false;
           if (window.WebSocket) window.WebSocket = function() { throw new Error('websocket blocked by jobsearch-agent dry-run'); };
         })();
@@ -717,7 +892,13 @@ class PlaywrightSessionManager:
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise BrowserSessionError("Playwright is not installed") from exc
         self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(headless=self.headless)
+        # Argumentos extra vem do ambiente para resolver problemas de plataforma
+        # sem recompilar nada. O caso real: numa sessao Wayland o Chromium abre a
+        # janela numa superficie que nunca chega ao desktop do usuario, e o
+        # humano nao consegue resolver o CAPTCHA de uma janela que nao ve —
+        # `JOBSEARCH_BROWSER_ARGS="--ozone-platform=x11"`.
+        extra_args = [item for item in os.environ.get("JOBSEARCH_BROWSER_ARGS", "").split() if item]
+        self.browser = self._playwright.chromium.launch(headless=self.headless, args=extra_args or None)
         self.context = self.browser.new_context(service_workers="block")
         self.network_guard = NetworkWriteGuard(self.allowed_hosts)
         self.context.add_init_script(self._DRY_RUN_INIT_SCRIPT)
@@ -729,6 +910,7 @@ class PlaywrightSessionManager:
         self.context.on("requestfinished", self._finish_read_request)
         self.context.on("requestfailed", self._finish_read_request)
         self.page = self.context.new_page()
+        self.page.on("framenavigated", self._reapply_client_write_flag)
         self.guarded = True
 
     def arm_authorized_write(self, permit: AuthorizedWrite) -> None:
@@ -740,10 +922,45 @@ class PlaywrightSessionManager:
         if not self.guarded or self.network_guard is None:
             raise BrowserSessionError("cannot authorize a write on an unguarded session")
         self.network_guard.arm_writes(list(permits))
+        self._set_client_write_flag(bool(permits))
 
     def disarm_authorized_write(self) -> None:
         if self.network_guard is not None:
             self.network_guard.disarm_write()
+        self._set_client_write_flag(False)
+
+    def _set_client_write_flag(self, armed: bool) -> None:
+        """Sincroniza o bloqueio client-side com a existencia de um permit.
+
+        Sem isto o script de init cancelava todo submit nativo da pagina mesmo
+        durante uma submissao autorizada, e o ATS que envia o formulario pela
+        API nativa do HTML nunca produzia requisicao alguma.
+        """
+        self._client_write_armed = armed
+        if self.page is None:
+            return
+        try:  # pragma: no cover - depende de um browser real
+            self.page.evaluate("(value) => { window.__jobsearchWriteArmed = value; }", armed)
+        except Exception:
+            # Uma pagina ja navegada/fechada nao invalida a autorizacao: o
+            # NetworkWriteGuard continua sendo quem decide.
+            return
+
+    def _reapply_client_write_flag(self, frame: Any = None) -> None:
+        """Reaplica o estado a cada documento novo.
+
+        O flag vive no documento, nao na sessao: o pipeline arma o permit de
+        upload antes de navegar, e sem esta reaplicacao o documento seguinte
+        voltaria a bloquear o submit nativo apesar do permit armado.
+        """
+        if frame is not None and getattr(self, "page", None) is not None and frame is not self.page.main_frame:
+            return
+        if self.page is None:
+            return
+        try:  # pragma: no cover - depende de um browser real
+            self.page.evaluate("(value) => { window.__jobsearchWriteArmed = value; }", self._client_write_armed)
+        except Exception:
+            return
 
     def open(self, url: str) -> None:
         if self.page is None:

@@ -496,3 +496,99 @@ def test_apply_live_runs_the_real_orchestrator_with_a_candidate_profile(tmp_path
     )
     parts = urlsplit(destination)
     assert parts.scheme == "http" and parts.netloc, destination
+
+
+def test_native_form_submit_reaches_the_network_only_with_an_armed_permit():
+    """O bloqueio client-side nao pode impedir uma submissao autorizada.
+
+    O script de init cancelava todo `submit` nativo durante toda a sessao, para
+    sempre. Em ATS que enviam o formulario pela API nativa do HTML (o Lever, por
+    exemplo) o clique em "Submit application" morria dentro do JavaScript: o
+    guard nunca via requisicao alguma e a submissao nao acontecia, sem erro
+    visivel. Quem decide agora e o NetworkWriteGuard.
+    """
+    from jobsearch_agent.browser import AuthorizedWrite
+
+    posted: list[str] = []
+    form_html = b"""<!doctype html>
+    <form id="application" method="post" action="/apply">
+      <input name="name" value="Candidate">
+      <button type="submit">Submit application</button>
+    </form>"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(form_html)))
+            self.end_headers()
+            self.wfile.write(form_html)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            posted.append(self.path)
+            body = b"<html><body>Thanks for applying</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = f"http://127.0.0.1:{server.server_port}"
+
+    class LoopbackSession(PlaywrightSessionManager):
+        def __init__(self, loopback_origin):
+            super().__init__(allowed_hosts={"127.0.0.1"})
+            self.origin = loopback_origin
+
+        def _guard_route(self, route):
+            if str(route.request.url).startswith(self.origin):
+                if self.network_guard.inspect(route.request):
+                    self.network_guard.begin_read(route.request)
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+                return
+            super()._guard_route(route)
+
+        def open(self, url):
+            self.page.goto(url, wait_until="domcontentloaded")
+
+    manager = LoopbackSession(origin)
+    manager.start()
+    try:
+        manager.open(origin + "/application")
+
+        # Sem permit armado o submit nativo nao pode produzir escrita alguma.
+        manager.page.locator("button[type=submit]").click()
+        manager.page.wait_for_timeout(500)
+        assert posted == [], "unarmed session must not reach the network"
+
+        # Com o permit armado a requisicao existe e e auditada pelo guard.
+        manager.arm_writes([
+            AuthorizedWrite(
+                application_id="application-native-submit",
+                submission_intent_id="intent-native-submit",
+                origin=origin,
+                path_pattern=r"^/apply$",
+                method="POST",
+                max_writes=1,
+            )
+        ])
+        manager.page.goto(origin + "/application", wait_until="domcontentloaded")
+        manager.page.locator("button[type=submit]").click()
+        manager.page.wait_for_timeout(800)
+        assert posted == ["/apply"], f"authorized submit must reach the server: {posted}"
+        assert manager.network_guard is not None
+        assert manager.network_guard.authorized_writes_used == 1
+    finally:
+        manager.close()
+        server.shutdown()
+        thread.join(timeout=2)

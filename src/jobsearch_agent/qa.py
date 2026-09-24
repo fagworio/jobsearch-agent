@@ -47,6 +47,10 @@ _COUNTRY_ALIASES = {
 
 LEGAL_TERMS = ("legal", "law", "declaration", "declare", "conviction", "criminal", "accommod", "disability", "ethnicity", "race", "visto", "autorização de trabalho", "autorizacao de trabalho")
 
+# Um checkbox booleano aceita apenas estes valores; qualquer outra resposta
+# vinda de uma regra de texto seria recusada na validacao do formulario.
+BOOLEAN_VALUES = {"true", "false", "yes", "no", "1", "0", "on", "off", "checked", "unchecked"}
+
 
 def _normalize(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value)
@@ -238,6 +242,11 @@ class AnswerKnowledgeBase:
                 value = str(profile.identity.get("country", ""))
             elif rule.source == "identity.phone":
                 value = str(profile.identity.get("phone", ""))
+            elif rule.source == "current_company":
+                # A empresa atual vem do perfil, nao de texto literal: assim a
+                # regra continua correta quando o candidato trocar de emprego.
+                experience = _current_experience(profile)
+                value = str(experience.company) if experience else ""
             elif rule.source == "work_authorization":
                 country = _field_country(field)
                 authorized = {_normalize(item) for item in (preferences.work_authorization if preferences else [])}
@@ -248,6 +257,13 @@ class AnswerKnowledgeBase:
             elif rule.answer:
                 value = rule.answer
             if not value:
+                continue
+            # Um checkbox booleano so aceita booleano. Sem esta guarda a regra
+            # de email casava o texto de um consentimento ("...atraves de
+            # midias sociais, telefone e email...") e tentava gravar o endereco
+            # dentro de um checkbox, invalidando o formulario inteiro.
+            boolean_checkbox = field.field_type.casefold() == "checkbox" and not (field.multiple or len(field.options) > 1)
+            if boolean_checkbox and _normalize(value) not in BOOLEAN_VALUES:
                 continue
             if field.options and not self._option_matches(value, field.options):
                 continue

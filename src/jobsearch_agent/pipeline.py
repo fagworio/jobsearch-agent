@@ -597,12 +597,16 @@ def apply_live(
                 # precisa acontecer durante o preenchimento. Fica limitada a
                 # origem de storage, com um unico envio; sem --submit nenhuma
                 # escrita e autorizada e o comportamento dry-run se mantem.
+                # restrito ao caminho declarado pelo provider: um curinga
+                # autorizaria o proprio endpoint de candidatura, que costuma
+                # ficar na mesma origem do upload.
+                upload_paths = dict(provider_profile.upload_write_paths)
                 session.arm_writes([
                     AuthorizedWrite(
                         application_id=application.id,
                         submission_intent_id="",
                         origin=host,
-                        path_pattern=r"^/.*$",
+                        path_pattern=upload_paths.get(host, r"^/.*$"),
                         method="POST",
                         max_writes=1,
                     )

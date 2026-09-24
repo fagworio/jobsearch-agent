@@ -162,3 +162,37 @@ def test_reason_token_is_a_closed_set_of_domain_states():
     assert _redacted_evidence(SubmissionVerification.failed("x", reason_token="captcha_no_write"))["reason_token"] == "captcha_no_write"
     with pytest.raises(SubmissionBoundaryError, match="unsupported failure reason token"):
         _redacted_evidence(SubmissionVerification.failed("x", reason_token="anything_else"))
+
+
+def test_lever_upload_permit_cannot_authorise_the_submission():
+    """O upload do Lever vive na mesma origem do submit: so o caminho separa os dois.
+
+    Sem a restricao por caminho, o permit de upload (`^/.*$`) autorizaria o POST
+    de candidatura e a submissao deixaria de ser um evento unico autorizado.
+    """
+    from jobsearch_agent.browser import AuthorizedWrite
+
+    profile = profile_for("lever")
+    paths = dict(profile.upload_write_paths)
+    permits = [
+        AuthorizedWrite(
+            application_id="app-1",
+            submission_intent_id="",
+            origin=host,
+            path_pattern=paths.get(host, r"^/.*$"),
+            method="POST",
+            max_writes=1,
+        )
+        for host in profile.upload_write_origins
+    ]
+    submit_url = "https://jobs.lever.co/ciandt/59494544-d851-4267-b0d2-fd953d4d8a72/apply"
+    assert not any(permit.covers("POST", submit_url) for permit in permits)
+    assert any(permit.covers("POST", "https://jobs.lever.co/parseResume") for permit in permits)
+    # Um POST de infraestrutura do Cloudflare nao pode consumir o credito do
+    # curriculo, que era exatamente o defeito observado no board real.
+    assert not any(
+        permit.covers("POST", "https://jobs.lever.co/cdn-cgi/challenge-platform/h/b/jsd/oneshot/abc/0.6:1:x/y")
+        for permit in permits
+    )
+    # O storage do board continua aceito em qualquer caminho (URL pre-assinada).
+    assert any(permit.covers("POST", "https://acme.s3.amazonaws.com/upload/xyz") for permit in permits)
