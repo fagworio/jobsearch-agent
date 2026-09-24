@@ -1,16 +1,19 @@
 """Submissão autorizada executada pela própria aplicação no browser.
 
-O board moderno do Greenhouse publica um ``submitPath`` e monta o pedido dentro
-do seu próprio JavaScript: ele envia ``application/json`` com
-``g-recaptcha-enterprise-token`` (obtido por ``performAssessment()``),
-``request_token``, ``csrfToken`` e ``fingerprint``. Nada disso é reproduzível
-por um cliente HTTP externo — o que explica o 400 do executor via httpx.
+Boards modernos publicam um ``submitPath`` e montam o pedido dentro do próprio
+JavaScript, com tokens efêmeros que nenhum cliente HTTP externo reproduz — o que
+explica os 400 do executor via httpx. Por isso o POST é feito pela página.
 
 Aqui a escrita continua sob a Submission Boundary: a intent é validada, a
 tentativa é persistida **antes** do clique e o ``NetworkWriteGuard`` é armado
 para exatamente um POST na origem e no caminho autorizados. Nenhum token é
-forjado, extraído para replay ou contornado: se a página apresentar um desafio
-de CAPTCHA, a execução para e reporta ``NEEDS_CAPTCHA``.
+forjado, extraído para replay ou contornado.
+
+Anti-bot NÃO é conhecido neste módulo. Marcadores, hosts, iframes e mensagens de
+recusa vivem no ``challenge-guard`` e chegam aqui como `ChallengeOutcome` pela
+ACL ``jobsearch_agent.challenges``. Os detalhes operacionais da descoberta
+histórica (qual board monta o pedido como, e com quais tokens) ficam em
+docs/adr, não no módulo de ATS.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import time
 from typing import Any
 
 from .browser import AuthorizedWrite, BrowserSessionError, GuardedBrowserSession, dismiss_cookie_consent
+from .challenges import ChallengeOutcome, JobsearchChallengeAdapter
 from .models import ApplicationForm, now_iso
 from .persistence import Database
 from .providers import ProviderError, profile_for
@@ -47,11 +51,6 @@ class BrowserSubmissionOutcome:
 #: Rotulos aceitos para o controle final de envio, do mais para o menos especifico.
 SUBMIT_CONTROL_NAMES = ("Submit application", "Submit Application", "Submit")
 
-#: Orcamento de escritas para o widget anti-bot carregar o desafio. O hCaptcha
-#: repete a busca do desafio enquanto a janela esta aberta, entao o limite e
-#: folgado de proposito — mas continua finito e restrito as origens do provedor.
-CHALLENGE_WRITE_BUDGET = 25
-
 #: Marcadores de que a página chegou à confirmação.
 CONFIRMATION_MARKERS = (
     "thank you for applying",
@@ -62,8 +61,9 @@ CONFIRMATION_MARKERS = (
     "your application was submitted",
 )
 
-#: Marcadores de desafio de CAPTCHA que exigem intervenção humana.
-CAPTCHA_MARKERS = ("recaptcha challenge", "g-recaptcha", "captcha")
+# Conhecimento anti-bot (marcadores, hosts, iframes, 428, mensagens de recusa)
+# NAO pertence a este modulo. Ele vem de `jobsearch_agent.challenges`, que e a
+# unica ponte para o challenge-guard. Aqui so existe `ChallengeOutcome`.
 
 
 class BrowserSubmitter:
@@ -135,37 +135,45 @@ class BrowserSubmitter:
                 max_writes=1,
             )
         ]
-        # O widget anti-bot carrega o desafio por POST para o provedor dele. Sem
-        # isso o CAPTCHA nem aparece e "resolver manualmente" e impossivel. Sao
-        # origens de terceiros, distintas da candidatura: o POST de submissao
-        # continua limitado ao unico permit acima.
-        permits.extend(
-            AuthorizedWrite(
-                application_id=policy.application_id,
-                submission_intent_id=intent_id,
-                origin=origin,
-                path_pattern=r"^/.*$",
-                method="POST",
-                max_writes=CHALLENGE_WRITE_BUDGET,
-            )
-            for origin in getattr(profile, "challenge_write_origins", ())
-        )
         session.arm_writes(permits)
+        # Runtime do widget anti-bot: boundary PROPRIA, com orcamento independente
+        # do de submissao. Os requisitos vem do challenge-guard via a ACL; este
+        # modulo nao conhece host, caminho nem provider de desafio.
+        challenges = JobsearchChallengeAdapter()
+        challenges.attach(getattr(session, "page", None))
+        session.arm_challenge_runtime(challenges.runtime_permissions())
         submit_writes_used = 0
         try:
-            observed = self._click_and_observe(session, intent.destination, profile)
+            observed = self._click_and_observe(session, intent.destination, profile, challenges)
             guard = getattr(session, "network_guard", None)
             usage = getattr(guard, "authorized_write_usage", None) if guard is not None else None
             if usage:
                 # Posicao 0 e sempre o permit da candidatura.
                 submit_writes_used = int(usage[0][1])
+            observed["authorized_writes_used"] = submit_writes_used
+            # O veredito anti-bot vem da ACL, e precisa ser colhido ENQUANTO a
+            # observacao esta anexada: `detach` descarta a pagina e os buffers, e
+            # observar depois dele devolveria "nenhum challenge" — um falso
+            # negativo silencioso em todo board com desafio.
+            outcome = challenges.observe(
+                step="post_submit",
+                http_status=observed.get("http_status"),
+                page_errors=observed.get("page_errors") or (),
+                browser_write_sent=bool(submit_writes_used),
+                submission_confirmed=bool(observed.get("confirmation_reached"))
+                and 200 <= int(observed.get("http_status") or 0) < 300,
+            )
         finally:
             session.disarm_authorized_write()
-        observed["authorized_writes_used"] = submit_writes_used
+            session.disarm_challenge_runtime()
+            challenges.detach()
         writes_used = submit_writes_used
         observed["blocked_writes"] = len(getattr(guard, "blocked_writes", []) or [])
-
-        verification, status = self._classify(observed, writes_used)
+        observed["captcha_challenge"] = bool(outcome.human_required)
+        observed["challenge_decision"] = outcome.decision
+        observed["challenge_reason_token"] = outcome.reason_token
+        observed["challenge_provider"] = outcome.provider
+        verification, status = self._classify(observed, writes_used, outcome)
         if verification is None:
             # Nenhuma escrita saiu: o desafio apareceu e ninguem o resolveu. Nao
             # houve tentativa de submissao, entao o registro nao pode afirmar
@@ -197,7 +205,7 @@ class BrowserSubmitter:
             )
         return BrowserSubmissionOutcome(status, completed.id, observed.get("http_status"), observed)
 
-    def _classify(self, observed: dict[str, Any], writes_used: int):
+    def _classify(self, observed: dict[str, Any], writes_used: int, outcome: ChallengeOutcome | None = None):
         status_code = observed.get("http_status")
         confirmed = bool(observed.get("confirmation_reached"))
         # Uma escrita confirmada com 2xx e o desfecho mais forte que existe: um
@@ -211,20 +219,22 @@ class BrowserSubmitter:
                 ),
                 "SUBMITTED",
             )
-        if observed.get("captcha_challenge") or self._captcha_demanded(observed):
-            if writes_used:
-                # A submissao saiu e o provedor recusou a verificacao anti-bot.
-                # Nao e "resolva o CAPTCHA e tente de novo" pelo agente: repetir
-                # nao muda o veredito, e disfarcar os sinais de automacao esta
-                # fora de escopo por decisao explicita. Handoff humano.
-                return (
-                    SubmissionVerification.challenged(
-                        "captcha_verification_failed",
-                        http_status=status_code if isinstance(status_code, int) else None,
-                        submit_write=True,
-                    ),
-                    "NEEDS_HUMAN_CAPTCHA",
-                )
+        decision = outcome.decision if outcome is not None else "none"
+        if decision == "provider_rejected":
+            # A submissao saiu e o provedor recusou a verificacao anti-bot. Nao e
+            # "resolva o CAPTCHA e tente de novo" pelo agente: repetir nao muda o
+            # veredito, e disfarcar sinais de automacao esta fora de escopo.
+            return (
+                SubmissionVerification.challenged(
+                    "captcha_verification_failed",
+                    http_status=status_code if isinstance(status_code, int) else None,
+                    submit_write=bool(writes_used),
+                ),
+                "NEEDS_HUMAN_CAPTCHA",
+            )
+        if decision == "needs_human":
+            # Desafio bloqueando antes de qualquer escrita: nada foi enviado, e o
+            # registro nao pode afirmar que o servidor recusou uma candidatura.
             return None, "NEEDS_CAPTCHA"
         if writes_used == 0:
             return (
@@ -249,7 +259,13 @@ class BrowserSubmitter:
             "SUBMIT_UNKNOWN",
         )
 
-    def _click_and_observe(self, session: GuardedBrowserSession, destination: str, profile=None) -> dict[str, Any]:
+    def _click_and_observe(
+        self,
+        session: GuardedBrowserSession,
+        destination: str,
+        profile=None,
+        challenges: JobsearchChallengeAdapter | None = None,
+    ) -> dict[str, Any]:
         page = session.page
         observed: dict[str, Any] = {"destination": destination, "started_at": now_iso()}
         responses: list[tuple[str, int]] = []
@@ -270,7 +286,6 @@ class BrowserSubmitter:
             control = self._submit_control(page, getattr(profile, "submit_control_names", ()) or SUBMIT_CONTROL_NAMES)
             observed["submit_control"] = "Submit application" if control is not None else ""
             if control is None:
-                observed["captcha_challenge"] = self._captcha_visible(page)
                 observed["error"] = "no unique enabled submit control in the application form"
                 return observed
             control.click()
@@ -280,13 +295,22 @@ class BrowserSubmitter:
             # desafio aparece tornava essa promessa impossivel de cumprir.
             human_can_solve = not bool(getattr(session, "headless", True))
             deadline = time.monotonic() + self.timeout_seconds
+            last_challenge_check = 0.0
             while time.monotonic() < deadline:
                 if responses:
                     break
                 if self._confirmation_visible(page, getattr(profile, "confirmation_markers", ()) or CONFIRMATION_MARKERS):
                     break
-                if self._captcha_visible(page) and not human_can_solve:
-                    break
+                # Sem janela visivel nao ha quem resolva: se o challenge exige
+                # humano, esperar a deadline inteira seria desperdicio. A
+                # pergunta e feita a ACL, nao a um seletor de iframe — este
+                # modulo nao tem mais como saber o que e um CAPTCHA.
+                if not human_can_solve and challenges is not None:
+                    now = time.monotonic()
+                    if now - last_challenge_check >= 1.0:
+                        last_challenge_check = now
+                        if challenges.observe(step="submitting").human_required:
+                            break
                 page.wait_for_timeout(250)
             if responses:
                 observed["http_status"] = responses[-1][1]
@@ -294,7 +318,6 @@ class BrowserSubmitter:
             observed["confirmation_reached"] = self._confirmation_visible(
                 page, getattr(profile, "confirmation_markers", ()) or CONFIRMATION_MARKERS
             )
-            observed["captcha_challenge"] = self._captcha_visible(page)
             observed["final_url"] = str(getattr(page, "url", ""))
             observed["page_errors"] = self._page_errors(page)
         finally:
@@ -317,19 +340,6 @@ class BrowserSubmitter:
             if len(visible) == 1:
                 return visible[0]
         return None
-
-    @staticmethod
-    def _captcha_demanded(observed: dict[str, Any]) -> bool:
-        """O servidor pediu explicitamente um CAPTCHA.
-
-        O reCAPTCHA Enterprise e invisivel: nao ha iframe de desafio, mas o
-        endpoint responde 428 com "Please complete the reCAPTCHA". Nao
-        resolvemos nem contornamos — apenas reportamos que precisa de humano.
-        """
-        haystack = " ".join(str(item) for item in (observed.get("page_errors") or [])).casefold()
-        if "recaptcha" in haystack or "captcha" in haystack:
-            return True
-        return int(observed.get("http_status") or 0) == 428
 
     @staticmethod
     def _page_errors(page: Any) -> list[str]:
@@ -366,22 +376,6 @@ class BrowserSubmitter:
         except Exception:  # pragma: no cover - defensivo
             return False
         return any(marker in text for marker in markers)
-
-    @staticmethod
-    def _captcha_visible(page: Any) -> bool:
-        """Desafio que exige humano. Nunca tentamos resolver ou contornar."""
-        try:
-            frames = list(getattr(page, "frames", []) or [])
-            for frame in frames:
-                url = str(getattr(frame, "url", "")).casefold()
-                if "recaptcha" in url and "challenge" in url:
-                    return True
-            for marker in CAPTCHA_MARKERS:
-                if page.locator(f'iframe[src*="{marker}"]').count() > 0:
-                    return True
-        except Exception:  # pragma: no cover - defensivo
-            return False
-        return False
 
 
 #: Nome anterior, mantido para compatibilidade de importacao.

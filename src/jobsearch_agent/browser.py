@@ -78,8 +78,67 @@ class AuthorizedWrite:
                 return False
         elif _origin_of(url) != self.origin.rstrip("/"):
             return False
-        return re.fullmatch(self.path_pattern, parsed.path) is not None
+        # `re.match`, nao `fullmatch`: o requirement do challenge-guard declara
+        # padroes de PREFIXO ancorados (ex.: `^/getcaptcha/`), porque o id da
+        # requisicao vem depois. Exigir o caminho inteiro recusaria justamente o
+        # trafego real e o widget nunca carregaria.
+        return re.match(self.path_pattern, parsed.path) is not None
 
+
+
+@dataclass(frozen=True)
+class ChallengeRuntimePermission:
+    """Permissao para o runtime de um widget anti-bot carregar.
+
+    Nao deriva de AuthorizedWrite de proposito: aquele significa "mutacao
+    permitida" e tem orcamento de submissao. Este e trafego de um widget de
+    terceiros, com orcamento PROPRIO, e existe apenas para o desafio poder
+    aparecer — sem ele o CAPTCHA nem carrega e o humano nao tem o que resolver.
+
+    O caminho e sempre declarado. Um caminho aberto (`^/.*$`) nao e aceito:
+    wildcard de origem com caminho aberto autorizaria um dominio inteiro, que e
+    exatamente o defeito que ja apareceu numa policy de upload.
+    """
+
+    provider: str
+    origin: str
+    path_pattern: str
+    method: str = "POST"
+    max_requests: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.path_pattern or self.path_pattern in {r"^/.*$", "^/.*$", "^.*$"}:
+            raise ValueError("challenge runtime permission requires a scoped path pattern")
+        if self.max_requests < 1:
+            raise ValueError("challenge runtime permission requires a positive budget")
+        # O requirement do challenge-guard declara host puro; o guard compara
+        # origem com esquema. Normalizar aqui evita um nao-match silencioso, que
+        # e o tipo de falha que so aparece em producao com o widget bloqueado.
+        # Inclui wildcard: sem esquema, `*.hcaptcha.com` nunca casaria com
+        # `https://api.hcaptcha.com` e o runtime do widget ficaria bloqueado.
+        if self.origin and "://" not in self.origin:
+            object.__setattr__(self, "origin", f"https://{self.origin}")
+
+    def covers(self, method: str, url: str) -> bool:
+        if method.upper() != self.method.upper():
+            return False
+        parsed = urlparse(url)
+        expected = urlparse(self.origin)
+        rule = (expected.hostname or "").casefold()
+        actual = (parsed.hostname or "").casefold()
+        if rule.startswith("*."):
+            suffix = rule[2:]
+            if not (actual == suffix or actual.endswith("." + suffix)):
+                return False
+        elif actual != rule:
+            return False
+        if (parsed.scheme or "").casefold() != (expected.scheme or "https").casefold():
+            return False
+        # `re.match`, nao `fullmatch`: o requirement do challenge-guard declara
+        # padroes de PREFIXO ancorados (ex.: `^/getcaptcha/`), porque o id da
+        # requisicao vem depois. Exigir o caminho inteiro recusaria justamente o
+        # trafego real e o widget nunca carregaria.
+        return re.match(self.path_pattern, parsed.path) is not None
 
 
 class NetworkWriteGuard:
@@ -97,6 +156,10 @@ class NetworkWriteGuard:
         # consumir nem liberar credito de upload ou de submissao.
         self._authorized_inspections: list[AuthorizedInspectionRequest] = []
         self._inspection_usage: list[int] = []
+        # Terceiro orcamento, independente dos outros dois: runtime de widget
+        # anti-bot nunca consome nem libera credito de upload ou submissao.
+        self._challenge_runtime: list[ChallengeRuntimePermission] = []
+        self._challenge_usage: list[int] = []
 
     @property
     def authorized_write(self) -> AuthorizedWrite | None:
@@ -155,6 +218,24 @@ class NetworkWriteGuard:
 
     def disarm_inspections(self) -> None:
         self._authorized_inspections = []
+
+    def arm_challenge_runtime(self, permits: list[ChallengeRuntimePermission]) -> None:
+        for permit in permits:
+            if permit.max_requests < 1:
+                raise ValueError("challenge runtime permission requires a positive budget")
+        self._challenge_runtime = list(permits)
+        self._challenge_usage = [0] * len(permits)
+
+    def disarm_challenge_runtime(self) -> None:
+        self._challenge_runtime = []
+
+    @property
+    def challenge_runtime_used(self) -> int:
+        return sum(self._challenge_usage)
+
+    @property
+    def challenge_runtime_usage(self) -> list[tuple[ChallengeRuntimePermission, int]]:
+        return list(zip(self._challenge_runtime, self._challenge_usage))
 
     @property
     def inspections_used(self) -> int:
@@ -236,9 +317,19 @@ class NetworkWriteGuard:
                     return True
                 self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, token))
                 return False
+            # Runtime de widget anti-bot: orcamento proprio, origem e caminho
+            # declarados pelo provider do desafio. Nao autoriza submissao, e a
+            # submissao nao autoriza isto.
+            for position, permit in enumerate(self._challenge_runtime):
+                if self._challenge_usage[position] >= permit.max_requests:
+                    continue
+                if permit.covers(method, url):
+                    self._challenge_usage[position] += 1
+                    self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, f"authorized challenge runtime: {permit.provider}"))
+                    return True
             reason = (
                 "write method blocked in dry-run"
-                if not self._authorized_writes
+                if not self._authorized_writes and not self._challenge_runtime
                 else "write is not covered by the authorized submission permit"
             )
             self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, False, reason))

@@ -8,7 +8,7 @@ pipeline e deixa explícito o que cada provider exige.
 Descobertas por inspeção real das páginas:
 
 - **Greenhouse**: SPA. O formulário é montado no cliente e o POST é
-  ``application/json`` com ``g-recaptcha-enterprise-token``, ``request_token`` e
+  ``application/json`` com tokens efemeros e ``request_token`` e
   ``csrfToken``. O currículo sobe antes, por POST para o storage do board.
 - **Lever**: formulário HTML clássico em ``<job-url>/apply``, com
   ``action`` apontando para o próprio ``/apply`` e ``method=post``.
@@ -110,12 +110,6 @@ class ProviderProfile:
     inspection_operations: tuple = ()
     #: Quantas vezes cada operação pode ser pedida (retry do SPA é normal).
     inspection_max_requests: int = 3
-    #: Origens do widget anti-bot que precisam de POST para carregar o desafio.
-    #: Não é a candidatura: é o próprio CAPTCHA, que o humano precisa ver para
-    #: resolver. Sem estas escritas o desafio nem carrega (o widget chama
-    #: ``hcaptcha.com/getcaptcha`` por POST) e "resolver manualmente" fica
-    #: impossível. O endpoint de submissão continua protegido pelo permit único.
-    challenge_write_origins: tuple[str, ...] = ()
     notes: str = ""
 
 
@@ -132,8 +126,6 @@ PROFILES: dict[str, ProviderProfile] = {
     "greenhouse": ProviderProfile(
         provider="greenhouse",
         resource_hosts=(
-            "www.recaptcha.net",
-            "recaptcha.net",
             "www.google.com",
             "apis.google.com",
             "accounts.google.com",
@@ -160,19 +152,7 @@ PROFILES: dict[str, ProviderProfile] = {
             "fonts.gstatic.com",
             "www.gstatic.com",
             "*.s3.amazonaws.com",
-            # O formulario do Lever carrega o hCaptcha. Sem o script o handler
-            # de submit espera por um token que nunca chega e o clique nao
-            # produz escrita alguma — falha silenciosa. O script entra como
-            # LEITURA; um desafio real continua sendo reportado como
-            # NEEDS_CAPTCHA, nunca contornado.
-            "js.hcaptcha.com",
-            "hcaptcha.com",
-            "*.hcaptcha.com",
         ),
-        # O desafio do hCaptcha so carrega se o widget puder falar com o
-        # provedor por POST. Bloquear isso tornava o CAPTCHA invisivel — o
-        # humano via um botao "Submit" que nao fazia nada.
-        challenge_write_origins=("hcaptcha.com", "*.hcaptcha.com"),
         upload_write_origins=("*.s3.amazonaws.com", "*.lever.co"),
         # O Lever sobe o curriculo por POST em /parseResume, na MESMA origem do
         # endpoint de candidatura. Sem esta restricao o permit de upload (que e

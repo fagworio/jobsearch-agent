@@ -12,6 +12,7 @@ from .analysis import analyze_requirements, build_strategy, calculate_fit, detec
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
 from .ats import GreenhouseAdapter, adapter_for
 from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
+from .challenges import JobsearchChallengeAdapter
 from .config import Settings
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
@@ -582,8 +583,14 @@ def apply_live(
         upload_writes_used = 0
         provider_profile = profile_for(adapter.provider)
         form_url = provider_apply_url(adapter.provider, job.url)
-        resource_hosts = set(provider_profile.resource_hosts) | set(
-            getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url)
+        # Hosts de recurso vem do perfil do ATS (CDN, fontes) MAIS os do
+        # challenge-guard (o widget precisa carregar). Conhecimento anti-bot nao
+        # fica no providers.py: um board que troque de anti-bot nao deve exigir
+        # edicao no perfil de ATS.
+        resource_hosts = (
+            set(provider_profile.resource_hosts)
+            | set(getattr(adapter, "resource_allowed_hosts", lambda _url: set())(job.url))
+            | JobsearchChallengeAdapter().runtime_read_hosts()
         )
         session = PlaywrightSessionManager(
             headless=headless,
