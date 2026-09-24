@@ -124,6 +124,16 @@ def load_token_document(path: Path) -> dict[str, Any]:
         )
     if not document.get("refresh_token") and not document.get("token"):
         raise GmailAuthError("credential file has neither access nor refresh token")
+    # O `AuthorizedUserInfo` do google-auth exige estes dois; sem eles a
+    # biblioteca levanta `ValueError: ... not in the expected format`, que nao diz
+    # ao operador o que fazer. A checagem mora aqui para a mensagem ser acionavel
+    # mesmo sem a biblioteca instalada.
+    missing = [key for key in ("client_id", "client_secret") if not document.get(key)]
+    if missing:
+        raise GmailAuthError(
+            f"credential file is missing {', '.join(missing)}; reauthorize with "
+            "`integrations gmail authorize`"
+        )
     return document
 
 
@@ -135,7 +145,15 @@ def _google_credentials_factory(document: dict[str, Any]) -> Any:
             "google-auth-oauthlib is not installed; "
             "install the optional group: pip install 'google-api-python-client' 'google-auth-oauthlib'"
         ) from exc
-    return Credentials.from_authorized_user_info(document, list(ALLOWED_SCOPES))
+    try:  # pragma: no cover - depende da biblioteca opcional
+        return Credentials.from_authorized_user_info(document, list(ALLOWED_SCOPES))
+    except (ValueError, KeyError) as exc:  # pragma: no cover
+        # A biblioteca tambem valida o formato; a mensagem dela nao diz o que
+        # fazer, entao ela nao chega ao operador.
+        raise GmailAuthError(
+            "credential file is not a usable authorized-user document; "
+            "reauthorize with `integrations gmail authorize`"
+        ) from exc
 
 
 def _google_request_factory() -> Any:
@@ -241,4 +259,10 @@ def _google_flow_factory(client_secret: str, scopes: list[str]) -> Any:
             "google-auth-oauthlib is not installed; "
             "install the optional group: pip install 'google-api-python-client' 'google-auth-oauthlib'"
         ) from exc
-    return InstalledAppFlow.from_client_secrets_file(client_secret, scopes)
+    try:  # pragma: no cover - depende da biblioteca opcional
+        return InstalledAppFlow.from_client_secrets_file(client_secret, scopes)
+    except (ValueError, KeyError) as exc:  # pragma: no cover
+        raise GmailConfigError(
+            "client_secret.json is not a usable OAuth client document "
+            "(it must be a 'Desktop app' client downloaded from Google Cloud)"
+        ) from exc

@@ -423,7 +423,16 @@ class _GrantedCredentials:
 
     def to_json(self):
         return json.dumps(
-            {"token": "granted-access", "refresh_token": "granted-refresh", "scopes": self.scopes}
+            {
+                "token": "granted-access",
+                "refresh_token": "granted-refresh",
+                "client_id": "cid.apps.googleusercontent.com",
+                "client_secret": "client-secret-value",
+                "scopes": self.scopes,
+                # Sem `expiry` o google-auth considera a credencial expirada e
+                # tenta refresh — que aqui seria rede. O fluxo real grava expiry.
+                "expiry": "2099-01-01T00:00:00Z",
+            }
         )
 
 
@@ -623,3 +632,84 @@ def test_the_check_cli_prints_no_message_content(tmp_path, capsys, monkeypatch):
     assert code == 0
     assert json.loads(printed)["messages_read"] == 0
     assert SENTINEL_SUBJECT not in printed and SENTINEL_BODY not in printed
+
+
+def test_the_three_integration_commands_run_in_order(tmp_path, capsys, monkeypatch):
+    """Os tres comandos do 006F, pelo CLI, na ordem em que serao executados.
+
+    So o consentimento e o cliente da API sao dublados: o resto do caminho —
+    gravacao privada do token, portoes de permissao e escopo, `messages.list` sem
+    `get` — e o codigo de verdade.
+    """
+    from jobsearch_agent.cli import main as cli_main
+    from jobsearch_agent.integrations.email import oauth
+
+    paths = _credential_files(tmp_path, token=False)
+    api = FakeGmailApi([_payload("18f0a1b2c3d4e5f6", subject=SENTINEL_SUBJECT, body=SENTINEL_BODY)])
+    monkeypatch.setattr(
+        oauth,
+        "_google_flow_factory",
+        lambda client, scopes: _FakeFlow(_GrantedCredentials(scopes)),
+    )
+    # O caminho de `check` usa as bibliotecas do Google quando instaladas; o teste
+    # dubla a fabrica para rodar igual nos dois jobs do CI (com e sem o grupo).
+    monkeypatch.setattr(oauth, "_google_credentials_factory", lambda document: _FakeCredentials(expired=False))
+    monkeypatch.setattr(
+        "jobsearch_agent.integrations.email.GmailApiClient", lambda credentials: api
+    )
+    root = ["--root", str(tmp_path)]
+    directory = ["--gmail-dir", str(paths.directory)]
+
+    code = cli_main([*root, "integrations", "gmail", "authorize", *directory])
+    authorized = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert authorized["authorized"] is True
+    assert authorized["scopes"] == [GMAIL_READONLY_SCOPE]
+    assert "granted-access" not in json.dumps(authorized)
+
+    code = cli_main([*root, "integrations", "gmail", "status", *directory])
+    status = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert status["authorized"] is True
+    assert status["scopes"] == [GMAIL_READONLY_SCOPE]
+    assert status["client_secret_present"] is True and status["token_present"] is True
+    assert (paths.token.stat().st_mode & 0o777) == 0o600
+
+    code = cli_main([*root, "integrations", "gmail", "check", *directory])
+    check = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert check == {
+        "api_reachable": True,
+        "messages_listed": 1,
+        "messages_read": 0,
+        "lookback_seconds": int(timedelta(days=1).total_seconds()),
+        "scope": GMAIL_READONLY_SCOPE,
+        "content_logged": False,
+    }
+    assert api.fetched == []
+    assert SENTINEL_SUBJECT not in json.dumps(check) and SENTINEL_BODY not in json.dumps(check)
+
+
+def test_a_token_without_client_fields_is_refused_with_a_clear_message(tmp_path):
+    """A biblioteca diria "not in the expected format"; nos dizemos o que fazer."""
+    paths = _credential_files(tmp_path)
+    document = json.loads(paths.token.read_text(encoding="utf-8"))
+    del document["client_id"]
+    del document["client_secret"]
+    paths.token.write_text(json.dumps(document), encoding="utf-8")
+    paths.token.chmod(0o600)
+
+    with pytest.raises(GmailAuthError, match="client_id, client_secret"):
+        load_token_document(paths.token)
+
+
+def test_a_malformed_client_secret_is_refused_with_a_clear_message(tmp_path):
+    paths = _credential_files(tmp_path, token=False)
+    paths.client_secret.write_text('{"web": {"client_id": "x"}}', encoding="utf-8")
+    paths.client_secret.chmod(0o600)
+
+    from jobsearch_agent.integrations.email.oauth import _google_flow_factory
+
+    pytest.importorskip("google_auth_oauthlib.flow")
+    with pytest.raises(GmailConfigError, match="Desktop app"):
+        _google_flow_factory(str(paths.client_secret), [GMAIL_READONLY_SCOPE])
