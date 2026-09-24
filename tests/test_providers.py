@@ -23,8 +23,8 @@ def test_every_registered_adapter_has_a_profile():
         assert profile_for(adapter.provider).provider == adapter.provider
 
 
-def test_supported_providers_are_the_three_boards():
-    assert supported_providers() == ["ashby", "greenhouse", "lever"]
+def test_supported_providers_are_the_registered_boards():
+    assert supported_providers() == ["ashby", "greenhouse", "lever", "workable"]
 
 
 def test_apply_url_appends_the_form_route_once():

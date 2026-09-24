@@ -504,6 +504,67 @@ def choose_option_index(labels: list[str], expected: str, intent: str = "") -> i
     raise OptionSelectionError("OPTION_NOT_FOUND_COMBOBOX_OPTION" if not matches else "AMBIGUOUS_COMBOBOX_OPTION")
 
 
+
+#: Banners de consentimento que aparecem antes de qualquer interacao e cujo
+#: overlay intercepta cliques no formulario.
+_COOKIE_CONSENT_SELECTORS = (
+    '[data-ui="cookie-consent"]',
+    '[aria-label="Cookie Consent"]',
+    '[id*="cookie" i]',
+    '[class*="cookie" i]',
+)
+_CONSENT_ACCEPT_LABELS = (
+    "Accept all", "Accept All", "Accept", "Aceitar tudo", "Aceitar",
+    "Allow all", "I agree", "Got it", "Entendi",
+)
+
+
+def dismiss_cookie_consent(page: Any) -> bool:
+    """Melhor-esforco: nunca pode derrubar o preenchimento.
+
+    Dispensar o banner e conveniencia, nao requisito. Uma API de locator que o
+    stub de teste nao implementa (ou qualquer mudanca do site) tem de resultar
+    em "nao havia banner", jamais em excecao no meio do fill.
+    """
+    try:
+        return _dismiss_cookie_consent(page)
+    except Exception:
+        return False
+
+
+def _dismiss_cookie_consent(page: Any) -> bool:
+    """Dispensa um banner de consentimento que intercepta cliques.
+
+    Nao e contornar nada do board: e fechar o aviso que o proprio site mostra
+    antes de qualquer interacao. Sem isso, o overlay do banner engole o clique
+    no controle final — o agente tentava enviar e o clique nunca chegava ao
+    botao. O clique e procurado DENTRO do dialogo, entao nunca cai no controle
+    de submissao por engano.
+    """
+    for selector in _COOKIE_CONSENT_SELECTORS:
+        try:
+            dialogs = page.locator(selector)
+            total = dialogs.count()
+        except Exception:
+            continue
+        for index in range(min(total, 3)):
+            dialog = dialogs.nth(index)
+            try:
+                if not dialog.is_visible():
+                    continue
+            except Exception:
+                continue
+            for label in _CONSENT_ACCEPT_LABELS:
+                candidates = dialog.get_by_role("button", name=label, exact=False)
+                if not candidates.count():
+                    continue
+                try:
+                    candidates.first.click(timeout=3000)
+                    return True
+                except Exception:
+                    continue
+    return False
+
 def _read_back(locator: Any) -> str | None:
     """Valor que realmente ficou no controle, ou None se nao der para ler.
 
@@ -598,6 +659,7 @@ class PlaywrightFormFiller:
         page = session.page
         if not page.evaluate("() => window.__jobsearchDryRun === true"):
             raise BrowserSessionError("Playwright page is not attached to a dry-run guarded session")
+        dismiss_cookie_consent(page)
         current_html = page.content()
         validation = validate_execution_context(context, plan, bindings, current_html, str(getattr(page, "url", "")), allow_review=allow_review)
         if not validation.valid:

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any
 
-from .browser import AuthorizedWrite, BrowserSessionError, GuardedBrowserSession
+from .browser import AuthorizedWrite, BrowserSessionError, GuardedBrowserSession, dismiss_cookie_consent
 from .models import ApplicationForm, now_iso
 from .persistence import Database
 from .providers import ProviderError, profile_for
@@ -264,6 +264,9 @@ class BrowserSubmitter:
 
         page.on("response", _on_response)
         try:
+            # O overlay do banner de cookies intercepta o clique no controle
+            # final; dispensar antes evita que o envio nunca chegue ao botao.
+            dismiss_cookie_consent(page)
             control = self._submit_control(page, getattr(profile, "submit_control_names", ()) or SUBMIT_CONTROL_NAMES)
             observed["submit_control"] = "Submit application" if control is not None else ""
             if control is None:

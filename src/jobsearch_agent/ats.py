@@ -464,7 +464,88 @@ class LeverAdapter:
         return AdapterInspectionResult(self.provider, self.confidence(url, html), inspected.form, inspected.bindings, warnings, [])
 
 
-ADAPTERS: tuple[ATSAdapter, ...] = (GreenhouseAdapter(), LeverAdapter())
+_WORKABLE_SEMANTICS = {
+    "firstname": "first_name",
+    "lastname": "last_name",
+    "email": "email",
+    "phone": "phone",
+}
+
+
+class WorkableAdapter:
+    """Adapter do formulario React do Workable.
+
+    Sem ``<form>``: a Workable monta o formulario em divs a partir de
+    ``GET /api/v1/jobs/{id}/form``. Os nomes sao reais para identidade
+    (``firstname``, ``lastname``, ``email``, ``phone``) e as perguntas
+    customizadas usam chaves opacas (``QA_<id>``), resolvidas pelo texto do
+    rotulo — o mesmo caminho que ja funcionava no Lever.
+    """
+
+    provider = "workable"
+
+    def matches(self, url: str = "", html: str = "") -> bool:
+        hostname = (urlparse(url).hostname or "").casefold()
+        if hostname.endswith("workable.com"):
+            return True
+        soup = BeautifulSoup(html, "html.parser")
+        return bool(
+            soup.select_one('input[name="firstname"], input[name="lastname"], input[name^="QA_"]')
+        )
+
+    def confidence(self, url: str = "", html: str = "") -> float:
+        hostname = (urlparse(url).hostname or "").casefold()
+        if hostname.endswith("workable.com"):
+            return 1.0
+        return 0.9 if self.matches(url, html) else 0.0
+
+    def allowed_hosts(self, url: str) -> set[str]:
+        hostname = (urlparse(url).hostname or "").casefold()
+        hosts = {hostname} if hostname else set()
+        hosts.update({"apply.workable.com", "www.workable.com"})
+        return hosts
+
+    def locate_application_root(self, html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        if soup.find("form"):
+            return "form"
+        # Sem <form>: a raiz e o proprio documento (o inspector aceita soup).
+        return "body"
+
+    def inspect(self, html: str, url: str = "", form_id: str = "application") -> AdapterInspectionResult:
+        if not self.matches(url, html):
+            raise InspectionError("WORKABLE_SIGNATURE_NOT_FOUND")
+        inspected = ATSInspector().inspect_html(
+            html, url=url, form_id=form_id, form_selector=self.locate_application_root(html)
+        )
+        inspected.form.provider = self.provider
+        inspected.form.source = "workable_adapter"
+        for field in inspected.form.fields:
+            if field.field_type.casefold().strip() == "file":
+                # O dropzone da Workable nao usa label[for] nem <label> ancestral,
+                # e o fallback do inspector pega o aria-label do estado de erro
+                # ("SVGs not supported by this browser."). Sem isto o curriculo
+                # nao era reconhecido como resume e nada era anexado.
+                field.semantic_type = "resume"
+                field.label = "Resume"
+                field.confidence = 1.0
+                field.source = "workable_file"
+                continue
+            semantic = _WORKABLE_SEMANTICS.get(field.key.casefold().strip(), "")
+            if semantic:
+                field.semantic_type = semantic
+                field.confidence = 1.0
+                field.source = "workable_name"
+            else:
+                field.confidence = 0.0
+                field.source = "workable_unknown"
+        warnings = [
+            "required field has no high-confidence semantic mapping"
+        ] if any(field.confidence < 0.70 and field.required for field in inspected.form.fields) else []
+        return AdapterInspectionResult(self.provider, self.confidence(url, html), inspected.form, inspected.bindings, warnings, [])
+
+
+ADAPTERS: tuple[ATSAdapter, ...] = (GreenhouseAdapter(), LeverAdapter(), WorkableAdapter())
 
 
 def adapter_for(url: str = "", html: str = "") -> ATSAdapter | None:

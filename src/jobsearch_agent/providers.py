@@ -194,6 +194,39 @@ PROFILES: dict[str, ProviderProfile] = {
         apply_path_suffix="/apply",
         notes="Formulário HTML clássico; action aponta para o próprio /apply.",
     ),
+    "workable": ProviderProfile(
+        provider="workable",
+        resource_hosts=(
+            "*.workable.com",
+            "workable.com",
+            "fonts.googleapis.com",
+            "fonts.gstatic.com",
+            "challenges.cloudflare.com",
+            "*.cloudflare.com",
+            "cdnjs.cloudflare.com",
+            "*.cloudfront.net",
+        ),
+        # A candidatura sobe como multipart para a propria API do board; nao ha
+        # storage de terceiro. O caminho fica restrito ao endpoint de
+        # candidatura, entao a permissao de upload nao cobre outra escrita.
+        upload_write_origins=("apply.workable.com",),
+        upload_write_paths=(("apply.workable.com", r"^/api/v[0-9]+/accounts/[^/]+/jobs/[^/]+/applications/?$"),),
+        submit_origin="https://apply.workable.com",
+        submit_path_pattern=r"^/api/v[0-9]+/accounts/[^/]+/jobs/[^/]+/applications/?$",
+        submit_control_names=("Submit application", "Submit Application", "Submit"),
+        confirmation_markers=(
+            "thank you for applying",
+            "thanks for applying",
+            "application submitted",
+            "application received",
+            "we have received your application",
+        ),
+        apply_path_suffix="/apply",
+        notes=(
+            "SPA React; o formulario vem de GET /api/v1/jobs/{id}/form e a "
+            "candidatura sobe por POST multipart para a API do proprio board."
+        ),
+    ),
     "ashby": ProviderProfile(
         provider="ashby",
         resource_hosts=(
@@ -247,6 +280,7 @@ PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
     "greenhouse": ("greenhouse.io",),
     "lever": ("lever.co",),
     "ashby": ("ashbyhq.com",),
+    "workable": ("workable.com",),
 }
 
 
@@ -329,4 +363,17 @@ def submit_destination(
             if parts.scheme and parts.netloc:
                 return resolved
         return base
+    if provider == "workable":
+        # A Workable identifica a vaga pelo par (conta, shortcode), e os dois
+        # estao na URL: /{account}/j/{shortcode}. A URL e a fonte de verdade —
+        # o `company` do registro pode vir vazio e o `external_id` e um hash
+        # interno, nao o shortcode que a API espera.
+        segments = [segment for segment in urlsplit(job_url).path.split("/") if segment]
+        account = segments[0] if segments else board
+        shortcode = segments[2] if len(segments) >= 3 and segments[1] == "j" else ""
+        account = account or board
+        shortcode = shortcode or external_id
+        if not account or not shortcode:
+            raise ProviderError("workable submission requires account and job shortcode")
+        return f"{profile.submit_origin}/api/v1/accounts/{account}/jobs/{shortcode}/applications"
     raise ProviderError(f"no public submit endpoint known for provider: {provider}")
