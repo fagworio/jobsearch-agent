@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, FormCapabilityIssue
+from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, FormCapabilityIssue, SubmissionConfirmationEvidence
 from .forms import validate_application_form
 from .persistence import Database
 
@@ -51,7 +51,15 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     # Handoff humano. A submissao chegou a sair e o provedor recusou a
     # verificacao anti-bot: o agente nao insiste sozinho. Reabrir exige a
     # operacao explicita `retry-submit`.
-    ApplicationState.NEEDS_HUMAN_CAPTCHA: {ApplicationState.REVIEW_REACHED},
+    # ADR 0005: retry explicito continua valendo, e o caminho manual e ADITIVO.
+    ApplicationState.NEEDS_HUMAN_CAPTCHA: {ApplicationState.REVIEW_REACHED, ApplicationState.HANDOFF_IN_PROGRESS},
+    # Cancelar so vale ANTES de qualquer relato de envio.
+    ApplicationState.HANDOFF_IN_PROGRESS: {ApplicationState.REVIEW_REACHED, ApplicationState.AWAITING_SUBMISSION_CONFIRMATION},
+    # Deliberadamente SEM aresta para REVIEW_REACHED, SUBMIT_AUTHORIZED ou
+    # SUBMITTING: existe a possibilidade real de a candidatura ja ter sido
+    # enviada, e reabrir o submit violaria exactly-once. So evidencia
+    # independente sai daqui.
+    ApplicationState.AWAITING_SUBMISSION_CONFIRMATION: {ApplicationState.SUBMITTED},
     ApplicationState.UNSUPPORTED_FORM: {ApplicationState.POLICY_BLOCKED, ApplicationState.REJECTED},
     ApplicationState.POLICY_BLOCKED: {ApplicationState.PREPARING, ApplicationState.REJECTED},
     ApplicationState.REJECTED: set(),
@@ -140,13 +148,33 @@ class ApplicationService:
         self.database.save_application(application)
         return application
 
-    def transition(self, application_id: str, target: ApplicationState, event: str, payload: dict[str, Any] | None = None, expected_state: ApplicationState | None = None) -> Application:
+    def transition(
+        self,
+        application_id: str,
+        target: ApplicationState,
+        event: str,
+        payload: dict[str, Any] | None = None,
+        expected_state: ApplicationState | None = None,
+        confirmation_evidence: SubmissionConfirmationEvidence | None = None,
+    ) -> Application:
+        """Unica porta de mudanca de estado.
+
+        Invariante do ADR 0005: nenhum comando baseado SO em declaracao do
+        usuario leva a `SUBMITTED`. Exigir a evidencia AQUI, no unico lugar que
+        muda estado, torna isso mecanico — um comando novo que alguem venha a
+        expor no CLI nao consegue contornar por esquecimento.
+        """
         application = self.database.get_application(application_id)
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
         previous_state = expected_state or application.state
         if target not in TRANSITIONS[previous_state]:
             raise ApplicationDomainError(f"invalid application transition: {previous_state.value} -> {target.value}")
+        if target is ApplicationState.SUBMITTED and confirmation_evidence is None:
+            raise ApplicationDomainError(
+                "SUBMITTED requires independent confirmation evidence; "
+                "a user declaration alone can never satisfy it"
+            )
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         application.state = target
         application.updated_at = now
@@ -229,6 +257,85 @@ class ApplicationService:
                 "attempt_status": last.status,
                 "attempt_outcome_recorded": last.status != ApplicationState.SUBMITTING.value,
             },
+        )
+
+    def start_human_handoff(self, application_id: str) -> Application:
+        """command START_HUMAN_HANDOFF: NEEDS_HUMAN_CAPTCHA -> HANDOFF_IN_PROGRESS."""
+        application = self.database.get_application(application_id)
+        if not application:
+            raise ApplicationDomainError(f"application not found: {application_id}")
+        if application.state is not ApplicationState.NEEDS_HUMAN_CAPTCHA:
+            raise ApplicationDomainError(
+                f"handoff requires NEEDS_HUMAN_CAPTCHA, got {application.state.value}"
+            )
+        return self.transition(
+            application_id,
+            ApplicationState.HANDOFF_IN_PROGRESS,
+            "handoff_started",
+            {"previous_state": application.state.value},
+        )
+
+    def cancel_handoff(self, application_id: str) -> Application:
+        """command CANCEL_HANDOFF: HANDOFF_IN_PROGRESS -> REVIEW_REACHED.
+
+        Seguro porque ainda NAO houve declaracao de envio. Depois do relato esta
+        operacao nao existe: reconciliar exige fluxo explicito.
+        """
+        application = self.database.get_application(application_id)
+        if not application:
+            raise ApplicationDomainError(f"application not found: {application_id}")
+        if application.state is not ApplicationState.HANDOFF_IN_PROGRESS:
+            raise ApplicationDomainError(
+                f"cancel handoff requires HANDOFF_IN_PROGRESS, got {application.state.value}"
+            )
+        return self.transition(
+            application_id,
+            ApplicationState.REVIEW_REACHED,
+            "handoff_cancelled",
+            {"previous_state": application.state.value},
+        )
+
+    def report_manual_submission(self, application_id: str) -> Application:
+        """event MANUAL_SUBMISSION_REPORTED: HANDOFF_IN_PROGRESS -> AWAITING_...
+
+        NAO marca SUBMITTED. O relato e o que cria a necessidade de confirmacao;
+        nao pode ser tambem o que a satisfaz.
+        """
+        application = self.database.get_application(application_id)
+        if not application:
+            raise ApplicationDomainError(f"application not found: {application_id}")
+        if application.state is not ApplicationState.HANDOFF_IN_PROGRESS:
+            raise ApplicationDomainError(
+                f"manual submission report requires HANDOFF_IN_PROGRESS, got {application.state.value}"
+            )
+        return self.transition(
+            application_id,
+            ApplicationState.AWAITING_SUBMISSION_CONFIRMATION,
+            "manual_submission_reported",
+            {"previous_state": application.state.value},
+        )
+
+    def confirm_submission(
+        self, application_id: str, evidence: SubmissionConfirmationEvidence
+    ) -> Application:
+        """event SUBMISSION_CONFIRMED: AWAITING_... -> SUBMITTED, SO com evidencia."""
+        application = self.database.get_application(application_id)
+        if not application:
+            raise ApplicationDomainError(f"application not found: {application_id}")
+        if application.state is not ApplicationState.AWAITING_SUBMISSION_CONFIRMATION:
+            raise ApplicationDomainError(
+                f"confirmation requires AWAITING_SUBMISSION_CONFIRMATION, got {application.state.value}"
+            )
+        return self.transition(
+            application_id,
+            ApplicationState.SUBMITTED,
+            "submission_confirmed",
+            {
+                "previous_state": application.state.value,
+                "evidence_source": evidence.source.value,
+                "evidence_reference": evidence.reference,
+            },
+            confirmation_evidence=evidence,
         )
 
     def resume(self, application_id: str) -> Application:

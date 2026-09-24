@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone
 from enum import StrEnum
+import re
 from typing import Any
 
 try:
@@ -79,9 +80,50 @@ class ApplicationState(StrEnum):
     # enviada e rejeitada. O agente nao deve tentar de novo sozinho nem
     # disfarcar sinais de automacao — e handoff humano explicito.
     NEEDS_HUMAN_CAPTCHA = "NEEDS_HUMAN_CAPTCHA"
+    # ADR 0005: o humano assumiu o envio. Continua o HANDOFF, nao o fluxo
+    # automatico — retomavel apenas no sentido de continuar o handoff.
+    HANDOFF_IN_PROGRESS = "HANDOFF_IN_PROGRESS"
+    # Existe uma ALEGACAO de envio manual e ainda nao ha evidencia independente.
+    # Comporta-se como SUBMIT_UNKNOWN (nunca reenviar sozinho); a diferenca e a
+    # origem da incerteza: o agente enviou e nao sabe o resultado, versus o
+    # humano diz que enviou sem confirmacao.
+    AWAITING_SUBMISSION_CONFIRMATION = "AWAITING_SUBMISSION_CONFIRMATION"
     UNSUPPORTED_FORM = "UNSUPPORTED_FORM"
     POLICY_BLOCKED = "POLICY_BLOCKED"
     REJECTED = "REJECTED"
+
+
+class ConfirmationSource(StrEnum):
+    """Fontes aceitas de evidencia independente (ADR 0005).
+
+    Conjunto fechado: uma fonte nova exige decisao explicita, porque e ela que
+    autoriza a transicao para SUBMITTED.
+    """
+
+    CONFIRMATION_EMAIL = "confirmation_email"
+    PROVIDER_CONFIRMATION_PAGE = "provider_confirmation_page"
+    PROVIDER_APPLICATION_STATUS = "provider_application_status"
+    EXTERNALLY_VERIFIED_RECORD = "externally_verified_record"
+
+
+@dataclass(frozen=True)
+class SubmissionConfirmationEvidence:
+    """Evidencia independente de que a candidatura foi aceita (ADR 0005).
+
+    O relato do usuario CRIA a incerteza; ele nao pode satisfaze-la. Por isso este
+    objeto e o unico caminho para `SUBMITTED` a partir de
+    `AWAITING_SUBMISSION_CONFIRMATION`, e a referencia e OPACA: guardamos o
+    identificador da evidencia, nunca o conteudo (que traria dado do candidato).
+    """
+
+    source: ConfirmationSource
+    reference: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, ConfirmationSource):
+            raise ValueError(f"unsupported confirmation source: {self.source!r}")
+        if self.reference and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", self.reference):
+            raise ValueError("evidence reference must be an opaque short token")
 
 
 @domain_dataclass
