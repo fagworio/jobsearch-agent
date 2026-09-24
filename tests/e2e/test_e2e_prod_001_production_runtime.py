@@ -92,14 +92,18 @@ def _runtime_for_controlled_ats(settings: Settings, ats: MultiStepATS, sessions:
         settings,
         allow_advance=True,
         max_cycles=8,
-        # As tres substituicoes descrevem o DESTINO controlado (qual ATS esta
-        # naquele endereco, como navegar ate ele, qual escrita e permitida).
+        # As substituicoes descrevem o DESTINO controlado: qual ATS esta
+        # naquele endereco, como navegar ate ele e qual escrita e permitida.
         # Nenhuma delas toca material, curriculo, respostas ou snapshot.
         adapter_resolver=lambda job: GreenhouseAdapter(),
         session_factory=session_factory,
         policy_factory=policy_factory,
         allow_insecure_destination=True,
     )
+    # O endereco do POST tambem e parte do destino controlado: em producao ele
+    # vem de `providers.submit_destination` (Workable, Greenhouse SPA, Lever) e
+    # num loopback nao existe. Mesmo padrao do `answer_provider` abaixo.
+    object.__setattr__(runtime, "submission_destination", lambda job, adapter, form: ats.apply_url)
     # O gerador deterministico no lugar do LLM: sem chave configurada o produto
     # usa este mesmo caminho, e ele nao inventa fato.
     object.__setattr__(runtime, "answer_provider", GroundedTemplateProvider())

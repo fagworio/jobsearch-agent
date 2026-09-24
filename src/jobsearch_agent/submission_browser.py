@@ -201,10 +201,10 @@ class BrowserSubmitter:
             # que o servidor recusou algo.
             completed = service.record_result(
                 attempt.id,
-                SubmissionVerification.failed(
-                    "captcha challenge; no write left the browser",
-                    reason_token="captcha_no_write",
-                ),
+                # O recurso foi apresentado e NADA saiu: o estado persistido tem
+                # de ser o mesmo que a funcao devolve (retomavel), e nao
+                # `SUBMIT_FAILED` — que significaria uma tentativa definitiva.
+                SubmissionVerification.challenged_without_write("captcha_no_write"),
             )
             return BrowserSubmissionOutcome(
                 "NEEDS_CAPTCHA",

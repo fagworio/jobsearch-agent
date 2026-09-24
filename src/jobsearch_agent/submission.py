@@ -278,6 +278,21 @@ class SubmissionVerification:
         return cls("unknown", "", {"reason": reason} if reason else {})
 
     @classmethod
+    def challenged_without_write(cls, reason_token: str) -> "SubmissionVerification":
+        """O desafio apareceu ANTES de qualquer escrita: nada saiu.
+
+        Nao e `failed` (nao houve tentativa entregue) nem `challenged` (nao houve
+        submissao enviada e recusada): e uma etapa que pode ser RETOMADA. O
+        resultado da funcao ja dizia `NEEDS_CAPTCHA` enquanto o banco gravava
+        `SUBMIT_FAILED` — dois nomes para o mesmo fato, e o resumo ficava errado.
+        """
+        return cls(
+            "challenged_no_write",
+            "",
+            {"reason_token": reason_token, "submit_write": False, "confirmed_submission": False},
+        )
+
+    @classmethod
     def challenged(
         cls,
         reason_token: str,
@@ -667,6 +682,9 @@ class SubmissionService:
             # Handoff humano: nem sucesso nem falha comum. O estado proprio faz
             # o agente parar de insistir e deixa a evidencia para o operador.
             "challenged": (ApplicationState.NEEDS_HUMAN_CAPTCHA, "NEEDS_HUMAN_CAPTCHA"),
+            # Desafio sem escrita: resumivel (`NEEDS_CAPTCHA -> PREPARING`), e o
+            # intent termina sem envio.
+            "challenged_no_write": (ApplicationState.NEEDS_CAPTCHA, "FAILED"),
         }
         if verification.status not in targets:
             raise SubmissionBoundaryError(f"unsupported submission verification: {verification.status}")

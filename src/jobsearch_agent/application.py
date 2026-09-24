@@ -93,7 +93,7 @@ TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
     # meio da submissao deixa o estado em SUBMITTING sem desfecho registrado, e
     # sem essa aresta a candidatura ficava presa para sempre. A operacao e
     # explicita (retry-submit) e registra que nao havia desfecho.
-    ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN, ApplicationState.NEEDS_HUMAN_CAPTCHA, ApplicationState.REVIEW_REACHED},
+    ApplicationState.SUBMITTING: {ApplicationState.SUBMITTED, ApplicationState.SUBMIT_FAILED, ApplicationState.SUBMIT_UNKNOWN, ApplicationState.NEEDS_HUMAN_CAPTCHA, ApplicationState.NEEDS_CAPTCHA, ApplicationState.REVIEW_REACHED},
     ApplicationState.SUBMITTED: set(),
     # Nao e terminal: uma falha definitiva pode ser retomada por operacao
     # explicita. SUBMIT_UNKNOWN continua terminal — nao se sabe se foi aceita.

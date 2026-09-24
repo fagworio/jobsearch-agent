@@ -10,7 +10,7 @@ import pytest
 import httpx
 from pypdf import PdfWriter
 
-from jobsearch_agent.application import ApplicationService
+from jobsearch_agent.application import TRANSITIONS, ApplicationService
 from jobsearch_agent.ats import GreenhouseAdapter
 from jobsearch_agent.browser import BrowserExecutionResult
 from jobsearch_agent.greenhouse import GreenhouseSubmissionExecutor
@@ -1014,11 +1014,16 @@ def test_browser_submission_stops_on_captcha_without_sending(tmp_path: Path):
     # A permissao e sempre desarmada ao fim, mesmo sem ter sido consumida.
     assert guard.authorized_write is None
     assert "CAPTCHA" in outcome.error
-    # Falha definitiva (o guard prova que nenhuma escrita ocorreu), portanto
-    # retomavel por `application retry-submit`.
-    assert db.get_application(application_id).state == ApplicationState.SUBMIT_FAILED
+    # O estado persistido tem de ser o MESMO que a funcao devolve. Nada saiu do
+    # browser, entao "SUBMIT_FAILED" (tentativa definitiva) era o nome errado:
+    # `NEEDS_CAPTCHA` diz que a etapa foi interrompida e pode ser retomada.
+    application = db.get_application(application_id)
+    assert application.state == ApplicationState.NEEDS_CAPTCHA
     attempts = db.list_submission_attempts(application_id)
+    assert attempts[-1].status == ApplicationState.NEEDS_CAPTCHA.value
     assert "captcha_no_write" in str(attempts[-1])
+    # Resumivel por desenho: e o unico caminho de saida de NEEDS_CAPTCHA.
+    assert ApplicationState.PREPARING in TRANSITIONS[ApplicationState.NEEDS_CAPTCHA]
     db.close()
 
 

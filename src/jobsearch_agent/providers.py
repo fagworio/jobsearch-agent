@@ -194,11 +194,13 @@ PROFILES: dict[str, ProviderProfile] = {
             "cdnjs.cloudflare.com",
             "*.cloudfront.net",
         ),
-        # A candidatura sobe como multipart para a propria API do board; nao ha
-        # storage de terceiro. O caminho fica restrito ao endpoint de
-        # candidatura, entao a permissao de upload nao cobre outra escrita.
-        upload_write_origins=("apply.workable.com",),
-        upload_write_paths=(("apply.workable.com", r"^/api/v[0-9]+/accounts/[^/]+/jobs/[^/]+/applications/?$"),),
+        # NAO existe upload pre-submit neste board: o multipart para a propria
+        # API E a submissao. Declarar o endpoint de candidatura como "upload"
+        # armaria uma permissao de escrita ANTES de existir intent autorizada —
+        # exatamente o que a separacao entre operacao de upload e operacao de
+        # submissao evita. Aqui o orcamento de escrita e so o da submissao.
+        upload_write_origins=(),
+        upload_write_paths=(),
         submit_origin="https://apply.workable.com",
         submit_path_pattern=r"^/api/v[0-9]+/accounts/[^/]+/jobs/[^/]+/applications/?$",
         submit_control_names=("Submit application", "Submit Application", "Submit"),

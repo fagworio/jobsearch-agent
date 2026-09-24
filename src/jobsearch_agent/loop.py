@@ -33,6 +33,7 @@ from .journey import ApplicationJourney, is_answered
 from .models import (
     Application,
     ApplicationContext,
+    ApplicationForm,
     ApplicationPolicy,
     ApplicationState,
     CandidatePreferences,
@@ -175,6 +176,14 @@ class LoopRuntime:
     #: preenchimento e SOMENTE quando o envio foi autorizado: com `--submit`
     #: ausente nada e armado e o dry-run continua sem nenhuma escrita.
     upload_permits: Callable[[Job, ATSAdapter, str], list[Any]] | None = None
+    #: Endereco que RECEBE o POST da candidatura. Nao e o mesmo que a URL do
+    #: formulario: no Workable o formulario vive em
+    #: `/apply.workable.com/<account>/j/<shortcode>/apply` e a candidatura sobe
+    #: para `/apply.workable.com/api/v1/accounts/<account>/jobs/<shortcode>/applications`.
+    #: Usar a URL do formulario como destino (o comportamento anterior) mandava a
+    #: intent, a policy e a observacao para o endereco errado — o provider nunca
+    #: seria certificado por mais correto que o preenchimento estivesse.
+    submission_destination: Callable[[Job, ATSAdapter, ApplicationForm], str] | None = None
     allow_insecure_destination: bool = False
     max_cycles: int = 5
     allow_advance: bool = True
@@ -318,7 +327,7 @@ class ApplicationLoop:
                 form=form,
                 session=session,
                 provider=adapter.provider,
-                destination=form_url,
+                destination=self._submission_destination(job, adapter, form, form_url),
                 resume_sha256=material.resume_sha256,
                 form_fingerprint=form_fingerprint,
                 answers_fingerprint=answers_fingerprint,
@@ -364,6 +373,21 @@ class ApplicationLoop:
             return int(getattr(guard, "authorized_writes_used", 0) or 0)
         except (TypeError, ValueError):  # pragma: no cover - defensivo
             return 0
+
+    # -- destino da submissao --------------------------------------------------
+
+    def _submission_destination(
+        self, job: Job, adapter: ATSAdapter, form: ApplicationForm, form_url: str
+    ) -> str:
+        """Endereco do POST: declarado pelo provider, nunca presumido da URL.
+
+        Sem o hook, o destino e a propria URL do formulario — que e o caso do
+        Lever e do Greenhouse moderno, mas nao de todo ATS.
+        """
+        builder = self.runtime.submission_destination
+        if builder is None:
+            return form_url
+        return str(builder(job, adapter, form) or form_url)
 
     # -- resolucao -------------------------------------------------------------
 

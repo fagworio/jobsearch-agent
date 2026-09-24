@@ -17,7 +17,13 @@ from .config import Settings
 from .coordinator import SubmissionCoordinator
 from .execution import build_execution_plan
 from .greenhouse import GreenhouseSubmissionExecutor
-from .providers import apply_url as provider_apply_url, profile_for, provider_for_url
+from .providers import (
+    apply_url as provider_apply_url,
+    board_from_url,
+    profile_for,
+    provider_for_url,
+    submit_destination,
+)
 from .linkedin.inspector import LinkedInApplyClassification, LinkedInInspector
 from .loop import LoopRuntime, PreparedMaterial
 from .resolver import GroundedTemplateProvider, LLMAnswerProvider
@@ -893,10 +899,27 @@ def loop_runtime(
             for host in profile_here.upload_write_origins
         ]
 
+    def submission_destination(job: Job, adapter: Any, form: Any) -> str:
+        """Endereco que recebe o POST, declarado pelo PROVIDER.
+
+        O formulario e o destino coincidem em alguns ATS (Lever, Greenhouse
+        moderno) e NAO coincidem em outros (Workable: formulario em
+        `/j/<shortcode>/apply`, candidatura em `/api/v1/accounts/.../applications`).
+        Quem sabe disso e `providers.submit_destination`; o loop nao presume.
+        """
+        return submit_destination(
+            adapter.provider,
+            job.url,
+            board_from_url(adapter.provider, job.url),
+            str(job.external_id or ""),
+            str(getattr(form, "action", "") or ""),
+        )
+
     return LoopRuntime(
         adapter_for=adapter_resolver or resolve_adapter,
         form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
         upload_permits=upload_permits,
+        submission_destination=submission_destination,
         profile=candidate_profile,
         preferences=preferences,
         answers=answers,
