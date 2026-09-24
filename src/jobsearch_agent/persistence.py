@@ -254,11 +254,35 @@ def _migration_004_submission_boundary(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_005_human_handoff(connection: sqlite3.Connection) -> None:
+    """Pacote de handoff humano (JSA-CG-016).
+
+    Append-only por construcao: o id e derivado do conteudo do pacote, entao um
+    material diferente gera outra linha, e a anterior continua auditavel. Nao ha
+    UPDATE nesta tabela.
+    """
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS human_handoff_packages (
+            id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            job_id TEXT NOT NULL REFERENCES jobs(id),
+            package_sha256 TEXT NOT NULL,
+            package_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_handoff_packages_application
+           ON human_handoff_packages(application_id, created_at)"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial", _migration_001_initial),
     (2, "namespaced_identities_and_duplicate_candidates", _migration_002_identities),
     (3, "application_domain_and_events", _migration_003_applications),
     (4, "submission_boundary", _migration_004_submission_boundary),
+    (5, "human_handoff_packages", _migration_005_human_handoff),
 )
 
 
@@ -597,6 +621,71 @@ class Database:
                     "UPDATE submission_intents SET status=?, intent_json=? WHERE id=?",
                     (intent.status, canonical_json(intent), intent.id),
                 )
+
+    def get_handoff_package(self, package_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT package_json FROM human_handoff_packages WHERE id=?", (package_id,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def list_handoff_packages(self, application_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """SELECT package_json FROM human_handoff_packages
+               WHERE application_id=? ORDER BY created_at, id""",
+            (application_id,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def save_handoff_package(self, package: Any, application: Application, event: ApplicationEvent) -> None:
+        """Pacote, estado e evento na MESMA transacao.
+
+        E o que impede o estado orfao: ou o humano recebe o pacote E a
+        Application esta em handoff, ou nada disso aconteceu. O pacote entra
+        antes do UPDATE de estado; se a corrida for perdida, o ``with`` desfaz o
+        INSERT tambem.
+        """
+        data = canonical_json(package)
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR IGNORE INTO human_handoff_packages
+                   (id, application_id, job_id, package_sha256, package_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    package.package_id,
+                    package.application_id,
+                    package.job_id,
+                    package.package_sha256,
+                    data,
+                    package.created_at,
+                ),
+            )
+            row = self.connection.execute(
+                "SELECT package_sha256 FROM human_handoff_packages WHERE id=?", (package.package_id,)
+            ).fetchone()
+            if row is None or str(row[0]) != package.package_sha256:
+                # O id e derivado do conteudo: mesma chave com outro digest so
+                # acontece com adulteracao, e nesse caso nada e gravado.
+                raise ApplicationConflict(f"handoff package id collision: {package.package_id}")
+            cursor = self.connection.execute(
+                """UPDATE applications SET state=?, updated_at=?
+                   WHERE id=? AND state=?""",
+                (application.state.value, application.updated_at, application.id, event.from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict(f"application transition lost race: {application.id}")
+            self.connection.execute(
+                """INSERT INTO application_events
+                   (application_id, from_state, to_state, event, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    event.application_id,
+                    event.from_state.value,
+                    event.to_state.value,
+                    event.event,
+                    canonical_json(event.payload),
+                    event.created_at,
+                ),
+            )
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}

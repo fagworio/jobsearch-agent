@@ -22,10 +22,13 @@ from typing import Any, Iterable, Sequence
 # `challenge_guard.providers.registry` nem `challenge_guard.browser`. Assim a
 # biblioteca pode ser refatorada por dentro sem quebrar este consumidor.
 from challenge_guard import (
+    ChallengeDecision,
     ChallengeDecisionStatus,
     ChallengeMonitor,
     ChallengePhase,
     ChallengeProvider,
+    UnsafeHandoff,
+    build_handoff,
     redact,
     requirements_for,
     runtime_read_hosts,
@@ -85,6 +88,48 @@ def application_state_for(decision: str, *, browser_write_sent: bool) -> str | N
     if decision != ChallengeDecisionStatus.UNKNOWN.value:
         return _DECISION_STATE.get(decision)
     return ApplicationState.SUBMIT_UNKNOWN.value if browser_write_sent else None
+
+
+def recorded_handoff(
+    *,
+    provider: str,
+    reason_token: str,
+    session_id: str = "",
+    page_url: str = "",
+) -> dict[str, Any]:
+    """Handoff neutro reconstruido de uma recusa JA registrada (JSA-CG-016).
+
+    Quando o humano pede o pacote, o processo que observou o desafio ja morreu:
+    a observacao precisa ser reconstruivel a partir do que ficou gravado na
+    tentativa. As INSTRUCOES continuam vindo da biblioteca — o host nao passa a
+    manter uma copia propria do texto, e um motivo fora do conjunto fechado e
+    recusado por ela, nao por uma checagem local que poderia divergir.
+
+    `page_url` e opcional porque o guard recusa URL com query: e melhor perder o
+    atalho do que gravar um identificador de sessao dentro de um handoff. Sem
+    URL, o pacote aponta para a pagina que o proprio dominio ja conhece.
+    """
+    try:
+        observed_provider = ChallengeProvider(provider)
+    except ValueError:
+        observed_provider = ChallengeProvider.UNKNOWN
+    try:
+        decision = ChallengeDecision(
+            status=ChallengeDecisionStatus.PROVIDER_REJECTED,
+            provider=observed_provider,
+            reason_token=reason_token,
+            human_required=True,
+            retry_allowed=False,
+            confidence=1.0,
+        )
+    except ValueError:
+        # Motivo fora do conjunto fechado da biblioteca: nao ha handoff a montar.
+        return {}
+    try:
+        handoff = build_handoff(decision, session_id=session_id, page_url=page_url)
+    except UnsafeHandoff:
+        handoff = build_handoff(decision, session_id=session_id)
+    return handoff.to_dict() if handoff is not None else {}
 
 
 class JobsearchChallengeAdapter:

@@ -10,6 +10,7 @@ from pathlib import Path
 from .application import ApplicationDomainError, ApplicationService, context_from_dict
 from .config import Settings
 from .greenhouse import GreenhouseSubmissionExecutor
+from .handoff import HumanHandoffService
 from .llm import LLMError
 from .linkedin.inspector import LinkedInInspector
 from .models import to_dict
@@ -118,6 +119,18 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_options(application_retry)
     application_retry.add_argument("application_id")
     application_retry.set_defaults(handler="application_retry_submit")
+    application_handoff = application_sub.add_parser(
+        "handoff",
+        help="monta o pacote de handoff humano e inicia o handoff",
+        description=(
+            "Monta, valida e persiste o pacote que o humano precisa para terminar a "
+            "candidatura e so entao move a Application para HANDOFF_IN_PROGRESS. Se "
+            "qualquer passo falhar, o estado continua NEEDS_HUMAN_CAPTCHA."
+        ),
+    )
+    runtime_options(application_handoff)
+    application_handoff.add_argument("application_id")
+    application_handoff.set_defaults(handler="application_handoff")
     application_status = application_sub.add_parser("status", help="consulta uma Application")
     runtime_options(application_status)
     application_status.add_argument("application_id")
@@ -318,6 +331,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.handler == "application_resume":
             _print(resume_application(settings, args.application_id))
+            return 0
+        if args.handler == "application_handoff":
+            db = Database(settings.resolve(settings.db_path))
+            try:
+                # Casca fina: quem sabe montar, validar e persistir o pacote e o
+                # servico de dominio. O CLI so imprime a visao segura.
+                package = HumanHandoffService(
+                    db, settings.resolve(settings.artifacts_dir)
+                ).prepare_handoff(args.application_id)
+                _print({
+                    "handoff": package.safe_view(),
+                    "application": db.get_application(args.application_id),
+                    "events": db.list_application_events(args.application_id),
+                })
+            finally:
+                db.close()
             return 0
         if args.handler == "linkedin_inspect":
             html = args.html_file.read_text(encoding="utf-8")

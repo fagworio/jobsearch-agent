@@ -36,6 +36,9 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli application prepare <job-id> --db 
 PYTHONPATH=src python3 -m jobsearch_agent.cli application resume <application-id> --db data/jobsearch.db
 PYTHONPATH=src python3 -m jobsearch_agent.cli application status <application-id> --db data/jobsearch.db
 
+# monta o pacote de handoff humano e só então move para HANDOFF_IN_PROGRESS
+PYTHONPATH=src python3 -m jobsearch_agent.cli application handoff <application-id> --db data/jobsearch.db
+
 # cria/consulta o Review Snapshot; não envia dados
 PYTHONPATH=src python3 -m jobsearch_agent.cli application review <application-id>
 
@@ -143,6 +146,33 @@ confirmação. Confirmação inequívoca vira `SUBMITTED`; escrita efetuada sem 
 reenviado automaticamente; `SUBMIT_FAILED` é definitivo e pode ser retomado por
 `application retry-submit`. O executor HTTP (`GreenhouseSubmissionExecutor`) permanece como
 implementação controlada para testes e servidores locais.
+
+### Handoff humano: o pacote vem antes do estado
+
+Quando o provedor recusa uma submissão que chegou a sair (`NEEDS_HUMAN_CAPTCHA`), a pessoa precisa
+terminar o envio. `application handoff` monta, valida e persiste o **pacote** que ela precisa e só
+então move a Application:
+
+```bash
+jobsearch-agent application handoff <application-id> --db data/jobsearch.db
+```
+
+```text
+monta pacote -> valida pacote -> persiste pacote -> registra handoff_started -> HANDOFF_IN_PROGRESS
+```
+
+Se qualquer passo falhar — currículo ausente ou alterado depois da aprovação, respostas diferentes do
+`ReviewSnapshot`, destino com query, falta de proveniência do desafio — a Application **continua** em
+`NEEDS_HUMAN_CAPTCHA`. Não existe handoff sem material, e não existe estado órfão. O pacote é escrito
+no diretório privado de artifacts como `handoff/<package_id>/package.json` mais uma **cópia** do
+currículo, endereçado pelo conteúdo e coberto por `package_sha256`: material alterado depois gera
+outro pacote, e o anterior continua auditável com exatamente o que foi aprovado. O journal de eventos
+guarda só referência e tokens curtos — nunca respostas, currículo ou PII. A saída do comando é a
+visão segura do pacote (sem respostas e sem caminhos absolutos).
+
+A proveniência do desafio (provider, motivo no conjunto fechado do `challenge-guard` e id da sessão) é
+gravada na tentativa recusada. Sem ela o pacote não é reconstruível e o comando falha em vez de
+inventar o motivo. Ver ADR 0005.
 
 `fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
 Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos

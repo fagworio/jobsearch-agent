@@ -146,3 +146,90 @@ this evolution can produce, and both are mechanically checkable against the tran
   ```
 
   Foi exatamente esta classe de mudança que produziu defeitos quando `NEEDS_HUMAN_CAPTCHA` entrou.
+
+## Addendum: JSA-CG-016 is implemented **before** JSA-CG-015
+
+The implementation order was inverted relative to the first draft of the consequences above, and the
+reason is atomicity. It must not be possible for
+
+```text
+NEEDS_HUMAN_CAPTCHA -> HANDOFF_IN_PROGRESS
+```
+
+to happen and only then be discovered that the material a human needs in order to continue could not
+be produced. That would create an orphan state: the application says "a person is finishing this",
+and no person has anything to finish it with.
+
+### The contract
+
+```text
+build package -> validate package -> persist package -> record handoff_started -> HANDOFF_IN_PROGRESS
+```
+
+If any earlier step fails, the Application stays in `NEEDS_HUMAN_CAPTCHA`. The package row, the state
+update and the `handoff_started` event are written in **one** SQLite transaction
+(`Database.save_handoff_package`); the bundle on disk is written *before* it and removed again if the
+transaction fails. The only reachable half-state is a bundle with the application still in
+`NEEDS_HUMAN_CAPTCHA`, which is harmless and is overwritten by the next attempt.
+
+### `HumanHandoffPackage` is domain, not challenge-guard
+
+`challenge_guard.HumanHandoff` is deliberately neutral: provider, reason, session, page, continuation.
+It knows nothing about a job, a resume or answers, and it must not learn. The domain adds only what it
+already knows and what the human needs:
+
+```text
+package_id                endereço derivado do conteúdo
+application_id, job_id
+provider, reason_token, challenge_session_id    vindos do HumanHandoff
+destination               endpoint revisado da candidatura
+page_url                  página que o humano abre
+company, title
+resume_path, resume_sha256
+answers_fingerprint, approved_answers
+continuation, instructions
+package_path, package_sha256, created_at
+```
+
+### Immutability
+
+The bundle lives in the private artifacts directory as `package.json` plus a **copy** of the resume,
+under `handoff/<package_id>/`. The `package_id` is derived from the approved material and from the
+recorded handoff event, so identical material is the same package and different material is a
+different one; a package is never rewritten. `package_sha256` covers the whole content, and
+`from_dict` refuses a bundle whose content no longer matches its digest. If the resume or the answers
+change later, the old package stays exactly as approved and remains auditable.
+
+`approved_answers` carries only answers with `approved = True`. The persisted form is cross-checked
+against the `ReviewSnapshot` fingerprint, so a form edited after review cannot be handed off.
+
+### The event journal carries a reference, not content
+
+```json
+{
+  "previous_state": "NEEDS_HUMAN_CAPTCHA",
+  "handoff_package_id": "hpkg-…",
+  "reason_token": "…",
+  "provider": "…",
+  "challenge_session_id": "…"
+}
+```
+
+`ApplicationService.start_human_handoff` enforces that allowlist with a short-token check: a value that
+is not an opaque token is refused instead of being written to the journal. Answers, resume contents,
+names and page URLs with queries never enter an event.
+
+### Reconstructing the handoff without the live process
+
+The process that observed the challenge is gone by the time a person asks for the package. The attempt
+therefore records the **observed** provenance — challenge provider, reason token from the library's
+closed set, and session id — and `application handoff` rebuilds the neutral handoff from it through
+the ACL. Without recorded provenance there is no reconstruction: inventing "hcaptcha" from the state
+would assert a fact nobody observed, so the command fails closed and says so.
+
+### Consequences for JSA-CG-015
+
+The CLI is a thin shell over `HumanHandoffService.prepare_handoff`: it prints the package's safe view
+(no answers, no absolute paths) and never decides anything itself. Re-running it while the application
+is in `HANDOFF_IN_PROGRESS` re-reads the recorded package instead of creating a second one.
+

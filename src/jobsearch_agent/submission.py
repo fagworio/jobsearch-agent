@@ -270,15 +270,31 @@ class SubmissionVerification:
         return cls("unknown", "", {"reason": reason} if reason else {})
 
     @classmethod
-    def challenged(cls, reason_token: str, *, http_status: int | None = None, submit_write: bool = True) -> "SubmissionVerification":
+    def challenged(
+        cls,
+        reason_token: str,
+        *,
+        http_status: int | None = None,
+        submit_write: bool = True,
+        challenge: Mapping[str, object] | None = None,
+    ) -> "SubmissionVerification":
         """A submissao saiu e o provedor recusou por verificacao anti-bot.
 
         Nao e ``failed`` (o pedido estava correto e foi entregue) nem
         ``unknown`` (o provedor respondeu com clareza): e um handoff humano.
+
+        ``challenge`` carrega a proveniencia OBSERVADA pelo challenge-guard
+        (provider do desafio, motivo no conjunto fechado da biblioteca e id da
+        sessao). Sem ela o handoff humano posterior nao teria como reconstruir o
+        que foi visto: o processo que observou o desafio nao esta mais vivo
+        quando alguem pede o pacote. Os valores passam pelo allowlist de
+        :func:`_redacted_evidence`; nada mais do dicionario e gravado.
         """
         evidence: dict[str, object] = {"reason_token": reason_token, "submit_write": submit_write, "confirmed_submission": False}
         if http_status is not None:
             evidence["status_code"] = http_status
+        if challenge:
+            evidence["challenge"] = dict(challenge)
         return cls("challenged", "", evidence)
 
 
@@ -425,6 +441,19 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
         raise SubmissionBoundaryError(f"unsupported failure reason token: {reason_token}")
     if reason_token:
         evidence["reason_token"] = reason_token
+    # Proveniencia anti-bot: um subconjunto FECHADO de tokens curtos. O que a
+    # biblioteca de desafios observou e o que permite reconstruir o handoff
+    # depois; o que nao casa com o formato e descartado em silencio, jamais
+    # gravado "para nao perder".
+    challenge = verification.evidence.get("challenge")
+    if isinstance(challenge, dict):
+        observed: dict[str, str] = {}
+        for key in ("provider", "reason_token", "session_id"):
+            token = str(challenge.get(key, "") or "")
+            if token and _SAFE_EVIDENCE_TOKEN.fullmatch(token):
+                observed[key] = token
+        if observed:
+            evidence["challenge"] = observed
     return evidence
 
 

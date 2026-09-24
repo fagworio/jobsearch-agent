@@ -7,15 +7,19 @@ CLI, Hermes or a future Playwright adapter.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .models import Application, ApplicationAnswer, ApplicationContext, ApplicationEvent, ApplicationField, ApplicationForm, ApplicationPolicy, ApplicationReadiness, ApplicationState, FormCapabilityIssue, SubmissionConfirmationEvidence
 from .forms import validate_application_form
-from .persistence import Database
+from .persistence import ApplicationConflict, Database
+
+if TYPE_CHECKING:  # pragma: no cover - apenas para tipagem, evita ciclo de import
+    from .handoff import HumanHandoffPackage
 
 
 class ApplicationDomainError(ValueError):
@@ -23,6 +27,37 @@ class ApplicationDomainError(ValueError):
 
 
 ABANDONED_ATTEMPT_STATUS = "INTERRUPTED"
+
+#: Unicos metadados que o journal de auditoria guarda sobre um handoff. O pacote
+#: completo (respostas, curriculo) fica no diretorio privado de artifacts; o
+#: evento carrega referencia e tokens curtos, nunca conteudo.
+HANDOFF_EVENT_KEYS = ("handoff_package_id", "reason_token", "provider", "challenge_session_id")
+
+_SAFE_EVENT_TOKEN = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def _assert_transition(previous: ApplicationState, target: ApplicationState) -> None:
+    """Unica regra de aresta valida. Nenhuma porta de escrita pode pular esta."""
+    if target not in TRANSITIONS[previous]:
+        raise ApplicationDomainError(f"invalid application transition: {previous.value} -> {target.value}")
+
+
+def _handoff_event_payload(previous: ApplicationState, package: "HumanHandoffPackage | None") -> dict[str, Any]:
+    payload: dict[str, Any] = {"previous_state": previous.value}
+    if package is None:
+        return payload
+    payload.update({
+        "handoff_package_id": package.package_id,
+        "reason_token": package.reason_token,
+        "provider": package.provider,
+        "challenge_session_id": package.challenge_session_id,
+    })
+    for key in HANDOFF_EVENT_KEYS:
+        value = str(payload[key])
+        if value and not _SAFE_EVENT_TOKEN.fullmatch(value):
+            # Allowlist fechado: um valor livre aqui seria PII no journal.
+            raise ApplicationDomainError(f"handoff event metadata must be an opaque token: {key}")
+    return payload
 
 
 TRANSITIONS: dict[ApplicationState, set[ApplicationState]] = {
@@ -168,8 +203,7 @@ class ApplicationService:
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
         previous_state = expected_state or application.state
-        if target not in TRANSITIONS[previous_state]:
-            raise ApplicationDomainError(f"invalid application transition: {previous_state.value} -> {target.value}")
+        _assert_transition(previous_state, target)
         if target is ApplicationState.SUBMITTED and confirmation_evidence is None:
             raise ApplicationDomainError(
                 "SUBMITTED requires independent confirmation evidence; "
@@ -259,8 +293,19 @@ class ApplicationService:
             },
         )
 
-    def start_human_handoff(self, application_id: str) -> Application:
-        """command START_HUMAN_HANDOFF: NEEDS_HUMAN_CAPTCHA -> HANDOFF_IN_PROGRESS."""
+    def start_human_handoff(
+        self,
+        application_id: str,
+        *,
+        package: "HumanHandoffPackage | None" = None,
+    ) -> Application:
+        """command START_HUMAN_HANDOFF: NEEDS_HUMAN_CAPTCHA -> HANDOFF_IN_PROGRESS.
+
+        Com ``package``, o pacote e o evento entram na MESMA transacao: ou o
+        humano recebe o que precisa para terminar, ou a Application continua em
+        ``NEEDS_HUMAN_CAPTCHA``. Sem pacote continua existindo o handoff generico
+        (sem material), que nao persiste bundle.
+        """
         application = self.database.get_application(application_id)
         if not application:
             raise ApplicationDomainError(f"application not found: {application_id}")
@@ -268,12 +313,31 @@ class ApplicationService:
             raise ApplicationDomainError(
                 f"handoff requires NEEDS_HUMAN_CAPTCHA, got {application.state.value}"
             )
-        return self.transition(
-            application_id,
+        payload = _handoff_event_payload(application.state, package)
+        if package is None:
+            return self.transition(
+                application_id,
+                ApplicationState.HANDOFF_IN_PROGRESS,
+                "handoff_started",
+                payload,
+            )
+        _assert_transition(application.state, ApplicationState.HANDOFF_IN_PROGRESS)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        application.state = ApplicationState.HANDOFF_IN_PROGRESS
+        application.updated_at = now
+        event = ApplicationEvent(
+            application.id,
+            ApplicationState.NEEDS_HUMAN_CAPTCHA,
             ApplicationState.HANDOFF_IN_PROGRESS,
             "handoff_started",
-            {"previous_state": application.state.value},
+            payload,
+            now,
         )
+        try:
+            self.database.save_handoff_package(package, application, event)
+        except ApplicationConflict as exc:
+            raise ApplicationDomainError(str(exc)) from exc
+        return application
 
     def cancel_handoff(self, application_id: str) -> Application:
         """command CANCEL_HANDOFF: HANDOFF_IN_PROGRESS -> REVIEW_REACHED.

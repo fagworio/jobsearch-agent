@@ -229,6 +229,13 @@ class BrowserSubmitter:
                     "captcha_verification_failed",
                     http_status=status_code if isinstance(status_code, int) else None,
                     submit_write=bool(writes_used),
+                    # Proveniencia observada: sem ela o handoff humano posterior
+                    # nao saberia QUAL desafio recusou o envio nem em que sessao.
+                    challenge={
+                        "provider": outcome.provider,
+                        "reason_token": outcome.reason_token,
+                        "session_id": outcome.session_id,
+                    },
                 ),
                 "NEEDS_HUMAN_CAPTCHA",
             )
