@@ -340,9 +340,20 @@ def main(argv: list[str] | None = None) -> int:
                 package = HumanHandoffService(
                     db, settings.resolve(settings.artifacts_dir)
                 ).prepare_handoff(args.application_id)
+                application = db.get_application(args.application_id)
                 _print({
                     "handoff": package.safe_view(),
-                    "application": db.get_application(args.application_id),
+                    # Projecao deliberada. Imprimir a Application inteira levava
+                    # o `context.answers` para o terminal — exatamente o que a
+                    # visao segura do pacote existe para nao fazer. Quem precisa
+                    # das respostas tem o bundle no diretorio privado; quem usa
+                    # `application status` sabe que esta inspecionando PII.
+                    "application": {
+                        "id": application.id,
+                        "job_id": application.job_id,
+                        "state": application.state.value,
+                        "updated_at": application.updated_at,
+                    },
                     "events": db.list_application_events(args.application_id),
                 })
             finally:

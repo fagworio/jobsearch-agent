@@ -115,6 +115,13 @@ def _build(tmp_path: Path, suffix: str = "hop", *, challenge: dict | None = CHAL
         application = service.transition(application.id, state, f"to_{state.value.casefold()}")
     resume_sha256 = hashlib.sha256(resume.read_bytes()).hexdigest()
     application.context["resume_sha256"] = resume_sha256
+    # O fluxo vivo guarda as respostas resolvidas no contexto da Application.
+    # Reproduzir isso aqui e o que da sentido ao teste de vazamento: sem elas,
+    # imprimir a Application inteira nao vazaria nada.
+    application.context["answers"] = [
+        {"question": "Why do you want this role?", "answer": APPROVED_ANSWER, "approved": True},
+        {"question": "Email", "answer": CANDIDATE_EMAIL, "approved": True},
+    ]
     database.save_application(application)
 
     form = _form()
