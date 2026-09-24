@@ -275,7 +275,7 @@ class AnswerKnowledgeBase:
 
     def _exact_answer(self, question: str) -> ApplicationAnswer | None:
         normalized = _normalize(question)
-        return next(
+        found = next(
             (
                 answer
                 for answer in self.answers
@@ -283,6 +283,15 @@ class AnswerKnowledgeBase:
             ),
             None,
         )
+        if found is None:
+            return None
+        if found.supported_by:
+            return found
+        # Uma resposta aprovada E a propria evidencia, e a origem precisa dizer
+        # isso. Sem esta linha o texto do candidato chegava ao formulario com
+        # `supported_by` VAZIO (achado na vaga real da Workable: nove respostas
+        # escritas por ele, todas sem procedencia registrada).
+        return replace(found, supported_by=[f"approved.{found.question_key or question_key(question)}"])
 
     def resolve_field(self, field: ApplicationField, profile: CareerProfile, preferences: CandidatePreferences | None = None) -> ApplicationAnswer | None:
         """Resolve a field using semantic type and options before text matching."""

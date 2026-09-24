@@ -796,3 +796,29 @@ def test_cert_a02b_notice_period_aliases_cover_the_board_wording():
 
     assert "available immediately" in candidates
     assert candidates[0] == "Immediately"
+
+
+def test_cert_a08_an_approved_answer_carries_its_own_provenance():
+    """Achado na vaga real da Workable: nove respostas do proprio candidato
+    chegavam ao formulario com `supported_by` VAZIO — texto com dono, mas sem
+    procedencia registrada. A resposta aprovada e a evidencia dela mesma."""
+    question = "What is your salary expectation for this role? (In USD per month)"
+    answers = AnswerKnowledgeBase(
+        [
+            ApplicationAnswer(
+                question_key="q-salary",
+                question=question,
+                answer="My salary expectation is around USD 3,800 per month.",
+                source="candidato",
+                confidence=1.0,
+                approved=True,
+            )
+        ]
+    )
+    field = ApplicationField(key="QA_12442620", label=question, field_type="text", required=True)
+
+    resolution = _resolver(answers=answers).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer.startswith("My salary expectation")
+    assert resolution.supported_by == ("approved.q-salary",)
