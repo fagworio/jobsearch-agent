@@ -258,8 +258,14 @@ rejeitada **antes** de o token ser gravado.
 pip install 'google-api-python-client>=2.100,<3.0' 'google-auth-oauthlib>=1.2,<2.0'   # grupo opcional
 jobsearch-agent integrations gmail authorize   # consentimento no browser; só estabelece acesso
 jobsearch-agent integrations gmail status      # resumo sem segredo
+jobsearch-agent integrations gmail check       # chamada real, listando apenas ids
 jobsearch-agent application reconcile-confirmation <application-id>
 ```
+
+O passo a passo completo, com os seis gates de verificação, está no
+[runbook do Gmail](docs/runbooks/gmail-006f.md). Um aviso que não é defeito: com o projeto OAuth em
+**External + Testing**, o Google expira o refresh token em ~7 dias para escopos como `gmail.readonly`
+— a resposta é reautorizar, e nenhum estado de candidatura é afetado.
 
 Credenciais ficam em `~/.config/jobsearch-agent/gmail/` (`client_secret.json` e `token.json`),
 diretório `0700` e arquivos `0600` — **verificados na leitura**, não apenas aplicados na escrita: um

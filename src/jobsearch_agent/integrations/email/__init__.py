@@ -5,7 +5,7 @@ O nucleo (`jobsearch_agent.confirmation`) so conhece `EmailSource` e
 tocar no observador, no matching nem no portao do dominio.
 """
 
-from .gmail import GmailApiClient, GmailEmailSource
+from .gmail import GmailApiClient, GmailEmailSource, verify_read_access
 from .oauth import (
     ALLOWED_SCOPES,
     GMAIL_READONLY_SCOPE,
@@ -30,4 +30,5 @@ __all__ = [
     "credentials_summary",
     "load_credentials",
     "load_token_document",
+    "verify_read_access",
 ]

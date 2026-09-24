@@ -259,6 +259,16 @@ def build_parser() -> argparse.ArgumentParser:
     gmail_status = gmail_sub.add_parser("status", help="estado da credencial, sem revelar segredo")
     gmail_status.add_argument("--gmail-dir", default=None)
     gmail_status.set_defaults(handler="gmail_status")
+    gmail_check = gmail_sub.add_parser(
+        "check",
+        help="confere o acesso real sem ler mensagem nenhuma",
+        description=(
+            "Chama a API de verdade e lista apenas ids: nenhum assunto, remetente ou "
+            "corpo entra no processo ou no stdout. Existe para o gate de 006F."
+        ),
+    )
+    gmail_check.add_argument("--gmail-dir", default=None)
+    gmail_check.set_defaults(handler="gmail_check")
     return parser
 
 
@@ -478,6 +488,17 @@ def main(argv: list[str] | None = None) -> int:
             from .integrations.email import GmailPaths, credentials_summary
 
             _print(credentials_summary(GmailPaths.default(args.gmail_dir)))
+            return 0
+        if args.handler == "gmail_check":
+            from .integrations.email import GmailApiClient, GmailPaths, load_credentials, verify_read_access
+
+            credentials = load_credentials(GmailPaths.default(args.gmail_dir))
+            # Lista apenas ids: nenhum `get`, nenhum assunto, nenhum corpo.
+            _print({
+                **verify_read_access(GmailApiClient(credentials)),
+                "scope": GMAIL_READONLY_SCOPE,
+                "content_logged": False,
+            })
             return 0
         if args.handler == "status":
             db = Database(settings.resolve(settings.db_path))

@@ -19,7 +19,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from ...confirmation import ConfirmationSourceUnavailable, EmailMessage
@@ -143,6 +143,23 @@ class GmailEmailSource:
             if message is not None:
                 messages.append(message)
         return messages
+
+
+def verify_read_access(api: GmailApi, *, lookback: timedelta = timedelta(days=1)) -> dict[str, Any]:
+    """Confere credencial, escopo e conectividade SEM ler mensagem nenhuma.
+
+    `messages.list` devolve apenas ids: nao ha assunto, remetente nem corpo para
+    vazar, e nenhum `get` e feito. E o gate de 006F que prova que a leitura real
+    funciona sem trazer conteudo para o processo nem para o stdout.
+    """
+    since = datetime.now(timezone.utc) - lookback
+    ids = api.list_message_ids(after=since, limit=1)
+    return {
+        "api_reachable": True,
+        "messages_listed": len(ids),
+        "messages_read": 0,
+        "lookback_seconds": int(lookback.total_seconds()),
+    }
 
 
 class GmailApiClient:

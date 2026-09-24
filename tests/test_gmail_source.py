@@ -575,3 +575,51 @@ def test_the_real_google_flow_factory_reads_the_client_secret(tmp_path):
     assert type(flow).__name__ == "InstalledAppFlow"
     # O fluxo carregou o client secret e guardou o escopo pedido.
     assert flow.oauth2session.scope == [GMAIL_READONLY_SCOPE]
+
+
+# --- gate de 006F: acesso real sem ler conteudo --------------------------------
+
+
+def test_the_access_check_reads_no_message_at_all():
+    """Lista apenas ids: nenhum assunto, remetente ou corpo entra no processo."""
+    from jobsearch_agent.integrations.email import verify_read_access
+
+    api = FakeGmailApi(
+        [_payload("18f0a1b2c3d4e5f6", sender=f"No Reply <no-reply@greenhouse.io>", subject=SENTINEL_SUBJECT, body=SENTINEL_BODY)]
+    )
+    summary = verify_read_access(api)
+
+    assert summary["api_reachable"] is True
+    assert summary["messages_listed"] == 1
+    assert summary["messages_read"] == 0
+    assert api.fetched == [], "o check leu uma mensagem inteira"
+    serialized = json.dumps(summary)
+    for secret in (SENTINEL_SUBJECT, SENTINEL_BODY, "no-reply@greenhouse.io"):
+        assert secret not in serialized
+
+
+def test_the_access_check_fails_loudly_instead_of_reporting_success():
+    from jobsearch_agent.integrations.email import verify_read_access
+
+    api = FakeGmailApi([], list_error=ConfirmationSourceUnavailable("gmail list failed: HttpError"))
+    with pytest.raises(ConfirmationSourceUnavailable):
+        verify_read_access(api)
+
+
+def test_the_check_cli_prints_no_message_content(tmp_path, capsys, monkeypatch):
+    """O comando inteiro, com a credencial e a API trocadas por dublês."""
+    from jobsearch_agent.cli import main as cli_main
+    from jobsearch_agent.integrations.email import oauth
+
+    paths = _credential_files(tmp_path, expiry="2099-01-01T00:00:00Z")
+    api = FakeGmailApi([_payload("18f0a1b2c3d4e5f6", subject=SENTINEL_SUBJECT, body=SENTINEL_BODY)])
+    monkeypatch.setattr(oauth, "_google_credentials_factory", lambda document: _FakeCredentials(expired=False))
+    monkeypatch.setattr(
+        "jobsearch_agent.integrations.email.GmailApiClient", lambda credentials: api
+    )
+
+    code = cli_main(["--root", str(tmp_path), "integrations", "gmail", "check", "--gmail-dir", str(paths.directory)])
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert json.loads(printed)["messages_read"] == 0
+    assert SENTINEL_SUBJECT not in printed and SENTINEL_BODY not in printed

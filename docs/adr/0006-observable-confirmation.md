@@ -169,7 +169,18 @@ Access is established by a command of its own, which only establishes access:
 ```bash
 jobsearch-agent integrations gmail authorize     # consent in the normal browser, callback on localhost
 jobsearch-agent integrations gmail status        # read-only summary, no secret
+jobsearch-agent integrations gmail check         # real API call, listing ids only
 ```
+
+`check` exists for the 006F gate. It calls `messages.list`, which returns **only ids** — no subject, no
+sender, no body enters the process or the stdout, and no `get` is issued. It is the minimum call that
+can prove credential, scope and connectivity without bringing content into the agent. The full
+checklist is in [the 006F runbook](../runbooks/gmail-006f.md).
+
+One caveat that must not be misread as a defect: with the OAuth project in **External + Testing**,
+Google expires the refresh token after roughly **7 days** for scopes like `gmail.readonly`. When that
+happens the refresh is refused and the agent says exactly what to do — reauthorize. No application
+state is affected, and the code is behaving as designed.
 
 ### Incremental query, and who decides the window
 
