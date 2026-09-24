@@ -5,9 +5,11 @@ Agente local para descobrir, analisar e preparar candidaturas com currículo esp
 Esta milestone implementa **Analyze + Generate**, a base da Submission Boundary e o **preenchimento
 ao vivo**: ingestão de uma vaga, análise, fit, estratégia de currículo, validação factual, saída
 TXT/DOCX/PDF, `SubmissionIntent`, autorização explícita, duplicate guard, estados pós-tentativa e
-executor controlado Greenhouse. O comando `apply` abre a URL real da vaga em um browser guardado,
-inspeciona o formulário, resolve as respostas pelo Career Profile, preenche, sobe o currículo em
-multipart e **para antes do submit**. LinkedIn continua manual: não existe executor live para ele.
+executor live com browser guardado (Greenhouse e Lever). O comando `apply` abre a URL real da vaga,
+inspeciona o formulário, resolve as respostas pelo Career Profile, preenche, revalida o DOM, sobe o
+currículo e **para antes do submit** — a menos que `--submit` seja passado, quando uma única
+submissão autorizada é executada pela própria página. LinkedIn continua manual: não existe executor
+live para ele.
 
 ## Uso rápido
 
@@ -16,9 +18,12 @@ desenvolvimento sem instalação, prefixe os comandos com `PYTHONPATH=src`.
 
 As dependências principais incluem Pydantic, httpx, BeautifulSoup, Lingua, RapidFuzz e
 python-docx. A integração JobSpy é opcional e pode ser instalada com o grupo de discovery
-(`poetry install --with discovery`). Playwright permanece opcional e, nesta fase, só pode ser
-usado para inspeção/dry-run; nenhuma API de submissão existe no executor. O código mantém um modo mínimo para executar fixtures em ambientes sem as
-dependências opcionais instaladas; a instalação de produção deve usar o ambiente Poetry.
+(`poetry install --with discovery`). Playwright permanece opcional: sem ele o projeto roda
+inspeção offline e geração de currículo. Com ele, o executor live inspeciona o formulário,
+preenche, revalida o DOM, sobe o currículo e — somente com `--submit` — executa **um** POST de
+submissão pela própria página, sempre sob a Submission Boundary. O código mantém um modo mínimo para
+executar fixtures em ambientes sem as dependências opcionais instaladas; a instalação de produção
+deve usar o ambiente Poetry.
 
 ```bash
 PYTHONPATH=src python3 -m jobsearch_agent.cli --help
@@ -48,7 +53,8 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli dry-run <application-id> \
   --provider linkedin --html-file tests/fixtures/linkedin/easy-apply-single.html \
   --db data/jobsearch.db --artifacts data/applications
 
-# aplica ao vivo: abre a URL da vaga, preenche, sobe o currículo e para antes do submit
+# aplica ao vivo SEM --submit: abre a URL da vaga, preenche, sobe o currículo e para antes do
+# submit, sem nenhuma escrita de rede
 PYTHONPATH=src python3 -m jobsearch_agent.cli apply <job-id> --db data/jobsearch.db
 
 # a mesma execução, autorizando e executando UM POST controlado ao final
@@ -91,8 +97,9 @@ localização ou nome.
 
 ### Aplicação ao vivo (`apply`)
 
-`apply <job-id>` usa a URL já persistida da vaga e exige que o ATS tenha adapter e política de rede
-(hoje somente Greenhouse). O fluxo é:
+`apply <job-id>` usa a URL já persistida da vaga e exige que o ATS tenha adapter e política de rede.
+Hoje isso vale para **Greenhouse e Lever**; os demais providers param antes, em
+`UNSUPPORTED_PROVIDER`. O fluxo é:
 
 ```text
 abre a URL em sessão guardada (escrita de rede bloqueada)
@@ -103,6 +110,11 @@ abre a URL em sessão guardada (escrita de rede bloqueada)
 → avança etapas por botões type="button" Next/Continue, quando existirem
 → FILLED_REVIEW_REQUIRED
 ```
+
+| Modo | O que faz | Termina em |
+| --- | --- | --- |
+| `apply` | inspeciona, preenche, sobe o currículo, revalida o DOM | `FILLED_REVIEW_REQUIRED`, com **zero** escritas de rede |
+| `apply --submit` | cria e autoriza a `SubmissionIntent` e deixa a página executar **um** POST | `SUBMITTED`, `SUBMIT_FAILED`, `SUBMIT_UNKNOWN`, `NEEDS_HUMAN_CAPTCHA` ou `NEEDS_CAPTCHA` |
 
 Sem `--submit`, o comando nunca escreve na rede: a sessão do browser bloqueia POST/PUT/PATCH/DELETE,
 WebSocket e submit de formulário. Se um controle de avanço tentar uma escrita, a execução para com

@@ -38,7 +38,7 @@ answers:
   - field_key: question_69187872
   question: Please provide the name of your current (or most recent) company
   question_key: q-db1f9dd2c0904e37
-  answer: In All Media
+  answer: ''
   field_type: text
   semantic_type: unknown
   options: []

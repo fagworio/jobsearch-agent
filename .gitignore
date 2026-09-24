@@ -9,6 +9,19 @@ data/applications/*/
 data/preflight/
 data/public-preflight/
 data/browser_profiles/
+# Politica fail-closed para dados do candidato: qualquer arquivo novo em
+# profile/ fica IGNORADO por padrao e so entra no repositorio se for
+# explicitamente liberado abaixo. Um arquivo concreto de respostas
+# (answers.canonical.yaml) vazou nome, e-mail e nacionalidade reais por a regra
+# anterior listar apenas *.local.yaml.
+profile/*
+!profile/answers.yaml
+!profile/answers.template.yaml
+!profile/application_policy.yaml
+!profile/career_profile.yaml
+!profile/job_targets.yaml
+!profile/locked_facts.yaml
+!profile/preferences.yaml
 profile/*.local.yaml
 tmp/pdfs/
 work/

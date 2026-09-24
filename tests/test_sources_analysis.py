@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from jobsearch_agent.analysis import analyze_requirements, build_strategy, calculate_fit, detect_language
-from jobsearch_agent.models import Job
+from jobsearch_agent.models import CareerProfile, Job
 from jobsearch_agent.profile import load_preferences, load_profile
 from jobsearch_agent.skills import SkillRegistry
 from jobsearch_agent.sources import JOBSPY, canonical_job_key, normalize_payload
@@ -230,13 +230,36 @@ def test_fit_scores_a_matching_stack_above_an_unrelated_one():
     assert "missing_required:Kubernetes" in unrelated_fit.blockers
 
 
+def _synthetic_skill_profile() -> CareerProfile:
+    """Perfil minimo e deterministico para testar casamento de skills.
+
+    O teste nao pode depender de ``profile/career_profile.local.yaml``: esse
+    arquivo e dado pessoal, fica fora do Git de proposito e nao existe no
+    runner — a suite passava localmente e falhava no CI. O que importa aqui e o
+    conjunto de skills, nao a identidade de ninguem, entao o perfil e construido
+    na memoria.
+    """
+    return CareerProfile(
+        identity={},
+        professional_summary={},
+        experiences=[],
+        skills={
+            "css": {"tags": ["css", "css3"]},
+            "react": {"tags": ["react", "reactjs"]},
+            "angular": {"tags": ["angular"]},
+            "typescript": {"tags": ["typescript", "ts"]},
+            "php": {"tags": ["php"]},
+            "nodejs": {"tags": ["node.js", "nodejs", "node"]},
+        },
+        languages={},
+    )
+
+
 def test_short_skill_tokens_never_fuzzy_match_by_substring():
     """`normalize("C#")` e "c", e similaridade parcial casaria "c" com "css"."""
     from jobsearch_agent.analysis import _skill_keys, _skill_matches
-    from jobsearch_agent.profile import load_profile
 
-    profile = load_profile(ROOT / "profile/career_profile.local.yaml")
-    keys = _skill_keys(profile)
+    keys = _skill_keys(_synthetic_skill_profile())
     # Tecnologias ausentes nao podem aparecer como presentes.
     assert _skill_matches("C#", keys) is False
     assert _skill_matches(".NET", keys) is False
