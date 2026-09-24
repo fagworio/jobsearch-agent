@@ -26,6 +26,29 @@ SOURCE = pathlib.Path(__file__).parents[1] / "src" / "jobsearch_agent"
 # --- JSA-CG-001: contrato da dependencia --------------------------------------
 
 
+def test_the_dependency_is_a_pinned_remote_reference():
+    """`path =` faria o build depender do filesystem de quem desenvolve.
+
+    A dependencia precisa vir do repositorio publicado e fixada por referencia
+    IMUTAVEL: um branch mudaria o build sem mudar o codigo, e uma tag sozinha
+    pode ser movida no remoto.
+    """
+    import tomllib
+
+    root = pathlib.Path(__file__).parents[1]
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    dep = data["tool"]["poetry"]["dependencies"]["challenge-guard"]
+
+    assert "path" not in dep, "challenge-guard voltou a ser dependencia local (path =)"
+    assert "develop" not in dep, "dependencia local (develop) nao pode voltar"
+    assert dep.get("git"), "challenge-guard precisa vir do repositorio publicado"
+    revision = dep.get("rev") or ""
+    assert revision, "a referencia precisa ser um SHA imutavel (rev), nao branch nem tag solta"
+    assert all(ch in "0123456789abcdef" for ch in revision) and len(revision) == 40, (
+        f"rev precisa ser o SHA completo de 40 hexadecimais, veio {revision!r}"
+    )
+
+
 def test_the_challenge_guard_is_importable_with_the_expected_api():
     import challenge_guard
 

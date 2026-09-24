@@ -17,9 +17,10 @@ lingua-language-detector = ">=2.0,<3.0"
 rapidfuzz = ">=3.9,<4.0"
 python-docx = ">=1.1,<2.0"
 pypdf = ">=5.0,<7.0"
-# JSA-CG-001: dependencia local durante a integracao. Vira versao publicada
-# (^0.1) quando o challenge-guard tiver o primeiro release (JSA-CG-020).
-challenge-guard = { path = "../challenge-guard", develop = true }
+# JSA-CG-020: artefato publicado, fixado por SHA IMUTAVEL do release v0.1.0.
+# Nao usar branch: um branch tornaria o build nao reproduzivel. O SHA tambem
+# protege contra tag movida no remoto, que uma tag sozinha nao impede.
+challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev = "e5fd527bf58137a27b74e93cd45ac22ebfe4a087" }
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=8.0,<9.0"
