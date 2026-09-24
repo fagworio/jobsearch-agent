@@ -1006,8 +1006,16 @@ def _current_experience(profile: CareerProfile):
 
 
 def _normalize(value: str) -> str:
+    """Normaliza para comparacao: sem acento, sem maiuscula e SEM PONTUACAO.
+
+    A pontuacao importa: o label real do Greenhouse e "Location (City) *", e sem
+    remover os parenteses e o asterisco o cue "location city" nao casava — um fato
+    que o perfil tinha ficava como pergunta sem resposta. Achado na execucao real
+    contra a vaga da Fueled.
+    """
     decomposed = unicodedata.normalize("NFKD", str(value).casefold())
-    return " ".join("".join(char for char in decomposed if not unicodedata.combining(char)).split())
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", without_accents).strip()
 
 
 def _job_context(job: Job | None) -> str:

@@ -437,3 +437,32 @@ def test_a_generated_answer_longer_than_the_field_is_refused():
 
     assert resolution.status == ResolutionStatus.NEEDS_HUMAN.value
     assert resolution.reason == "generated_answer_too_long"
+
+
+def test_qa_08c_the_real_greenhouse_location_label_resolves_from_the_profile():
+    """`Location (City) *` e o rotulo REAL do Greenhouse.
+
+    Sem remover pontuacao na normalizacao, o cue "location city" nao casava com
+    "location (city) *" e um fato presente no perfil virava pergunta sem resposta.
+    Achado na execucao contra a vaga da Fueled (PROVIDER-CERT-001).
+    """
+    field = ApplicationField(key="candidate-location", label="Location (City) *", field_type="combobox")
+    resolution = _resolver().resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "São Paulo, Brazil"
+    assert resolution.supported_by
+    assert resolution.generated is False
+
+
+def test_the_option_matching_ignores_punctuation_and_case():
+    from jobsearch_agent.resolver import _map_to_option, _option_mismatch
+
+    field = ApplicationField(
+        key="q-term",
+        label="Employment type",
+        field_type="checkbox",
+        options=["Full-Time", "Contract/Freelance"],
+    )
+    assert _option_mismatch("full time", field) is False
+    assert _map_to_option("FULL-TIME", field) == "Full-Time"
