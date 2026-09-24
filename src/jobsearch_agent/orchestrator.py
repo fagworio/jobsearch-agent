@@ -14,7 +14,8 @@ from .execution import ExecutionPlan, build_execution_plan
 from .journey import ApplicationJourney
 from .inspector import FormBindings, InspectionError, compute_form_fingerprint
 from .models import ApplicationAnswer, ApplicationContext, ApplicationForm, ApplicationReadiness, ApplicationState, CareerProfile, CandidatePreferences
-from .qa import AnswerKnowledgeBase, question_key
+from .qa import AnswerKnowledgeBase
+from .resolver import ResolutionStatus, normalize_label as _normalize_label, question_key
 
 
 @dataclass
@@ -143,22 +144,67 @@ class DryRunApplicationOrchestrator:
         decisions: dict[str, dict[str, object]] = {}
         if context.form is None:
             return decisions
-        for field in context.form.fields:
+
+        def siblings() -> dict[str, str]:
+            """Respostas ja resolvidas do MESMO formulario.
+
+            Indexadas pela chave E pelo rotulo normalizado: na Greenhouse a chave
+            de uma pergunta customizada e opaca (`question_18722965008`), e e o
+            ROTULO ("How did you hear about this opportunity?") que diz o que a
+            resposta significa. Sem o rotulo, o campo condicional que depende dela
+            nao tinha como consultar nada.
+            """
+            table: dict[str, str] = {}
+            for candidate in context.form.fields:
+                if candidate.answer is None or not candidate.answer.answer:
+                    continue
+                value = str(candidate.answer.answer)
+                table[candidate.key] = value
+                label = _normalize_label(candidate.label)
+                if label:
+                    table.setdefault(label, value)
+            return table
+
+        def resolve(field: ApplicationField, *, record: bool) -> ApplicationAnswer | None:
             answer = field.answer if field.answer and field.answer.approved and field.answer.answer else None
-            if answer is None and self.resolver is not None:
-                resolution = self.resolver.resolve_field(field)
+            if answer is not None or self.resolver is None:
+                return answer
+            resolution = self.resolver.resolve_field(field, siblings=siblings())
+            if record or field.answer is None:
                 decisions[field.key] = {
                     "status": resolution.status,
                     "source": resolution.source,
                     "reason": resolution.reason,
                     "supported_by": list(resolution.supported_by),
                 }
-                answer = resolution.to_answer(field)
-            elif answer is None:
+            return resolution.to_answer(field)
+
+        for field in context.form.fields:
+            answer = resolve(field, record=True)
+            if answer is None and self.resolver is None:
                 answer = self.answers.resolve_field(field, self.profile, self.preferences)
             field.answer = answer
             if answer:
                 resolved.append(answer)
+
+        # Segunda passada para pergunta DEPENDENTE cujo campo condicionante
+        # aparece DEPOIS dela no DOM: na primeira passada nao havia irmao para
+        # consultar, e a resposta existe agora.
+        for field in context.form.fields:
+            if field.answer is not None and field.answer.answer:
+                continue
+            answer = resolve(field, record=True)
+            if answer is None:
+                continue
+            field.answer = answer
+            resolved.append(answer)
+            decisions[field.key] = {
+                "status": ResolutionStatus.RESOLVED.value,
+                "source": answer.source,
+                "reason": "",
+                "supported_by": list(answer.supported_by or ()),
+            }
+
         context.answers = resolved
         return decisions
 

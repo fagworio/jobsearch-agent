@@ -337,3 +337,41 @@ class _FakeOrchestrator:
 class _ExplodingCoordinator:
     def submit(self, **_kwargs):
         raise AssertionError("sem --submit o loop nao pode submeter")
+
+
+def test_cert_a07_an_early_stop_still_reports_the_prepared_material(tmp_path: Path, monkeypatch):
+    """Saida antecipada depois do `prepare()` nao pode esconder o material.
+
+    O hash do curriculo ja existe quando o fluxo para em NEEDS_ANSWER; devolve-lo
+    vazio fazia a saida parecer que nada tinha sido preparado.
+    """
+    database = Database(tmp_path / "loop.db")
+    service = ApplicationService(database)
+    job = _job(database)
+    service.create_for_job(job.id)
+
+    form = ApplicationForm(
+        form_id="form-loop",
+        provider="greenhouse",
+        fields=[ApplicationField(key="job_application[unknown]", label="Pronouns?", required=True, value="")],
+    )
+    live = LiveApplicationResult(
+        "NEEDS_ANSWER",
+        provider="greenhouse",
+        url=job.url,
+        cycles=[DryRunCycle(1, "fp", ApplicationState.NEEDS_ANSWER)],
+        form=form,
+        form_fingerprint="fp",
+        error="unknown_answer:job_application[unknown]",
+    )
+    monkeypatch.setattr("jobsearch_agent.loop.LiveApplicationOrchestrator", lambda *a, **k: _FakeOrchestrator(live))
+
+    runtime = _runtime()
+    result = ApplicationLoop(database, runtime).run(job.id, submit=True)
+
+    assert result.status == "NEEDS_ANSWER"
+    assert result.resume_sha256 == "a" * 64, "o material preparado sumiu da saida antecipada"
+    assert result.answers_fingerprint, "o contrato acumulado tambem vale na saida antecipada"
+    assert result.submission_attempted is False
+    assert result.submission_writes == 0
+    database.close()

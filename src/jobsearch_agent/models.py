@@ -303,6 +303,10 @@ class CandidatePreferences:
     minimum_salary: str = ""
     currency: str = ""
     employment_types: list[str] = field(default_factory=list)
+    #: Aviso previo para inicio. Valores CANONICOS (`immediate`, `1_week`,
+    #: `2_weeks`, `30_days`, `other`); quem traduz para a opcao exata do ATS e o
+    #: resolvedor. Vazio significa "nao sei", e nao "imediato".
+    notice_period: str = ""
     work_authorization: list[str] = field(default_factory=list)
     requires_sponsorship: str = "unknown"
     timezone: str = ""

@@ -117,6 +117,7 @@ def load_preferences(path: str | Path, legacy: dict[str, Any] | None = None) -> 
         minimum_salary=str(preference_value("minimum_salary", compensation, "")),
         currency=str(preference_value("currency", compensation, "USD" if compensation.get("minimum_monthly_usd") else "")),
         employment_types=[str(item) for item in preference_value("employment_types", {}, []) if item],
+        notice_period=str(preference_value("notice_period", {}, "")),
         work_authorization=[str(item) for item in preference_value("work_authorization", {}, []) if item],
         requires_sponsorship=str(preference_value("requires_sponsorship", {}, "unknown")),
         timezone=str(preference_value("timezone", {}, "") or ""),

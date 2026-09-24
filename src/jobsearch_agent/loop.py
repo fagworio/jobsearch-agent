@@ -258,7 +258,17 @@ class ApplicationLoop:
                 # O orquestrador ja decidiu: preenchimento incompleto, formulario
                 # nao suportado, loop de etapas, contradicao de contrato ou erro
                 # de browser. Nao se forca a resolucao "de qualquer jeito".
-                return self._without_submit(application, job, live, journey, phases)
+                # O material FOI preparado: o hash dele continua no resultado,
+                # senao a saida antecipada esconderia o que ja existe.
+                return self._without_submit(
+                    application,
+                    job,
+                    live,
+                    journey,
+                    phases,
+                    resume_sha256=material.resume_sha256,
+                    answers_fingerprint=journey.answers_fingerprint(),
+                )
 
             form = live.form
             # `form_fingerprint` = superficie FINAL onde o Submit acontece.
@@ -383,6 +393,9 @@ class ApplicationLoop:
         live: LiveApplicationResult,
         journey: ApplicationJourney,
         phases: list[str],
+        *,
+        resume_sha256: str = "",
+        answers_fingerprint: str = "",
     ) -> ApplicationLoopResult:
         state = self._state(application.id)
         recoverable = state in RECOVERABLE_STATES
@@ -400,6 +413,8 @@ class ApplicationLoop:
             live=live,
             journey=journey,
             phases=phases,
+            resume_sha256=resume_sha256,
+            answers_fingerprint=answers_fingerprint,
             terminal=not recoverable,
             requires_action=requires_action,
             reason=live.error or status,

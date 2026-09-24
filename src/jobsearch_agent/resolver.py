@@ -30,7 +30,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from .models import (
     ApplicationAnswer,
@@ -50,6 +50,79 @@ class ResolutionStatus(StrEnum):
     NEEDS_HUMAN = "NEEDS_HUMAN"
     UNSUPPORTED = "UNSUPPORTED"
 
+
+#: Pais -> regiao. DERIVACAO GEOGRAFICA, e nao inferencia sobre a pessoa: se o
+#: perfil declara o pais, dizer que ele fica na America Latina e um fato.
+#: Pais desconhecido nao vira regiao: vira NEEDS_HUMAN.
+REGION_BY_COUNTRY: dict[str, str] = {
+    "brazil": "latin america",
+    "brasil": "latin america",
+    "argentina": "latin america",
+    "chile": "latin america",
+    "colombia": "latin america",
+    "mexico": "latin america",
+    "peru": "latin america",
+    "uruguay": "latin america",
+    "paraguay": "latin america",
+    "bolivia": "latin america",
+    "ecuador": "latin america",
+    "venezuela": "latin america",
+    "costa rica": "latin america",
+    "panama": "latin america",
+    "guatemala": "latin america",
+    "honduras": "latin america",
+    "nicaragua": "latin america",
+    "el salvador": "latin america",
+    "dominican republic": "latin america",
+    "cuba": "latin america",
+    "united states": "north america",
+    "usa": "north america",
+    "canada": "north america",
+    "portugal": "europe",
+    "spain": "europe",
+    "united kingdom": "europe",
+    "ireland": "europe",
+    "germany": "europe",
+    "france": "europe",
+    "netherlands": "europe",
+    "poland": "europe",
+    "romania": "europe",
+}
+
+#: Como cada regiao aparece escrita nos ATS. O casamento e sempre contra as
+#: opcoes REAIS do campo; se nenhuma casar, a resposta e NEEDS_HUMAN.
+REGION_ALIASES: dict[str, tuple[str, ...]] = {
+    "latin america": ("latin america", "latam", "lat am", "south america", "central america"),
+    "north america": ("north america", "united states", "usa", "canada"),
+    "europe": ("europe", "emea", "european union"),
+}
+
+#: Valores canonicos de `notice_period` -> como aparecem nas opcoes do ATS.
+NOTICE_PERIOD_ALIASES: dict[str, tuple[str, ...]] = {
+    "immediate": ("immediately", "immediate", "as soon as possible", "asap", "0 days", "no notice"),
+    "1_week": ("1 week", "one week"),
+    "2_weeks": ("2 weeks", "two weeks"),
+    "30_days": ("30 days", "1 month", "one month", "4 weeks"),
+    "other": ("other", "negotiable"),
+}
+
+#: Valores canonicos de `employment_types` -> como aparecem nas opcoes do ATS.
+EMPLOYMENT_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
+    "full_time": ("full time", "fulltime", "permanent", "clt"),
+    "contract": ("contract", "contractor", "freelance", "pj"),
+    "part_time": ("part time", "parttime"),
+    "internship": ("internship", "intern"),
+}
+
+#: Rotulos que tornam a pergunta DEPENDENTE de outra resposta do mesmo formulario.
+DEPENDENT_CUES = (
+    "if you selected",
+    "if you indicated",
+    "if applicable",
+    "if yes",
+    "se voce selecionou",
+    "se aplicavel",
+)
 
 #: Perguntas FACTUAIS: existe um valor objetivo no perfil ou nao existe. Nao
 #: recebem "criatividade" — sem fato, param.
@@ -730,8 +803,30 @@ class QuestionResolver:
 
     # -- porta unica -----------------------------------------------------------
 
-    def resolve_field(self, field: ApplicationField) -> QuestionResolution:
+    def resolve_field(
+        self,
+        field: ApplicationField,
+        *,
+        siblings: Mapping[str, str] | None = None,
+    ) -> QuestionResolution:
+        """Decide UM campo. `siblings` sao as respostas ja resolvidas do formulario.
+
+        Necessario para pergunta DEPENDENTE ("if you selected X, please detail"),
+        cuja resposta so existe em funcao de outra.
+        """
         semantic_type = str(field.semantic_type or "unknown")
+
+        # 0. Arquivo anexado NAO e pergunta: quem responde e o mecanismo de
+        # artefato. Sem isto, o curriculo anexado aparecia como NEEDS_HUMAN na
+        # auditoria — ruido que confundia bloqueio real com telemetria.
+        if str(field.field_type or "").casefold().strip() == "file":
+            attached = bool(str(getattr(field, "attachment_path", "") or "").strip())
+            return QuestionResolution(
+                status=ResolutionStatus.UNSUPPORTED.value,
+                semantic_type=semantic_type,
+                field_key=field.key,
+                reason="artifact_attached" if attached else "artifact_required",
+            )
 
         # 1..5. Fontes verificaveis: resposta aprovada, regra, perfil,
         # preferencias e equivalencia semantica — na ordem que o
@@ -757,6 +852,11 @@ class QuestionResolver:
         structured = self._structured_lookup(field)
         if structured is not None:
             return structured
+
+        # Pergunta dependente: derivada de outra resposta do MESMO formulario.
+        dependent = self._dependent_lookup(field, siblings or {})
+        if dependent is not None:
+            return dependent
 
         # 5. Equivalencia semantica de resposta JA APROVADA. O
         # `AnswerKnowledgeBase` faz isso, mas so depois do portao de confianca do
@@ -805,6 +905,69 @@ class QuestionResolver:
             field_key=field.key,
         )
 
+    # -- dependencia entre campos ---------------------------------------------
+
+    def _dependent_lookup(
+        self, field: ApplicationField, siblings: Mapping[str, str]
+    ) -> QuestionResolution | None:
+        """Resolve campo condicional a partir da resposta que o condiciona.
+
+        O caso real (Fueled): "Please provide additional details if you selected
+        Employee Referral, Job Board, or Other (N/A if not applicable)". A resposta
+        certa depende de QUAL origem foi escolhida — e, quando a origem e uma opcao
+        propria como LinkedIn, a resposta e literalmente "N/A".
+        """
+        label = _normalize(field.label)
+        if not any(_normalize(cue) in label for cue in DEPENDENT_CUES):
+            return None
+        source_answer = ""
+        for key, value in siblings.items():
+            if "source" in _normalize(key) or "hear" in _normalize(key):
+                source_answer = str(value or "").strip()
+                break
+        if not source_answer:
+            return None
+        normalized = _normalize(source_answer)
+        for kind, aliases in _SOURCE_PRIORITY:
+            if not any(alias in normalized for alias in aliases):
+                continue
+            if kind == "self_sourced":
+                # A origem e um canal proprio: nenhum detalhe adicional se aplica,
+                # e o proprio formulario manda responder "N/A".
+                return self._resolved(
+                    field, "N/A", "conditional:self_sourced",
+                    (f"conditional:{_normalize(field.key)}",),
+                )
+            if kind == "named_board":
+                # O detalhe ja foi dado pelo proprio candidato na origem: reusa-la
+                # e reuso de resposta, nao invencao.
+                return self._resolved(
+                    field, source_answer, "conditional:source_answer",
+                    (f"conditional:{_normalize(field.key)}",),
+                )
+            # Referral, Other e "Job Board" generico exigem um detalhe que nao
+            # existe em lugar nenhum: para e pede a pessoa.
+            return None
+        return None
+
+    def _resolved(
+        self,
+        field: ApplicationField,
+        answer: str,
+        source: str,
+        supported_by: tuple[str, ...],
+        semantic_type: str | None = None,
+    ) -> QuestionResolution:
+        return QuestionResolution(
+            status=ResolutionStatus.RESOLVED.value,
+            answer=answer,
+            source=source,
+            confidence=1.0,
+            supported_by=supported_by,
+            semantic_type=semantic_type or str(field.semantic_type or "unknown"),
+            field_key=field.key,
+        )
+
     # -- fato estruturado ------------------------------------------------------
 
     def _structured_lookup(self, field: ApplicationField) -> QuestionResolution | None:
@@ -838,6 +1001,39 @@ class QuestionResolver:
                     supported_by=(f"profile.experiences.{current.id}",),
                     semantic_type="current_company",
                     field_key=field.key,
+                )
+
+        if "pronoun" in haystack:
+            pronouns = str((self.profile.identity or {}).get("pronouns", "") or "").strip()
+            if pronouns:
+                return self._resolved(field, pronouns, "CareerProfile.identity", ("profile.identity.pronouns",), "pronouns")
+
+        if any(cue in haystack for cue in _NOTICE_CUES):
+            mapped = _map_canonical_option(
+                (self.preferences.notice_period if self.preferences else ""), NOTICE_PERIOD_ALIASES, field
+            )
+            if mapped is not None:
+                return self._resolved(
+                    field, mapped, "CandidatePreferences.notice_period",
+                    ("preferences.notice_period",), "notice_period",
+                )
+
+        if any(cue in haystack for cue in _REGION_CUES):
+            region = _region_for(self.profile)
+            if region:
+                mapped = _map_region_option(region, field)
+                if mapped is not None:
+                    return self._resolved(
+                        field, mapped, "CareerProfile.identity.country",
+                        (f"profile.identity.{region_source_key(self.profile)}",), "region",
+                    )
+
+        if any(cue in haystack for cue in _EMPLOYMENT_CUES):
+            mapped = _map_employment_option(self.preferences.employment_types if self.preferences else [], field)
+            if mapped is not None:
+                return self._resolved(
+                    field, mapped, "CandidatePreferences.employment_types",
+                    ("preferences.employment_types",), "employment_type",
                 )
 
         for cue, identity_keys, semantic in _IDENTITY_CUES:
@@ -997,12 +1193,119 @@ _IDENTITY_CUES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 
+_NOTICE_CUES = ("notice period", "notice", "how much notice", "aviso previo", "quanto tempo de aviso")
+_REGION_CUES = ("region", "where you currently live", "where are you based", "regiao", "onde voce mora")
+_EMPLOYMENT_CUES = ("employment type", "engagement", "contract type", "full-time", "full time", "tipo de contratacao")
+
+#: Origens, em ORDEM DE PRIORIDADE (a primeira que casa decide). A ordem importa:
+#: "Job Board" tambem poderia ser lido como canal proprio, e a resposta certa para
+#: ele NAO e "N/A" — e o nome do board.
+_SOURCE_PRIORITY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("referral", ("employee referral", "referral", "indicacao", "indicado")),
+    ("other", ("other", "outro", "outra")),
+    ("named_board", ("indeed", "glassdoor", "wellfound", "angel", "stackoverflow", "weworkremotely", "remote ok", "remoteok", "himalayas")),
+    ("generic_board", ("job board", "job site", "job portal", "site de vagas")),
+    ("self_sourced", ("linkedin", "company website", "careers page", "site da empresa")),
+)
+
+
+def _region_for(profile: CareerProfile) -> str:
+    country = _normalize(str((profile.identity or {}).get("country", "") or ""))
+    if country in REGION_BY_COUNTRY:
+        return REGION_BY_COUNTRY[country]
+    location = _normalize(str((profile.identity or {}).get("current_location", "") or ""))
+    for name, region in REGION_BY_COUNTRY.items():
+        if name and name in location:
+            return region
+    return ""
+
+
+def region_source_key(profile: CareerProfile) -> str:
+    identity = profile.identity or {}
+    return "country" if str(identity.get("country", "") or "").strip() else "current_location"
+
+
+def _map_region_option(region: str, field: ApplicationField) -> str | None:
+    """Regiao -> opcao EXATA do campo. Sem casamento seguro, `None`."""
+    aliases = REGION_ALIASES.get(region, (region,))
+    if not field.options:
+        # Combobox sem opcoes no DOM: o proprio widget decide o casamento por
+        # texto. A regiao e fato derivado do pais, entao nao ha invencao aqui.
+        return region.title()
+    for option in field.options:
+        candidate = _normalize(option)
+        if any(alias == candidate or alias in candidate for alias in aliases):
+            return option
+    return None
+
+
+def _map_canonical_option(
+    canonical: str, aliases: dict[str, tuple[str, ...]], field: ApplicationField
+) -> str | None:
+    """Valor canonico de preferencia -> opcao exata do campo.
+
+    Convencao: o PRIMEIRO alias e a forma de exibicao. Quando o campo e um
+    combobox sem opcoes no DOM (a Greenhouse carrega as opcoes por typeahead), a
+    forma de exibicao e a resposta — o widget decide o casamento. O valor vem da
+    preferencia declarada, entao nao ha invencao; se o widget nao casar, o
+    preenchimento falha em voz alta em vez de gravar algo errado.
+    """
+    if not canonical:
+        return None
+    terms = aliases.get(str(canonical).strip().casefold())
+    if not terms:
+        return None
+    if not field.options:
+        return terms[0].title()
+    for option in field.options:
+        candidate = _normalize(option)
+        if any(term == candidate or term in candidate for term in terms):
+            return option
+    return None
+
+
+def _map_employment_option(employment_types: Sequence[str], field: ApplicationField) -> str | None:
+    """Lista canonica de tipos -> UMA opcao exata do campo.
+
+    Com mais de um tipo aceito, a opcao certa e a que cobre os dois
+    ("Open to Contract and Full-Time Opportunities"), e nao a primeira que casa.
+    """
+    wanted = [str(item).strip().casefold() for item in employment_types or [] if str(item).strip()]
+    if not wanted or not field.options:
+        return None
+    matches: list[tuple[str, list[str]]] = []
+    for option in field.options:
+        candidate = _normalize(option)
+        covered = [
+            canonical
+            for canonical in wanted
+            if any(term in candidate for term in EMPLOYMENT_TYPE_ALIASES.get(canonical, (canonical,)))
+        ]
+        if covered:
+            matches.append((option, covered))
+    if not matches:
+        return None
+    if len(wanted) == 1:
+        return matches[0][0]
+    # Prefere a opcao que cobre TODOS os tipos aceitos; se nenhuma cobrir, nao
+    # escolhe por conta propria.
+    for option, covered in matches:
+        if set(covered) == set(wanted):
+            return option
+    return None
+
+
 def _current_experience(profile: CareerProfile):
     open_roles = [item for item in profile.experiences or [] if not item.end_date]
     pool = open_roles or list(profile.experiences or [])
     if not pool:
         return None
     return max(pool, key=lambda item: (item.start_date or "", item.end_date or ""))
+
+
+def normalize_label(value: str) -> str:
+    """Normalizacao publica, para quem precisa indexar por rotulo."""
+    return _normalize(value)
 
 
 def _normalize(value: str) -> str:

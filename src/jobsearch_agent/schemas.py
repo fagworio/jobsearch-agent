@@ -43,6 +43,9 @@ try:
         timezones: list[str] = Field(default_factory=list)
         work_authorization: list[str] = Field(default_factory=list)
         requires_sponsorship: str = "unknown"
+        employment_types: list[str] = Field(default_factory=list)
+        #: Valor canonico (`immediate`, `1_week`, `2_weeks`, `30_days`, `other`).
+        notice_period: str = ""
 
     class ProfileSchema(BaseModel):
         model_config = ConfigDict(extra="allow")

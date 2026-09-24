@@ -76,10 +76,11 @@ def _resolver(
     provider=None,
     language: str = "en-US",
     resume: dict | None = None,
+    identity_profile: CareerProfile | None = None,
 ) -> QuestionResolver:
     return QuestionResolver(
         knowledge=answers or AnswerKnowledgeBase([]),
-        profile=_profile(),
+        profile=identity_profile or _profile(),
         preferences=preferences or CandidatePreferences(),
         job=_job(language),
         resume=resume,
@@ -466,3 +467,235 @@ def test_the_option_matching_ignores_punctuation_and_case():
     )
     assert _option_mismatch("full time", field) is False
     assert _map_to_option("FULL-TIME", field) == "Full-Time"
+
+
+# --- CERT-001A: capacidades deterministicas observadas na vaga real da Fueled ---
+
+
+def test_cert_a02_country_derives_the_region_option():
+    """Pais no perfil -> opcao de regiao do ATS. Derivacao geografica, nao LLM."""
+    from jobsearch_agent.resolver import _region_for, _map_region_option
+    from jobsearch_agent.models import ApplicationField
+
+    profile = _profile()
+    profile.identity["country"] = "Brazil"
+    assert _region_for(profile) == "latin america"
+
+    field = ApplicationField(
+        key="q-region",
+        label="Please select the region where you currently live: *",
+        field_type="select",
+        options=["North America", "Latin America", "Europe", "Asia"],
+    )
+    assert _map_region_option("latin america", field) == "Latin America"
+
+    # Sem casamento seguro com as opcoes, a resposta e humana.
+    other = ApplicationField(key="q-region", label="Region", field_type="select", options=["APAC", "Europe"])
+    assert _map_region_option("latin america", other) is None
+
+
+def test_cert_a02b_an_unknown_country_does_not_produce_a_region():
+    from jobsearch_agent.resolver import _region_for
+
+    profile = _profile()
+    profile.identity["country"] = "Atlantis"
+    profile.identity.pop("current_location", None)
+    assert _region_for(profile) == ""
+
+
+def test_cert_a03_a_self_sourced_answer_makes_the_detail_field_not_applicable():
+    """A pergunta condicional da Fueled: origem propria -> "N/A"."""
+    resolver = _resolver()
+    field = ApplicationField(
+        key="question_details",
+        label="Please provide additional details if you selected Employee Referral, Job Board, or Other (N/A if not applicable). *",
+        field_type="text",
+    )
+    resolution = resolver.resolve_field(field, siblings={"question_source": "LinkedIn"})
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "N/A"
+    assert resolution.generated is False
+    assert "llm" not in resolution.source.casefold()
+
+
+@pytest.mark.parametrize("source", ["Employee Referral", "Other", "Job Board"])
+def test_cert_a03b_a_source_that_requires_detail_stays_human(source: str):
+    field = ApplicationField(
+        key="question_details",
+        label="Please provide additional details if you selected Employee Referral, Job Board, or Other (N/A if not applicable). *",
+        field_type="text",
+    )
+    resolution = _resolver().resolve_field(field, siblings={"question_source": source})
+
+    assert resolution.status == ResolutionStatus.NEEDS_HUMAN.value
+    assert resolution.answer == ""
+
+
+def test_cert_a03c_without_the_conditioning_answer_nothing_is_invented():
+    field = ApplicationField(
+        key="question_details",
+        label="Please provide additional details if you selected Employee Referral, Job Board, or Other. *",
+        field_type="text",
+    )
+    resolution = _resolver().resolve_field(field, siblings={})
+
+    assert resolution.status == ResolutionStatus.NEEDS_HUMAN.value
+
+
+def test_cert_a04_employment_types_map_to_the_exact_option():
+    """Dois tipos aceitos -> a opcao que cobre os DOIS, e nao a primeira que casa."""
+    field = ApplicationField(
+        key="question_engagement[]",
+        label="Full-Time",
+        field_type="checkbox",
+        options=["Full-Time", "Contract/Freelance", "Open to Contract and Full-Time Opportunities"],
+    )
+    both = _resolver(preferences=CandidatePreferences(employment_types=["full_time", "contract"]))
+    assert both.resolve_field(field).answer == "Open to Contract and Full-Time Opportunities"
+
+    only_full = _resolver(preferences=CandidatePreferences(employment_types=["full_time"]))
+    assert only_full.resolve_field(field).answer == "Full-Time"
+
+    only_contract = _resolver(preferences=CandidatePreferences(employment_types=["contract"]))
+    assert only_contract.resolve_field(field).answer == "Contract/Freelance"
+
+    unknown = _resolver(preferences=CandidatePreferences())
+    assert unknown.resolve_field(field).status == ResolutionStatus.NEEDS_HUMAN.value
+
+
+def test_cert_a05_notice_period_preference_maps_to_the_ats_option():
+    field = ApplicationField(
+        key="question_notice",
+        label="If offered the role, how much notice do you need to provide before you can start? *",
+        field_type="select",
+        options=["Immediately", "2 weeks", "30 days", "Other"],
+    )
+    immediate = _resolver(preferences=CandidatePreferences(notice_period="immediate"))
+    resolution = immediate.resolve_field(field)
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "Immediately"
+    assert resolution.supported_by == ("preferences.notice_period",)
+
+    thirty = _resolver(preferences=CandidatePreferences(notice_period="30_days"))
+    assert thirty.resolve_field(field).answer == "30 days"
+
+    # Preferencia ausente: nao se assume "imediato".
+    assert _resolver().resolve_field(field).status == ResolutionStatus.NEEDS_HUMAN.value
+
+
+def test_cert_a06_an_attached_file_is_not_a_question_for_a_human():
+    """O curriculo anexado aparecia como NEEDS_HUMAN na auditoria — era ruido."""
+    attached = ApplicationField(
+        key="resume", label="Attach", field_type="file", semantic_type="resume",
+        required=True, attachment_path="/tmp/resume.pdf",
+    )
+    resolution = _resolver().resolve_field(attached)
+    assert resolution.status == ResolutionStatus.UNSUPPORTED.value
+    assert resolution.reason == "artifact_attached"
+    assert resolution.requires_human is False
+
+    missing = ApplicationField(key="resume", label="Attach", field_type="file", semantic_type="resume", required=True)
+    assert _resolver().resolve_field(missing).reason == "artifact_required"
+
+
+def test_cert_a08_pronouns_are_never_inferred():
+    """Sem declaracao explicita, pronouns continua humano — nada de inferir."""
+    field = ApplicationField(key="q-pronouns", label="What are your pronouns? *", field_type="text")
+    assert _resolver().resolve_field(field).status == ResolutionStatus.NEEDS_HUMAN.value
+
+    from jobsearch_agent.models import CareerProfile, Experience
+    declared = CareerProfile(
+        identity={"pronouns": "ele/dele (he/him)"},
+        professional_summary={},
+        experiences=[],
+        skills={},
+        languages={},
+        demo=False,
+    )
+    resolver = QuestionResolver(
+        knowledge=AnswerKnowledgeBase([]), profile=declared, preferences=CandidatePreferences(), job=_job()
+    )
+    resolution = resolver.resolve_field(field)
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "ele/dele (he/him)"
+    assert resolution.supported_by == ("profile.identity.pronouns",)
+
+
+def test_cert_a09_none_of_these_paths_generate_text():
+    """Todas as capacidades do CERT-001A sao deterministicas."""
+    class ExplodingProvider:
+        def generate(self, *args, **kwargs):
+            raise AssertionError("nenhum destes caminhos pode usar geracao")
+
+    resolver = QuestionResolver(
+        knowledge=AnswerKnowledgeBase([]),
+        profile=_profile(),
+        preferences=CandidatePreferences(
+            notice_period="immediate", employment_types=["full_time", "contract"]
+        ),
+        job=_job(),
+        provider=ExplodingProvider(),
+    )
+    profile = _profile()
+    profile.identity["country"] = "Brazil"
+    resolver.context_builder.profile = profile
+    resolver.profile = profile
+    resolver.profile.identity["country"] = "Brazil"
+
+    fields = [
+        ApplicationField(key="candidate-location", label="Location (City) *", field_type="combobox"),
+        ApplicationField(key="q-region", label="Region where you currently live", field_type="select", options=["Latin America", "Europe"]),
+        ApplicationField(key="q-engagement[]", label="Employment type", field_type="checkbox", options=["Full-Time", "Contract/Freelance", "Open to Contract and Full-Time Opportunities"]),
+        ApplicationField(key="q-notice", label="Notice period", field_type="select", options=["Immediately", "30 days"]),
+        ApplicationField(key="q-details", label="Details if you selected Other", field_type="text"),
+        ApplicationField(key="resume", label="Attach", field_type="file", attachment_path="/tmp/r.pdf"),
+    ]
+    for field in fields:
+        resolution = resolver.resolve_field(field, siblings={"question_source": "LinkedIn"})
+        assert resolution.status != ResolutionStatus.NEEDS_HUMAN.value or field.key == "q-details", field.key
+        assert resolution.generated is False, field.key
+
+
+def test_cert_a03d_a_custom_question_is_found_by_its_label_not_its_key():
+    """Na Greenhouse a chave e opaca: `question_18722965008`.
+
+    O campo condicional depende de "How did you hear about this opportunity?", e
+    procurar o irmao pela CHAVE nao encontrava nada — a resposta existia e o campo
+    ficava humano.
+    """
+    from jobsearch_agent.resolver import normalize_label
+
+    # O indice de irmaos e montado pelo orquestrador com chave E rotulo.
+    siblings = {
+        "question_18722965008": "Linkedin",
+        normalize_label("How did you hear about this opportunity? *"): "Linkedin",
+    }
+    field = ApplicationField(
+        key="question_18722966008",
+        label="Please provide additional details if you selected Employee Referral, Job Board, or Other (N/A if not applicable). *",
+        field_type="text",
+    )
+    resolution = _resolver().resolve_field(field, siblings=siblings)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "N/A"
+    assert resolution.source == "conditional:self_sourced"
+
+
+def test_cert_a05b_a_combobox_without_options_still_answers_a_declared_preference():
+    """A Greenhouse carrega as opcoes por typeahead: `options` chega vazio.
+
+    O valor vem da preferencia declarada; quem casa com a opcao e o widget. Se ele
+    nao casar, o preenchimento falha — e nao grava outra coisa.
+    """
+    field = ApplicationField(
+        key="question_18722973008",
+        label="If offered the role, how much notice do you need to provide before you can start? *",
+        field_type="combobox",
+    )
+    resolution = _resolver(preferences=CandidatePreferences(notice_period="immediate")).resolve_field(field)
+
+    assert resolution.status == ResolutionStatus.RESOLVED.value
+    assert resolution.answer == "Immediately"
+    assert resolution.supported_by == ("preferences.notice_period",)
