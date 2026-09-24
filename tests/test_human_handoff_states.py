@@ -337,6 +337,7 @@ def test_the_confirmation_event_records_what_was_observed(tmp_path):
         "provider": "lever",
         "confidence": 1.0,
         "observed_at": OBSERVED_AT,
+        "signals": [],
     }
     service.database.close()
 

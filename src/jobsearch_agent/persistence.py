@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -277,12 +278,40 @@ def _migration_005_human_handoff(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_confirmation_evidence(connection: sqlite3.Connection) -> None:
+    """Evidencia de confirmacao OBSERVADA (JSA-CONF-004).
+
+    Append-only e separada do journal de estados, porque "detectada" e
+    "aceita" sao coisas diferentes: uma evidencia fraca e registrada e recusada,
+    e a linha continua dizendo o que foi observado e por que nao bastou. Nao ha
+    DELETE: evidencia observada nao se apaga, no maximo deixa de ser aceita.
+    """
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS confirmation_evidence (
+            id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            source TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            accepted INTEGER NOT NULL DEFAULT 0,
+            evidence_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_confirmation_evidence_application
+           ON confirmation_evidence(application_id, observed_at)"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial", _migration_001_initial),
     (2, "namespaced_identities_and_duplicate_candidates", _migration_002_identities),
     (3, "application_domain_and_events", _migration_003_applications),
     (4, "submission_boundary", _migration_004_submission_boundary),
     (5, "human_handoff_packages", _migration_005_human_handoff),
+    (6, "confirmation_evidence", _migration_006_confirmation_evidence),
 )
 
 
@@ -686,6 +715,54 @@ class Database:
                     event.created_at,
                 ),
             )
+
+    def save_confirmation_evidence(self, application_id: str, evidence: Any, *, accepted: bool) -> str:
+        """Registra a evidencia OBSERVADA, aceita ou nao (JSA-CONF-004).
+
+        O id e derivado do conteudo da evidencia: reconciliar duas vezes o mesmo
+        e-mail nao cria duas linhas. `accepted` e monotonico — aceitar e um fato
+        historico, e uma reconciliacao posterior nao pode desfaze-lo.
+        """
+        data = canonical_json(evidence)
+        evidence_id = "ev-" + hashlib.sha256(data.encode("utf-8")).hexdigest()[:24]
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO confirmation_evidence
+                   (id, application_id, source, provider, confidence, accepted, evidence_json, observed_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     accepted=MAX(confirmation_evidence.accepted, excluded.accepted)""",
+                (
+                    evidence_id,
+                    application_id,
+                    evidence.source.value if hasattr(evidence.source, "value") else str(evidence.source),
+                    evidence.provider,
+                    float(evidence.confidence),
+                    1 if accepted else 0,
+                    data,
+                    evidence.observed_at,
+                    now_iso(),
+                ),
+            )
+            row = self.connection.execute(
+                "SELECT evidence_json FROM confirmation_evidence WHERE id=?", (evidence_id,)
+            ).fetchone()
+            if row is None or str(row[0]) != data:
+                raise ApplicationConflict(f"confirmation evidence id collision: {evidence_id}")
+        return evidence_id
+
+    def list_confirmation_evidence(self, application_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """SELECT evidence_json, accepted FROM confirmation_evidence
+               WHERE application_id=? ORDER BY observed_at, id""",
+            (application_id,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            record = json.loads(row[0])
+            record["accepted"] = bool(row[1])
+            result.append(record)
+        return result
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}

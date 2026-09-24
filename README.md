@@ -209,6 +209,44 @@ para confirmar — enquanto não houver um observador real (status do provider o
 um comando que aceitasse fonte e referência digitadas seria exatamente o caminho de texto livre que o
 ADR 0005 recusa.
 
+### Quem produz a evidência: observador, não palavra-chave
+
+A confirmação observável (`confirmation.py`, ADR 0006) não conhece Gmail: ela conhece um porto de
+caixa e um observador.
+
+```text
+EmailSource.messages_since(since)      Gmail, fixture/backfill, qualquer caixa
+        ↓
+ConfirmationObserver.observe(application, *, since)
+        ↓
+SubmissionConfirmationEvidence         (persistida ANTES da decisão)
+        ↓
+assert_confirmation_evidence()         aceita → SUBMITTED · fraca → continua aguardando
+```
+
+A frase de recebimento é **porta, não prova**: sozinha ela pontua 0,35 e fica **abaixo** do piso de
+0,50 — é registrada e recusada. Corroboração independente soma: origem no domínio do ATS, empresa,
+referência da vaga, e a janela temporal (peso pequeno de propósito). Linguagem de recusa é **veto**:
+"obrigado pelo interesse… infelizmente" não é confirmação.
+
+A janela começa no `MANUAL_SUBMISSION_REPORTED` menos 15 minutos de tolerância, lida do journal — não
+de um parâmetro, e nunca de todo o histórico da caixa: um e-mail antigo da mesma empresa não pode
+confirmar uma candidatura nova.
+
+O que fica persistido é a evidência, jamais a mensagem:
+
+```json
+{
+  "source": "confirmation_email", "reference": "18f0a1b2c3d4e5f6",
+  "provider": "email", "observed_at": "2026-09-24T18:12:04+00:00",
+  "confidence": 0.6,
+  "signals": ["application_confirmation_phrase", "ats_domain_match", "time_window_match"]
+}
+```
+
+Assunto, corpo, remetente e nome de exibição existem só durante o matching. Um `Message-ID` RFC (que
+pode carregar o domínio do remetente) vira digest; o id opaco da API do provedor é usado como está.
+
 `fill_forms` na policy aceita `auto` ou `review`. Em `review` (default) o agente ainda preenche, mas o
 Safety Gate termina em `READY_FOR_REVIEW`; em `auto` ele pode chegar a `READY_TO_APPLY`. Em nenhum dos
 casos existe transição automática para `SUBMIT_AUTHORIZED`: o submit sempre exige autorização

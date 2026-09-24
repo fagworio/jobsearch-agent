@@ -165,6 +165,11 @@ class SubmissionConfirmationEvidence:
     reference: str
     provider: str
     confidence: float = 1.0
+    #: Por que o observador considerou isto uma confirmacao. Tokens curtos de um
+    #: vocabulario do observador (`company_match`, `time_window_match`, ...).
+    #: E o que permite auditar o score em vez de aceitar o numero como fato — e o
+    #: que se persiste NO LUGAR do conteudo observado.
+    signals: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, ConfirmationSource):
@@ -175,6 +180,10 @@ class SubmissionConfirmationEvidence:
             raise ValueError("evidence provider must be a short lowercase token")
         if not 0.0 <= float(self.confidence) <= 1.0:
             raise ValueError("evidence confidence must be between 0 and 1")
+        object.__setattr__(self, "signals", tuple(str(signal) for signal in self.signals))
+        for signal in self.signals:
+            if not _EVIDENCE_TOKEN.fullmatch(signal):
+                raise ValueError(f"evidence signal must be a short token, got {signal!r}")
         _observed_at(self.observed_at)
 
     def safe_view(self) -> dict[str, Any]:
@@ -185,6 +194,7 @@ class SubmissionConfirmationEvidence:
             "reference": self.reference,
             "provider": self.provider,
             "confidence": float(self.confidence),
+            "signals": list(self.signals),
         }
 
 

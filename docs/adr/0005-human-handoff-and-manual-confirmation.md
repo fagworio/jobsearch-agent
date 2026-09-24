@@ -130,8 +130,16 @@ the observer itself places at the level of chance. Below the floor the evidence 
 refused — never silently discarded.
 
 The rule lives in `assert_confirmation_evidence`, called from `ApplicationService.transition` whenever
-the target is `SUBMITTED`, and not in `confirm_submission`: `transition` is the only door that changes
-state, and a future command that tries to reach `SUBMITTED` must pass through the same check.
+the target is `SUBMITTED`, and not in `confirm_submission` — so a future command that tries to reach
+`SUBMITTED` passes through the same check instead of re-implementing it.
+
+Precisely: **`transition()` is the only door of the manual/domain flow to `SUBMITTED`.** The
+automatic executor has its own transactional path — `Database.complete_submission_attempt` moves
+`SUBMITTING → SUBMITTED` inside the single transaction that closes the attempt, with the provider's
+own response as the evidence. That is not a bypass: it is a different evidence regime (the provider's
+response to a write this system authorized and observed), and it was the first one to exist. An audit
+reading direct SQL state updates as a violation of this ADR would be reading the wrong rule; what the
+invariant forbids is a *declaration* satisfying the edge, not the executor's own confirmation.
 
 There is deliberately **no CLI** for confirmation yet. A command that takes a source and a reference
 from the command line *is* the free-text path this ADR refuses; the operation becomes reachable from
