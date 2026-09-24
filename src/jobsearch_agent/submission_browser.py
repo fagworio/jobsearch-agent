@@ -229,10 +229,15 @@ class BrowserSubmitter:
     def _classify(self, observed: dict[str, Any], writes_used: int, outcome: ChallengeOutcome | None = None):
         status_code = observed.get("http_status")
         confirmed = bool(observed.get("confirmation_reached"))
-        # Uma escrita confirmada com 2xx e o desfecho mais forte que existe: um
-        # CAPTCHA que o humano acabou de resolver nao pode rebaixar uma
-        # candidatura que o servidor aceitou.
-        if writes_used and confirmed and 200 <= (status_code or 0) < 300:
+        # Redirecionar para a confirmacao E o desfecho de sucesso na maioria dos
+        # ATS: o 303 nao e "resposta inesperada", e o caminho normal ate a pagina
+        # que diz que a candidatura chegou. Aceitar apenas 2xx classificava esse
+        # caso como SUBMIT_UNKNOWN — e um envio aceito nunca pode ser "incerto".
+        accepted_response = 200 <= (status_code or 0) < 400
+        # Uma escrita confirmada com resposta de sucesso e o desfecho mais forte
+        # que existe: um CAPTCHA que o humano acabou de resolver nao pode
+        # rebaixar uma candidatura que o servidor aceitou.
+        if writes_used and confirmed and accepted_response:
             return (
                 SubmissionVerification.confirmed(
                     "browser_response",
@@ -270,7 +275,7 @@ class BrowserSubmitter:
                 SubmissionVerification.failed(f"provider responded {status_code}"),
                 "SUBMIT_FAILED",
             )
-        if 200 <= (status_code or 0) < 300 and confirmed:
+        if accepted_response and confirmed:
             return (
                 SubmissionVerification.confirmed(
                     "browser_response",

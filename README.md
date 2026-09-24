@@ -150,6 +150,24 @@ reenviado automaticamente; `SUBMIT_FAILED` é definitivo e pode ser retomado por
 `application retry-submit`. O executor HTTP (`GreenhouseSubmissionExecutor`) permanece como
 implementação controlada para testes e servidores locais.
 
+### E2E controlado: o POST real até `SUBMITTED`
+
+`tests/e2e/test_e2e_001_controlled_submit.py` sobe um ATS controlado em loopback
+(mesmo contrato de formulário de um provider suportado: `job_application[...]`,
+`form#application_form`) e conduz o caminho real: Chromium abre a página, o
+adapter inspeciona, as respostas vêm do perfil e das respostas aprovadas, o
+currículo é anexado, o controle de envio é clicado e o POST multipart chega ao
+servidor — que valida os campos obrigatórios e o PDF, responde com a página de
+confirmação e só então a Application vira `SUBMITTED`.
+
+As asserções são do **servidor**, não do agente: exatamente um POST, multipart,
+PDF válido com o SHA do arquivo aprovado, nenhum campo obrigatório vazio, uma
+única escrita autorizada e nenhuma bloqueada.
+
+```bash
+make test-browser-runtime      # exige Chromium (grupo opcional `browser`)
+```
+
 ### Handoff humano: o pacote vem antes do estado
 
 Quando o provedor recusa uma submissão que chegou a sair (`NEEDS_HUMAN_CAPTCHA`), a pessoa precisa

@@ -1166,3 +1166,31 @@ def test_classification_keeps_a_confirmed_submission_after_a_solved_captcha():
     # Sem escrita, o desafio visivel segue sendo o desfecho a reportar.
     unsolved = _acl_outcome(page=_recaptcha_challenge_page(), writes=0)
     assert classifier(submitter, {}, 0, unsolved)[1] == "NEEDS_CAPTCHA"
+
+
+def test_a_redirect_to_the_confirmation_page_is_a_confirmed_submission():
+    """303 para `/confirmation` é o desfecho de sucesso, não incerteza.
+
+    A maioria dos ATS responde ao POST com redirect para a página de
+    confirmação. Aceitar apenas 2xx classificava um envio ACEITO como
+    `SUBMIT_UNKNOWN` — e um `SUBMIT_UNKNOWN` nunca é reenviado, então a
+    candidatura ficava eternamente ambígua mesmo tendo chegado.
+    """
+    from jobsearch_agent.submission_browser import BrowserSubmitter
+
+    submitter = BrowserSubmitter.__new__(BrowserSubmitter)
+    classifier = BrowserSubmitter.__dict__["_classify"]
+
+    verification, status = classifier(submitter, {"http_status": 303, "confirmation_reached": True}, 1, None)
+    assert status == "SUBMITTED"
+    assert verification.status == "confirmed"
+    assert verification.evidence["status_code"] == 303
+
+    # 2xx com confirmação continua sendo confirmação.
+    assert classifier(submitter, {"http_status": 200, "confirmation_reached": True}, 1, None)[1] == "SUBMITTED"
+
+    # Sem confirmação observada, um 303 NÃO é sucesso: é escrita sem desfecho.
+    assert classifier(submitter, {"http_status": 303, "confirmation_reached": False}, 1, None)[1] == "SUBMIT_UNKNOWN"
+
+    # Erro do servidor com confirmação ambígua não vira sucesso.
+    assert classifier(submitter, {"http_status": 500, "confirmation_reached": True}, 1, None)[1] == "SUBMIT_FAILED"

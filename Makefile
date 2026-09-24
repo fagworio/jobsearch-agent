@@ -22,7 +22,7 @@ test-core-runtime:
 		-m "not requires_libreoffice"
 
 test-browser-runtime:
-	python3 -m pytest -q tests/test_playwright_runtime.py
+	python3 -m pytest -q tests/test_playwright_runtime.py tests/e2e/test_e2e_001_controlled_submit.py
 
 test-linkedin-runtime:
 	python3 -m pytest -q tests/test_linkedin_inspector.py tests/test_linkedin_qa.py tests/test_linkedin_session.py
