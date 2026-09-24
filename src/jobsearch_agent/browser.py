@@ -360,6 +360,16 @@ class GuardedBrowserSession(Protocol):
 
     def arm_writes(self, permits: list[AuthorizedWrite]) -> None: ...
 
+    def disarm_authorized_write(self) -> None: ...
+
+    #: Superficie exigida pelo executor de submissao. Ela PRECISA estar
+    #: declarada aqui: quando o protocolo ficou menor que o uso real, um fake de
+    #: teste implementou `arm_challenge_runtime` e a sessao de verdade nao — e
+    #: nenhum teste tocava o caminho que quebrava.
+    def arm_challenge_runtime(self, permits: list[ChallengeRuntimePermission]) -> None: ...
+
+    def disarm_challenge_runtime(self) -> None: ...
+
 
 class DOMStabilityGuard:
     """Wait for a minimum observation window, DOM quietness and idle reads.
@@ -1150,6 +1160,21 @@ class PlaywrightSessionManager:
     def disarm_inspections(self) -> None:
         if self.network_guard is not None:
             self.network_guard.disarm_inspections()
+
+    def arm_challenge_runtime(self, permits: list[ChallengeRuntimePermission]) -> None:
+        """Autoriza o runtime do widget anti-bot, com orcamento PROPRIO.
+
+        Boundary separada da submissao: o widget precisa buscar seus proprios
+        recursos para que a identificacao seja possivel, e isso nao pode
+        consumir nem ampliar o permit da candidatura.
+        """
+        if not self.guarded or self.network_guard is None:
+            raise BrowserSessionError("cannot authorize challenge runtime on an unguarded session")
+        self.network_guard.arm_challenge_runtime(list(permits))
+
+    def disarm_challenge_runtime(self) -> None:
+        if self.network_guard is not None:
+            self.network_guard.disarm_challenge_runtime()
 
     def arm_writes(self, permits: list[AuthorizedWrite]) -> None:
         """Autoriza escritas especificas do browser, cada uma com seu orcamento."""

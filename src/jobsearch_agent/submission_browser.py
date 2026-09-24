@@ -135,17 +135,21 @@ class BrowserSubmitter:
                 max_writes=1,
             )
         ]
-        session.arm_writes(permits)
-        # Runtime do widget anti-bot: boundary PROPRIA, com orcamento independente
-        # do de submissao. Os requisitos vem do challenge-guard via a ACL; este
-        # modulo nao conhece host, caminho nem provider de desafio.
+        # O armamento entra no `try`: se qualquer passo falhar, o `finally`
+        # desarma o que ja estava armado. Antes disso, uma excecao no armamento
+        # do runtime anti-bot deixava o permit de submissao vivo.
         challenges = JobsearchChallengeAdapter()
-        challenges.attach(getattr(session, "page", None))
-        session.arm_challenge_runtime(challenges.runtime_permissions())
+        guard = getattr(session, "network_guard", None)
         submit_writes_used = 0
         try:
+            session.arm_writes(permits)
+            # Runtime do widget anti-bot: boundary PROPRIA, com orcamento
+            # independente do de submissao. Os requisitos vem do challenge-guard
+            # via a ACL; este modulo nao conhece host, caminho nem provider de
+            # desafio.
+            challenges.attach(getattr(session, "page", None))
+            session.arm_challenge_runtime(challenges.runtime_permissions())
             observed = self._click_and_observe(session, intent.destination, profile, challenges)
-            guard = getattr(session, "network_guard", None)
             usage = getattr(guard, "authorized_write_usage", None) if guard is not None else None
             if usage:
                 # Posicao 0 e sempre o permit da candidatura.

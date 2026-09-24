@@ -556,3 +556,28 @@ def test_write_usage_survives_disarming_for_audit():
     assert guard.authorized_write is None
     assert guard.authorized_writes_remaining == 0
     assert guard.authorized_writes_used == 1
+
+
+def test_the_real_session_exposes_every_method_the_submitter_calls():
+    """O fake nao pode conhecer mais que a sessao REAL.
+
+    Foi este desvio que deixou a submissao ao vivo quebrada: o
+    `FakeGuardedSession` dos testes implementava `arm_challenge_runtime` e o
+    `PlaywrightSessionManager` nao, entao nenhum teste tocava o caminho que o
+    browser de verdade executa. A checagem e derivada do proprio consumidor para
+    nao voltar a divergir quando o submitter ganhar um metodo novo.
+    """
+    import ast
+
+    source = (ROOT / "src/jobsearch_agent/submission_browser.py").read_text(encoding="utf-8")
+    called = {
+        node.func.attr
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "session"
+    }
+    assert called, "nenhuma chamada `session.<metodo>` encontrada: o teste perdeu o sentido"
+    missing = sorted(name for name in called if not callable(getattr(PlaywrightSessionManager, name, None)))
+    assert missing == [], f"a sessao real nao implementa: {missing}"
