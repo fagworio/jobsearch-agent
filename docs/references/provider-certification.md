@@ -126,9 +126,40 @@ LinkedIn / Indeed sao sempre HANDOFF
 ```
 
 A degradação é o ponto: um erro de configuração não deve virar uma tentativa de escrita
-sem credencial. E o `SubmissionRouter` (próximo ticket) traz o **próprio** guard — paralelo ao
-`NetworkWriteGuard` do browser, não uma reutilização dele: o ciclo de vida é outro (não há página,
-DOM, challenge ou trava de submit), e compartilhar o guard do browser acoplaria a contabilidade de
-intenção/tentativa a uma fronteira que não existe nesse canal. Enquanto não houver credencial real,
-esse router só pode ser exercitado com mocks; o número de cobertura permanece uma **projeção**, e
-projeção não entra no placar acima.
+sem credencial.
+
+### O `SubmissionRouter` está implementado — e continua sem certificação
+
+`jobsearch_agent.submission_api` traz o canal com **guard próprio** (`ApiWriteGuard`), paralelo ao
+`NetworkWriteGuard` do browser e não uma reutilização dele: não há página, DOM, desafio nem trava de
+submit, e o orçamento de UMA escrita é consumido **antes** do envio (uma requisição que estourou no
+meio pode ter chegado; o orçamento registra a TENTATIVA). O transporte real não segue redirect —
+seria uma segunda escrita, para outra origem — e não repete tentativa. A porta de domínio é a mesma
+do browser, então existe uma única regra de exactly-once.
+
+O que está **provado**, e só isso:
+
+```text
+roteamento por DomainPolicy          API sem credencial declarada degrada para BROWSER
+guard                                orcamento unico; origem/path/metodo/query recusados
+classificacao                        2xx confirma; 401/403/422/429 falham; 3xx/5xx/excecao = unknown
+contabilidade                        intent autorizada, tentativa persistida, estado, sem retentativa
+segredo                              nunca no banco, no evento, na evidencia ou no repr
+loop real (browser + fake)           o browser preenche, NAO faz o POST, e o estado vira SUBMITTED
+```
+
+Cada linha acima foi medida contra um **transporte fake** e um destino de **loopback** — nenhum
+provider real foi tocado, e por isso nada entra no placar. Enquanto não houver credencial real, a
+cobertura do canal de API é zero OBSERVAÇÕES, não zero falhas: o número continua sendo **projeção**,
+e projeção não entra no placar acima.
+
+Duas consequências de desenho que ficam medidas (e nao supostas):
+
+1. **Um `unknown` de API precisa de motivo.** `SubmissionVerification.unknown` ganhou `reason_token`
+   pelo mesmo motivo que `failed` já tinha: redirect não seguido, erro 5xx e falha de transporte
+   levam a decisões diferentes do operador, e "unknown" sem POR QUÊ não permite decidir nada. Os
+   tokens (`api_*`) são declarados no DOMÍNIO (`submission.API_REASON_TOKENS`), não no canal — um
+   canal não amplia sozinho o vocabulário que a auditoria aceita.
+2. **O nome do campo de currículo é exigido de quem chama.** Ele é por provider e não foi medido em
+   nenhum; inventar `resume` dentro da biblioteca seria escrever um contrato que ninguém verificou.
+   Sem ele, o canal falha fechado antes de qualquer escrita.

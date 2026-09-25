@@ -43,6 +43,7 @@ divergir do contrato.
 | 4 | execução (relay do operador, handoff) não depende do motor de resolução | import-linter |
 | 4b | só `challenge_integration.py` e `challenge_strategies.py` importam o pacote de resolução | AST walker + invariantes |
 | 5 | o handoff assíncrono não fala com o browser (direto, não transitivo) | import-linter |
+| 5b | o **canal de API** não fala com o browser, o relay nem o motor de resolução (direto, não transitivo) | import-linter + AST |
 | 6 | `challenge_guard` não importa nenhuma das camadas de cima | AST sobre o artefato instalado |
 | 7 | nomes proibidos não aparecem como código, `__all__`, anotação ou campo de dataclass | AST walker |
 | 8 | nenhum módulo proibido entra em `sys.modules` ao importar o pacote de resolução (inclusive import dinâmico) | runtime scanner |
@@ -58,6 +59,30 @@ Há dois caminhos de intervenção humana, com papéis distintos — e nomes dis
 - **relay do operador** (`jobsearch_agent.live_view`): a pessoa age **na sessão viva** durante a
   janela do gate, com o controle de envio desabilitado e clique sobre ele recusado. É execução, não
   decisão — por isso não importa o motor de resolução (regra 4).
+
+## Os dois canais de escrita
+
+A candidatura sai por **um** de dois caminhos, e a decisão é dado declarado (`submission_policy`),
+não heurística:
+
+- **browser** (`jobsearch_agent.coordinator` + `submission_browser`): preenche o formulário real,
+  sobe o currículo e observa o POST. O guard é o `NetworkWriteGuard`, preso a uma página viva — DOM,
+  frames, respostas. É o único caminho para um domínio **sem** credencial declarada.
+- **API** (`jobsearch_agent.submission_api`): uma requisição HTTP autorizada, sem página, sem DOM e
+  sem desafio. O guard é o `ApiWriteGuard` — orçamento de UMA escrita, consumido **antes** do envio,
+  ligado a uma intent; o transporte real não segue redirect (seguir seria uma segunda escrita, para
+  outra origem) e não repete tentativa. É `API` **somente** com credencial declarada para aquele
+  domínio; sem ela o canal degrada para `BROWSER`.
+
+Os dois compartilham a mesma porta de domínio (`SubmissionService.submit` → snapshot, intent,
+autorização, tentativa persistida **antes** da escrita, desfecho). Reutilizar o guard do browser no
+canal de API faria a contabilidade de exactly-once depender de uma `page` que não existe; duplicar a
+porta criaria uma segunda regra de exactly-once. Por isso: porta compartilhada, guard próprio.
+
+O canal de API **não** está certificado contra nenhum provider. O que está provado é o roteamento, o
+guard e a contabilidade, contra um transporte fake e um destino de loopback — nenhum provider real é
+tocado. A medição que fundamenta o desenho está em
+[`references/provider-certification.md`](references/provider-certification.md).
 
 ## Os quatro anéis
 

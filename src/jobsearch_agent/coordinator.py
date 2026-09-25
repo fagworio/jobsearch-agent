@@ -43,13 +43,17 @@ class SubmissionResult:
     writes: int = 0
     evidence: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    #: Por onde a escrita saiu. Era constante "browser" no `to_dict`; o canal de
+    #: API existe agora, e um resumo que diz "browser" sobre uma requisicao HTTP
+    #: e um erro de auditoria, nao um detalhe de formatacao.
+    transport: str = "browser"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "intent_id": self.intent_id,
             "status": self.status,
             "http_status": self.http_status,
-            "transport": "browser",
+            "transport": self.transport,
             "evidence": dict(self.evidence),
             "error": self.error,
         }

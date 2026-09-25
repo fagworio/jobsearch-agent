@@ -320,6 +320,34 @@ outro pacote, e o anterior continua auditável com exatamente o que foi aprovado
 guarda só referência e tokens curtos — nunca respostas, currículo ou PII. A saída do comando é a
 visão segura do pacote (sem respostas e sem caminhos absolutos).
 
+#### Os dois canais de escrita (e por que o guard não é o mesmo)
+
+A candidatura sai por um de dois caminhos, escolhidos por **dado declarado**
+(`jobsearch_agent.submission_policy`), não por heurística:
+
+```text
+browser   preenche o formulário real, sobe o currículo, observa o POST
+          guard: NetworkWriteGuard, preso à página viva
+          único caminho possível para domínio SEM credencial declarada
+
+api       uma requisição HTTP autorizada; sem página, DOM ou desafio
+          guard: ApiWriteGuard — orçamento de UMA escrita, consumido ANTES do envio
+          sem redirect (seguir seria uma segunda escrita) e sem repetição de tentativa
+          só com CREDENCIAL DECLARADA para aquele domínio; sem ela, degrada para browser
+```
+
+Os dois passam pela **mesma porta de domínio** (snapshot → intent → autorização → tentativa
+persistida antes da escrita → desfecho), então existe uma única regra de exactly-once. O que não se
+compartilha é o guard: reutilizar o do browser faria a contabilidade da escrita HTTP depender de uma
+`page` que esse canal nunca tem.
+
+Medido antes de desenhar o cliente de API: `GET` no board público do Greenhouse responde `200` e
+`POST` sem credencial responde `401 HTTP Basic: Access denied`. Ou seja, o adaptador de API é
+**pré-requisito**, e o ganho de cobertura depende da **credencial** — não do código. Até existir uma
+credencial real e o endpoint autenticado ser exercitado, o canal de API tem zero **observações** (e
+não zero falhas), e o que está provado é apenas roteamento, guard e contabilidade, contra transporte
+fake: ver [`docs/references/provider-certification.md`](docs/references/provider-certification.md).
+
 #### Qual é o caminho padrão quando o provedor não confirma
 
 O POST ter saído **não** é a candidatura ter sido registrada. Quando a tentativa chega ao provedor e

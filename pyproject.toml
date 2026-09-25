@@ -78,6 +78,10 @@ files = [
     "src/challenge_resolution",
     "src/jobsearch_agent/live_view.py",
     "src/jobsearch_agent/challenge_gate.py",
+    # O canal de API nasce sob `strict` como o pacote de resolucao: ele e uma
+    # fronteira de escrita nova, e uma fronteira que nasce frouxa nao endurece
+    # depois. Ele nao recebe `page`, entao `disallow_any_explicit` vale inteiro.
+    "src/jobsearch_agent/submission_api.py",
 ]
 strict = true
 warn_unreachable = true
@@ -163,4 +167,30 @@ forbidden_modules = ["jobsearch_agent.browser", "playwright"]
 # proveniencia do desafio a partir do conjunto fechado do guard, e `challenges`
 # importa o browser. O que se proibe e o handoff FALAR com o browser — nao
 # herdar essa dependencia por tabela.
+allow_indirect_imports = true
+
+# Contrato 6: o canal de API e um caminho de escrita PROPRIO, e nao uma variacao
+# do caminho do browser. Se ele alcancar o browser, o relay ou o motor de
+# resolucao, o guard paralelo deixa de ser paralelo: a escrita HTTP passaria a
+# depender de uma pagina viva e de um desafio que este canal nao tem.
+[[tool.importlinter.contracts]]
+name = "o canal de API nao toca browser, relay nem resolucao"
+type = "forbidden"
+source_modules = ["jobsearch_agent.submission_api"]
+forbidden_modules = [
+    "jobsearch_agent.browser",
+    "jobsearch_agent.submission_browser",
+    "jobsearch_agent.live_view",
+    "jobsearch_agent.challenge_integration",
+    "jobsearch_agent.challenge_gate",
+    "challenge_resolution",
+    "playwright",
+]
+# Direto, nao transitivo — pelo mesmo motivo do contrato 5, e com o mesmo
+# limite explicito. O router importa `SubmissionResult` de `coordinator`, que
+# importa o submitter do browser: a dependencia vem por TABELA, e o que se
+# proibe e o canal FALAR com o browser. O import direto e verificado de forma
+# exata (AST, so imports diretos) em `tests/test_submission_api.py`. Sem esta
+# linha o contrato viraria uma proibicao de reutilizar o tipo de resultado do
+# dominio, o que nao tem relacao com a fronteira que ele protege.
 allow_indirect_imports = true

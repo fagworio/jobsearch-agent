@@ -45,6 +45,7 @@ from .orchestrator import LiveApplicationOrchestrator, LiveApplicationResult
 from .persistence import Database
 from .qa import AnswerKnowledgeBase
 from .resolver import QuestionResolver
+from .submission_policy import Channel
 
 #: Estados em que o loop PARA e nao ha nada mais a fazer sozinho.
 TERMINAL_STATES: frozenset[ApplicationState] = frozenset(
@@ -209,6 +210,15 @@ class LoopRuntime:
     #: intent, a policy e a observacao para o endereco errado — o provider nunca
     #: seria certificado por mais correto que o preenchimento estivesse.
     submission_destination: Callable[[Job, ATSAdapter, ApplicationForm], str] | None = None
+    #: Canal de API (opt-in). Quando presente E quando a politica de dominio
+    #: autoriza o destino (credencial DECLARADA para aquele dominio), o loop
+    #: entrega a escrita a ele em vez do `SubmissionCoordinator` do browser. O
+    #: miolo (snapshot, intent, tentativa, estado) e o mesmo; o que muda e por
+    #: onde a requisicao sai — e o guard, que e proprio do canal.
+    submission_router: Any | None = None
+    #: Campo do curriculo no corpo do POST de API. Nome POR PROVIDER e nao
+    #: medido em nenhum: exigido de quem chama, nunca inventado aqui.
+    api_resume_field: str = ""
     allow_insecure_destination: bool = False
     max_cycles: int = 5
     allow_advance: bool = True
@@ -366,19 +376,18 @@ class ApplicationLoop:
                 )
 
             phases.append(LoopPhase.SUBMIT.value)
-            submission = self.coordinator.submit(
+            destination = self._submission_destination(job, adapter, form, form_url)
+            submission = self._submit_authorized(
                 application=application,
                 job=job,
                 form=form,
+                journey=journey,
                 session=session,
                 provider=adapter.provider,
-                destination=self._submission_destination(job, adapter, form, form_url),
-                resume_sha256=material.resume_sha256,
+                destination=destination,
+                material=material,
                 form_fingerprint=form_fingerprint,
                 answers_fingerprint=answers_fingerprint,
-                allow_insecure_destination=self.runtime.allow_insecure_destination,
-                policy_factory=self.runtime.policy_for,
-                journey=journey,
             )
             phases.append(LoopPhase.OBSERVE.value)
             return self._from_submission(
@@ -397,6 +406,62 @@ class ApplicationLoop:
             close = getattr(session, "close", None)
             if callable(close):
                 close()
+
+    def _submit_authorized(
+        self,
+        *,
+        application: Application,
+        job: Job,
+        form: ApplicationForm,
+        journey: ApplicationJourney,
+        session: Any,
+        provider: str,
+        destination: str,
+        material: PreparedMaterial,
+        form_fingerprint: str,
+        answers_fingerprint: str,
+    ) -> SubmissionResult:
+        """A escrita autorizada, pelo canal que a politica de dominio decidir.
+
+        O roteamento NAO e heuristica: `SubmissionRouter.channel_for` so devolve
+        `API` quando existe credencial declarada para o dominio do destino; em
+        qualquer outro caso (inclusive credencial ausente) o canal e o browser, e
+        a degradacao e a mesma que `DomainPolicy` ja testa. Assim um erro de
+        configuracao nao vira uma tentativa de escrita sem credencial.
+        """
+        router = self.runtime.submission_router
+        if router is not None and router.channel_for(destination) is Channel.API:
+            # Nao ha `except` aqui de proposito: um erro de roteamento e um bug de
+            # configuracao, e cair em silencio no canal de browser trocaria o
+            # canal de uma escrita autorizada sem que ninguem soubesse.
+            return router.submit(
+                application=application,
+                job=job,
+                form=form,
+                journey=journey,
+                provider=provider,
+                destination=destination,
+                resume_path=material.resume_path,
+                resume_sha256=material.resume_sha256,
+                resume_field=self.runtime.api_resume_field,
+                form_fingerprint=form_fingerprint,
+                answers_fingerprint=answers_fingerprint,
+                allow_insecure_destination=self.runtime.allow_insecure_destination,
+            )
+        return self.coordinator.submit(
+            application=application,
+            job=job,
+            form=form,
+            session=session,
+            provider=provider,
+            destination=destination,
+            resume_sha256=material.resume_sha256,
+            form_fingerprint=form_fingerprint,
+            answers_fingerprint=answers_fingerprint,
+            allow_insecure_destination=self.runtime.allow_insecure_destination,
+            policy_factory=self.runtime.policy_for,
+            journey=journey,
+        )
 
     # -- upload ----------------------------------------------------------------
 

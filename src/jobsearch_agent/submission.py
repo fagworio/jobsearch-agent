@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 import re
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -274,8 +274,19 @@ class SubmissionVerification:
         return cls("failed", "", evidence)
 
     @classmethod
-    def unknown(cls, reason: str = "") -> "SubmissionVerification":
-        return cls("unknown", "", {"reason": reason} if reason else {})
+    def unknown(cls, reason: str = "", reason_token: str = "") -> "SubmissionVerification":
+        """O agente enviou e nao consegue determinar o desfecho.
+
+        `reason_token` existe pelo mesmo motivo que em `failed`: "unknown" sem
+        POR QUE e um estado do qual o operador nao pode decidir nada. Tres causas
+        materiais — redirect nao seguido, erro do provedor, falha de transporte —
+        ficariam indistinguiveis no banco, e a decisao de retomar (ou nao) e
+        diferente em cada uma.
+        """
+        evidence: dict[str, object] = {"reason": reason} if reason else {}
+        if reason_token:
+            evidence["reason_token"] = reason_token
+        return cls("unknown", "", evidence)
 
     @classmethod
     def challenged_without_write(cls, reason_token: str) -> "SubmissionVerification":
@@ -438,7 +449,25 @@ _SAFE_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 #: Estados de auditoria do dominio. Diferente de `provider_status`, que vem do
 #: fornecedor e so passa por saneamento, estes sao nossos e devem ser um
 #: conjunto fechado: um valor novo exige decisao explicita.
-SAFE_REASON_TOKENS = frozenset({"captcha_no_write", "captcha_write_refused", "captcha_verification_failed"})
+#:
+#: O bloco `api_*` e o mesmo contrato para o canal de API
+#: (:mod:`jobsearch_agent.submission_api`). Ele e declarado AQUI, e nao no modulo
+#: do canal, porque o conjunto fechado e do dominio: um canal nao pode ampliar
+#: sozinho o vocabulario que a auditoria aceita.
+API_REASON_TOKENS = frozenset(
+    {
+        "api_auth_rejected",
+        "api_provider_rejected",
+        "api_rate_limited",
+        "api_redirect_not_followed",
+        "api_server_error",
+        "api_transport_error",
+    }
+)
+
+SAFE_REASON_TOKENS = frozenset(
+    {"captcha_no_write", "captcha_write_refused", "captcha_verification_failed"}
+) | API_REASON_TOKENS
 
 
 def _safe_evidence_token(value: object) -> str:
@@ -512,6 +541,31 @@ def _redacted_evidence(verification: SubmissionVerification) -> dict[str, object
     if observed:
         evidence["challenge"] = observed
     return evidence
+
+
+class WritePolicy(Protocol):
+    """O que a contabilidade de tentativa exige de uma politica de escrita.
+
+    O dominio precisa saber que a politica esta LIGADA a esta intent e que ela
+    aprova exatamente este metodo/URL/formato. Ele nao precisa — e nao deve —
+    saber se a escrita sai de um browser (`LiveNetworkPolicy`) ou de um cliente
+    HTTP (`submission_api.ApiWritePolicy`). Exigir a politica do browser aqui
+    faria a contabilidade de exactly-once depender de uma pagina viva que o
+    canal de API nunca tem.
+    """
+
+    # Propriedades (somente leitura): as implementacoes sao dataclasses
+    # `frozen`, e um Protocol com atributo mutavel recusaria as duas.
+    @property
+    def application_id(self) -> str: ...
+
+    @property
+    def submission_intent_id(self) -> str: ...
+
+    @property
+    def provider(self) -> str: ...
+
+    def validate(self, method: str, url: str, stage: str) -> ValidationResult: ...
 
 
 class SubmissionService:
@@ -609,7 +663,7 @@ class SubmissionService:
         current_form_fingerprint: str,
         current_resume_sha256: str,
         current_answers_fingerprint: str,
-        policy: LiveNetworkPolicy,
+        policy: WritePolicy,
         method: str,
         url: str,
     ) -> SubmissionAttempt:

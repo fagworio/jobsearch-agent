@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from jobsearch_agent.challenge_gate import PreSubmitChallengeGate
 from jobsearch_agent.live_view import LiveViewRelay
@@ -104,6 +105,8 @@ class Harness:
     gate: PreSubmitChallengeGate | None = None
     relay: LiveViewRelay | None = None
     observed: list = field(default_factory=list)
+    api_requests: list = field(default_factory=list)
+    api_credential: object | None = None
 
     def run(self, *, submit: bool = True):
         return self.loop.run(self.job_id, submit=submit)
@@ -168,6 +171,7 @@ def build_harness(
     poll_seconds: float = 0.05,
     on_wait: Callable[[Any], None] | None = None,
     orchestrator_handling: bool = False,
+    api_channel: bool = False,
 ) -> Harness:
     """Monta o loop real contra o ATS controlado.
 
@@ -217,6 +221,31 @@ def build_harness(
         else:
             gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)
 
+    api_requests: list = []
+    api_credential = None
+    submission_router = None
+    if api_channel:
+        # O canal de API so e escolhido quando a POLITICA declara o dominio e
+        # existe credencial para ele. Aqui o dominio e o loopback do ATS
+        # controlado: o roteamento e o de producao, a tabela e do teste, e o
+        # transporte e um fake — nenhum provider real e tocado.
+        from jobsearch_agent.submission_api import ApiCredential, ApiRequest, ApiResponse, SubmissionRouter
+        from jobsearch_agent.submission_policy import DomainPolicy
+
+        class _RecordingTransport:
+            def send(self, request: ApiRequest) -> ApiResponse:
+                api_requests.append(request)
+                return ApiResponse(200, b'{"application_id": "controlled-1"}')
+
+        host = urlsplit(ats.origin).hostname or "127.0.0.1"
+        api_credential = ApiCredential(domain=host, secret="integration-secret")
+        submission_router = SubmissionRouter(
+            database,
+            transport=_RecordingTransport(),
+            credentials={host: api_credential},
+            policy=DomainPolicy(api_domains=(host,)),
+        )
+
     runtime = LoopRuntime(
         adapter_for=lambda job: __import__("jobsearch_agent.ats", fromlist=["GreenhouseAdapter"]).GreenhouseAdapter(),
         form_url=lambda job, adapter: ats.apply_url,
@@ -239,6 +268,8 @@ def build_harness(
         challenge_wait_seconds=captcha_wait,
         live_view_relay=relay,
         challenge_integration=integration,
+        submission_router=submission_router,
+        api_resume_field="resume" if api_channel else "",
         # Curto de proposito: quando nada sai, o submitter observa ate o
         # deadline. Num teste isso tem de ser segundos, nao os 45 do padrao.
         submission_timeout=1.5,
@@ -256,6 +287,8 @@ def build_harness(
         gate=gate,
         relay=relay,
         observed=observed,
+        api_requests=api_requests,
+        api_credential=api_credential,
     )
 
 
