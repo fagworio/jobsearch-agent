@@ -922,6 +922,13 @@ class Database:
         values = [session.get(column, "") for column in self._BROWSER_COLUMNS]
         placeholders = ",".join("?" for _ in self._BROWSER_COLUMNS)
         with self.connection:
+            # A FK tambem recusaria, mas o erro seria "FOREIGN KEY constraint
+            # failed": checar antes diz QUAL application falta.
+            existing = self.connection.execute(
+                "SELECT id FROM applications WHERE id=?", (session.get("application_id"),)
+            ).fetchone()
+            if existing is None:
+                raise ApplicationConflict(f"application not found: {session.get('application_id')}")
             self.connection.execute(
                 f"INSERT INTO browser_sessions({','.join(self._BROWSER_COLUMNS)}) VALUES ({placeholders})",
                 values,

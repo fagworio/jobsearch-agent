@@ -266,7 +266,7 @@ def test_a_stale_transition_loses_the_compare_and_swap(tmp_path: Path):
     registry = _registry(database)
     session = registry.register(application_id=application_id, cdp_host="127.0.0.1", cdp_port=9222)
 
-    # Outro processo ja avancou a sessao: a transicao deste perde.
+    # Um processo avanca; o outro, com o estado VELHO, perde no compare-and-swap.
     assert database.transition_browser_session(
         session.session_id,
         expected_state="STARTING",
@@ -275,7 +275,16 @@ def test_a_stale_transition_loses_the_compare_and_swap(tmp_path: Path):
         payload={"application_id": application_id, "session_id": session.session_id},
         last_seen_at="2026-01-01T00:00:00+00:00",
     )
-    with pytest.raises(SessionConflict, match="concurrently"):
+    assert not database.transition_browser_session(
+        session.session_id,
+        expected_state="STARTING",
+        target_state="READY",
+        event="browser_session_ready",
+        payload={"application_id": application_id, "session_id": session.session_id},
+        last_seen_at="2026-01-01T00:00:01+00:00",
+    ), "o segundo UPDATE condicional tem de afetar zero linhas"
+    # E pelo registry, a sessao ja esta READY: a transicao nao se repete.
+    with pytest.raises(BrowserRegistryError):
         registry.mark_ready(session.session_id)
 
 
