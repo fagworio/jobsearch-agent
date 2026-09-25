@@ -607,9 +607,31 @@ decisão registrada em `protocols.py`: o produto inteiro, a API do Playwright us
 gate/relay de produção são síncronos, e um contrato `async` só seria executável movendo o loop (com
 journal e banco) para uma thread dona da sessão.
 
-O que **não** existe ainda: estratégia concreta de interação (a resolução de um checkbox por clique,
-por exemplo), integração do orquestrador no `ApplicationLoop` (hoje o gate faz essa política inline)
-e o executor real entregue ao engine.
+Desde a Fase 6 o **orquestrador roda dentro do loop**: com `challenge_integration` configurada, o
+loop delega a decisão ao `ChallengeOrchestrator` (observador do guard real + engine + estratégia de
+relay + validador), em vez da política inline do gate. Só um módulo do agente conhece o pacote de
+resolução (`challenge_integration.py`, com `challenge_strategies.py`), e é isso que o teste de
+fronteira exige: loop, browser, submissão e handoff seguem proibidos de importá-lo.
+
+O que **não** existe ainda: estratégia automática de resolução (clicar num checkbox), transporte de
+API autorizado e a observabilidade agregada.
+
+### Canal por domínio: sem credencial, sem API
+
+`src/jobsearch_agent/submission_policy.py` decide por onde a candidatura sai e **degrada para o
+browser quando falta credencial**:
+
+```python
+DEFAULT_POLICY.channel_for("greenhouse.io")                       # BROWSER
+DEFAULT_POLICY.channel_for("greenhouse.io", authorized_domains=["greenhouse.io"])  # API
+DEFAULT_POLICY.channel_for("linkedin.com")                        # HANDOFF (nunca API)
+```
+
+A trava é medida, não presumida: o endpoint de candidatura do Greenhouse responde
+`401 — HTTP Basic: Access denied` sem credencial. Um adapter sem credencial que "tenta assim mesmo"
+faria um POST não autorizado a um terceiro, fora do `NetworkWriteGuard`, sem intent e sem
+exactly-once. Por isso a política não devolve `API` nesse caso. LinkedIn e Indeed não têm API
+pública de candidatura — e automatizar apply ali é o que o ADR 0001 recusa.
 
 ## Princípios
 

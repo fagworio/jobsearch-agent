@@ -24,6 +24,12 @@ from typing import Any, Callable
 
 from jobsearch_agent.challenge_gate import PreSubmitChallengeGate
 from jobsearch_agent.live_view import LiveViewRelay
+
+
+def _monotonic() -> float:
+    import time as _time
+
+    return _time.monotonic()
 from jobsearch_agent.loop import ApplicationLoop, LoopRuntime, PreparedMaterial
 from jobsearch_agent.models import (
     ApplicationAnswer,
@@ -161,6 +167,7 @@ def build_harness(
     captcha_wait: float = 0.0,
     poll_seconds: float = 0.05,
     on_wait: Callable[[Any], None] | None = None,
+    orchestrator_handling: bool = False,
 ) -> Harness:
     """Monta o loop real contra o ATS controlado.
 
@@ -193,6 +200,7 @@ def build_harness(
 
     gate: PreSubmitChallengeGate | None = None
     relay: LiveViewRelay | None = None
+    integration = None
     observed: list = []
     if resolution_enabled:
         relay = LiveViewRelay()
@@ -204,7 +212,10 @@ def build_harness(
             if seconds > 0:
                 time.sleep(seconds)
 
-        gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)
+        if orchestrator_handling:
+            integration = _orchestrator_integration(relay, captcha_wait, poll_seconds, on_wait, observed)
+        else:
+            gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)
 
     runtime = LoopRuntime(
         adapter_for=lambda job: __import__("jobsearch_agent.ats", fromlist=["GreenhouseAdapter"]).GreenhouseAdapter(),
@@ -227,6 +238,7 @@ def build_harness(
         challenge_gate=gate,
         challenge_wait_seconds=captcha_wait,
         live_view_relay=relay,
+        challenge_integration=integration,
         # Curto de proposito: quando nada sai, o submitter observa ate o
         # deadline. Num teste isso tem de ser segundos, nao os 45 do padrao.
         submission_timeout=1.5,
@@ -244,6 +256,93 @@ def build_harness(
         gate=gate,
         relay=relay,
         observed=observed,
+    )
+
+
+def _orchestrator_integration(
+    relay: LiveViewRelay,
+    wait_seconds: float,
+    poll_seconds: float,
+    on_wait: Callable[[Any, list], None] | None,
+    observed: list,
+):
+    """Integracao da Fase 6: orquestrador real + validador real + estrategia de relay.
+
+    A composicao vive aqui porque a pagina so existe em tempo de execucao: o
+    observador nasce preso a ela, e o orquestrador nasce sobre esse observador.
+    """
+    from challenge_guard.monitor import ChallengeMonitor
+    from challenge_resolution.journal import InMemoryJournal
+    from challenge_resolution.models import OrchestratorLimits
+    from challenge_resolution.orchestrator import ChallengeOrchestrator
+    from challenge_resolution.validator import MonitorValidator
+
+    from jobsearch_agent.challenge_integration import ChallengeIntegration
+
+    def observer_for(page: Any):
+        monitor = ChallengeMonitor()
+        monitor.attach(page)
+        return monitor
+
+    def orchestrator_for(observer: Any):
+        from challenge_resolution.types import ResolutionStatus
+
+        class _WaitingStrategy:
+            """Estrategia de relay com gancho de teste na espera."""
+
+            name = "human_relay_test"
+
+            def supports(self, observation: Any) -> bool:
+                return True
+
+            def resolve(self, session: Any, observation: Any, executor: Any) -> Any:
+                from challenge_resolution.models import ResolutionResult
+
+                deadline = _monotonic() + max(wait_seconds, 0.0)
+                while True:
+                    relay.drain(page_holder["page"])
+                    if on_wait is not None:
+                        on_wait(page_holder["page"], observed)
+                    if not observer.observe(phase=session.phase).detected:
+                        resolved = True
+                        break
+                    if _monotonic() >= deadline:
+                        resolved = False
+                        break
+                    time.sleep(poll_seconds)
+                return ResolutionResult(
+                    status=ResolutionStatus.RESOLVED if resolved else ResolutionStatus.HUMAN_REQUIRED,
+                    provider=observation.provider,
+                    challenge_type="checkbox",
+                    session_id=session.session_id,
+                    strategy_name=self.name,
+                    error_code="" if resolved else "human_did_not_resolve_in_budget",
+                )
+
+        return ChallengeOrchestrator(
+            monitor=observer,
+            engine=_Engine([_WaitingStrategy()]),
+            validator=MonitorValidator(monitor=observer),
+            journal=InMemoryJournal(),
+            limits=OrchestratorLimits(
+                max_rounds=1,
+                timeout_seconds=max(wait_seconds, 0.1) + 1,
+                max_duration_seconds=max(wait_seconds, 0.1) + 2,
+            ),
+        )
+
+    from challenge_resolution.engine import StrategyEngine as _Engine  # noqa: E402
+
+    page_holder: dict[str, Any] = {"page": None}
+
+    def observer_with_page(page: Any):
+        page_holder["page"] = page
+        return observer_for(page)
+
+    return ChallengeIntegration(
+        observer_factory=observer_with_page,
+        orchestrator_factory=orchestrator_for,
+        relay=relay,
     )
 
 

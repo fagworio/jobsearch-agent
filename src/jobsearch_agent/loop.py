@@ -182,6 +182,10 @@ class LoopRuntime:
     #: preenchimento e SOMENTE quando o envio foi autorizado: com `--submit`
     #: ausente nada e armado e o dry-run continua sem nenhuma escrita.
     upload_permits: Callable[[Job, ATSAdapter, str], list[Any]] | None = None
+    #: Integracao com o subsistema de resolucao (opt-in). Quando presente, ela
+    #: substitui o gate: o loop passa a chamar o ORQUESTRADOR (que coordena
+    #: engine, estrategia, executor e validador) em vez da politica inline.
+    challenge_integration: Any | None = None
     #: Gate de challenge ANTES da escrita (opt-in). `None` = comportamento
     #: legado, byte a byte: o loop so descobre desafio quando o proprio submit
     #: falha. Ligado por `ENABLE_CHALLENGE_RESOLUTION=true` no runtime de
@@ -319,8 +323,8 @@ class ApplicationLoop:
                     upload_writes_used=upload_writes_used,
                 )
 
-            gate = self._evaluate_challenge_gate(session, application)
-            if gate is not None and gate.blocking:
+            handled = self._handle_challenge(session, application)
+            if handled is not None:
                 # Desafio presente e nao resolvido dentro do orcamento: nao ha
                 # escrita, nao ha intent armada, e o estado e retomavel.
                 return self._challenge_blocked(
@@ -330,7 +334,7 @@ class ApplicationLoop:
                     live,
                     journey,
                     phases,
-                    gate=gate,
+                    gate=handled,
                     resume_sha256=material.resume_sha256,
                     answers_fingerprint=journey.answers_fingerprint(),
                 )
@@ -413,6 +417,26 @@ class ApplicationLoop:
 
     # -- challenge antes da escrita --------------------------------------------
 
+    def _handle_challenge(self, session: Any, application: Application) -> Any | None:
+        """Trata o desafio antes da escrita. Devolve o bloqueio, ou `None`.
+
+        Com `challenge_integration` configurada, quem decide e o ORQUESTRADOR
+        (observar -> resolver -> validar, com limites e journal). Sem ela, cai no
+        gate, que e a politica inline — mesmo comportamento observavel, um caminho
+        a menos para manter quando a integracao estiver ligada em producao.
+        """
+        integration = self.runtime.challenge_integration
+        page = getattr(session, "page", None)
+        if integration is not None and page is not None:
+            result = integration.handle(page, application.id)
+            if not result.blocks:
+                return None
+            return result
+        gate = self._evaluate_challenge_gate(session, application)
+        if gate is not None and gate.blocking:
+            return gate
+        return None
+
     def _evaluate_challenge_gate(self, session: Any, application: Application):
         """Observa o estado anti-bot antes de qualquer autorizacao de escrita.
 
@@ -458,12 +482,14 @@ class ApplicationLoop:
         provedor recusou uma candidatura entregue".
         """
         state = self._state(application.id)
+        payload = gate.as_journal() if hasattr(gate, "as_journal") else {}
+        decision = getattr(gate, "decision", "") or payload.get("final_status", "")
         if ApplicationState.NEEDS_CAPTCHA in TRANSITIONS[state]:
             application = service.transition(
                 application.id,
                 ApplicationState.NEEDS_CAPTCHA,
                 "challenge_detected_before_submit",
-                gate.as_journal() if hasattr(gate, "as_journal") else {},
+                payload,
             )
         return self._result(
             application,
@@ -476,7 +502,7 @@ class ApplicationLoop:
             answers_fingerprint=answers_fingerprint,
             terminal=False,
             requires_action=ApplicationState.NEEDS_CAPTCHA.value,
-            reason=f"challenge_before_submit:{getattr(gate, 'decision', '')}",
+            reason=f"challenge_before_submit:{decision}",
         )
 
     # -- destino da submissao --------------------------------------------------

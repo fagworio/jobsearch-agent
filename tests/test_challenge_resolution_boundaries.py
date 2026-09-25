@@ -27,6 +27,14 @@ import pytest
 REPO_ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "challenge_resolution"
 
+#: Módulos do agente autorizados a conhecer o pacote de resolução.
+#:
+#: A Fase 6 fez a integração DE PROPÓSITO: o loop deixou de ter a política
+#: inline e passou a chamar o orquestrador. A regra, então, não é mais "não
+#: importe" — é "só a integração importa". Loop, browser, submissão e handoff
+#: continuam proibidos, e é isso que mantém a fronteira auditável.
+ALLOWED_IMPORTERS = frozenset({"challenge_integration.py", "challenge_strategies.py"})
+
 FORBIDDEN_MODULE_PREFIXES: tuple[str, ...] = (
     "jobsearch_agent",
     "playwright",
@@ -134,20 +142,33 @@ def test_the_feature_flag_defaults_to_disabled() -> None:
     assert EnvironmentSettings().challenge_resolution_enabled is False
 
 
-def test_the_agent_does_not_import_the_package_yet() -> None:
-    """Enquanto a flag está desligada, nenhum módulo do agente importa o pacote.
+def test_only_the_integration_module_imports_the_resolution_package() -> None:
+    """A fronteira virou permissão explícita de UM módulo.
 
-    Este teste é o que impede a Fase 0 de virar comportamento por acidente: no
-    dia em que a integração acontecer (Fase 6), ele muda de propósito e com
-    revisão — não por descuido.
+    Antes da Fase 6 o teste dizia "o agente não importa o pacote" — e isso era a
+    verdade. A integração aconteceu, então a regra fica mais útil: qualquer
+    módulo do agente que passe a importar o pacote precisa ser adicionado aqui,
+    com revisão. Loop, browser, submissão e handoff seguem proibidos.
     """
     agent_root = REPO_ROOT / "src" / "jobsearch_agent"
     offenders: list[Path] = []
     for path in agent_root.rglob("*.py"):
-        # `mentions` nao serve: comentario e docstring PODEM citar o pacote
-        # (a flag e o plano vivem neles). O que nao pode e importar.
+        if path.name in ALLOWED_IMPORTERS:
+            continue
         for target in _imports(path):
             if target == "challenge_resolution" or target.startswith("challenge_resolution."):
                 offenders.append(path.relative_to(REPO_ROOT))
                 break
-    assert offenders == [], f"o agente já importa o pacote: {offenders}"
+    assert offenders == [], f"módulos fora da lista de integração importam o pacote: {offenders}"
+
+
+def test_the_allowed_importers_are_exactly_the_ones_that_import_it() -> None:
+    """A lista não pode apodrecer: um módulo autorizado que deixe de importar
+    (ou um novo que passe a importar) tem de aparecer na revisão."""
+    agent_root = REPO_ROOT / "src" / "jobsearch_agent"
+    importers = set()
+    for path in agent_root.rglob("*.py"):
+        if any(target.startswith("challenge_resolution") for target in _imports(path)):
+            importers.add(path.name)
+
+    assert importers == set(ALLOWED_IMPORTERS), importers

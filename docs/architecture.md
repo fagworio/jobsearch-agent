@@ -41,6 +41,7 @@ divergir do contrato.
 | 2 | `challenge_resolution` não importa `jobsearch_agent` | import-linter + AST + runtime |
 | 3 | `challenge_resolution` não alcança `browser`/`submission`/`submission_browser` | import-linter |
 | 4 | execução (relay do operador, handoff) não depende do motor de resolução | import-linter |
+| 4b | só `challenge_integration.py` e `challenge_strategies.py` importam o pacote de resolução | AST walker + invariantes |
 | 5 | o handoff assíncrono não fala com o browser (direto, não transitivo) | import-linter |
 | 6 | `challenge_guard` não importa nenhuma das camadas de cima | AST sobre o artefato instalado |
 | 7 | nomes proibidos não aparecem como código, `__all__`, anotação ou campo de dataclass | AST walker |

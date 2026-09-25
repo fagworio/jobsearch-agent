@@ -195,18 +195,28 @@ def test_invariant_the_runtime_never_exposes_write_types():
     assert forbidden.isdisjoint(set(dir(challenge_resolution)))
 
 
-def test_invariant_the_agent_never_imports_the_resolution_package():
-    """A integração acontece pelo gate, não por import do pacote novo."""
+def test_invariant_the_agent_only_knows_the_package_through_the_integration():
+    """Fase 6: a integração existe, e é explícita.
+
+    O invariante deixou de ser "não importe" e passou a ser "só a integração
+    importa": loop, browser e submissão não podem ganhar conhecimento do motor
+    de resolução por conveniência.
+    """
     import ast
     from pathlib import Path as _Path
 
+    allowed = {"challenge_integration.py", "challenge_strategies.py"}
     root = _Path(__file__).parents[2] / "src" / "jobsearch_agent"
+    offenders: list[str] = []
     for path in root.rglob("*.py"):
+        if path.name in allowed:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("challenge_resolution"):
-                pytest.fail(f"{path.name} importa {node.module}")
+                offenders.append(path.name)
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("challenge_resolution"):
-                        pytest.fail(f"{path.name} importa {alias.name}")
+                        offenders.append(path.name)
+    assert offenders == [], f"fora da integração: {offenders}"
