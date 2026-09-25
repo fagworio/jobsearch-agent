@@ -71,11 +71,19 @@ def test_the_challenge_guard_is_importable_with_the_expected_api():
 # --- JSA-CG-002: a ACL e a unica ponte ----------------------------------------
 
 
-def test_only_the_acl_imports_the_challenge_guard():
-    """Se outro modulo importar a biblioteca, a independencia do dominio acabou."""
+#: Modulos que SAO a ACL: so eles falam com a biblioteca do guard.
+#:
+#: `challenges.py` e a ACL historica (proveniencia do desafio para o handoff);
+#: `challenge_acl.py` e a ACL de 0.2.0, que traduz `ChallengeRuntimeResult` para
+#: `ApplicationState`. A lista e explicita de proposito: qualquer OUTRO modulo
+#: que importe o guard quebra o build.
+ACL_MODULES = frozenset({"challenges.py", "challenge_acl.py"})
+
+
+def _guard_importers(root: Path) -> list[str]:
     offenders: list[str] = []
-    for source in SOURCE.rglob("*.py"):
-        if source.name == "challenges.py":
+    for source in root.rglob("*.py"):
+        if source.name in ACL_MODULES:
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -85,7 +93,21 @@ def test_only_the_acl_imports_the_challenge_guard():
             elif isinstance(node, ast.ImportFrom):
                 if (node.module or "").split(".")[0] == "challenge_guard":
                     offenders.append(f"{source.name}:{node.lineno}")
+    return offenders
+
+
+def test_only_the_acl_imports_the_challenge_guard():
+    """Se outro modulo importar a biblioteca, a independencia do dominio acabou."""
+    offenders = _guard_importers(SOURCE)
     assert not offenders, f"import direto fora da ACL: {offenders}"
+
+
+def test_the_acl_scan_is_not_vacuous(tmp_path: Path):
+    """Selfcheck: uma varredura que nunca encontra nada nao protege nada."""
+    (tmp_path / "offender.py").write_text("import challenge_guard\n", encoding="utf-8")
+    assert _guard_importers(tmp_path) == ["offender.py:1"]
+    (tmp_path / "challenge_acl.py").write_text("import challenge_guard\n", encoding="utf-8")
+    assert _guard_importers(tmp_path) == ["offender.py:1"], "a propria ACL pode importar o guard"
 
 
 def test_the_executor_has_no_anti_bot_knowledge():

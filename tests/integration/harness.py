@@ -24,6 +24,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from jobsearch_agent.challenge_gate import PreSubmitChallengeGate
+from jobsearch_agent.challenge_integration import ChallengeIntegration
 from jobsearch_agent.live_view import LiveViewRelay
 
 
@@ -171,6 +172,7 @@ def build_harness(
     poll_seconds: float = 0.05,
     on_wait: Callable[[Any], None] | None = None,
     orchestrator_handling: bool = False,
+    runtime_handling: bool = False,
     api_channel: bool = False,
 ) -> Harness:
     """Monta o loop real contra o ATS controlado.
@@ -216,7 +218,23 @@ def build_harness(
             if seconds > 0:
                 time.sleep(seconds)
 
-        if orchestrator_handling:
+        if runtime_handling:
+            # CG-036: o ciclo inteiro pelo runtime PUBLICO do guard. O host fica
+            # com a janela (relay + trava), o relogio entre rounds e a evidencia
+            # duravel; o guard fica com observacao, rounds, limites e validacao.
+            from jobsearch_agent.challenge_acl import runtime_for_page
+
+            integration = ChallengeIntegration(
+                runtime_factory=lambda page: runtime_for_page(
+                    page, wait_seconds=captcha_wait, poll_seconds=poll_seconds
+                ),
+                relay=relay,
+                database=database,
+                wait_seconds=captcha_wait,
+                sleep=sleep,
+                poll_seconds=poll_seconds,
+            )
+        elif orchestrator_handling:
             integration = _orchestrator_integration(relay, captcha_wait, poll_seconds, on_wait, observed, database)
         else:
             gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)

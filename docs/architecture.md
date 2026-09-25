@@ -60,6 +60,29 @@ Há dois caminhos de intervenção humana, com papéis distintos — e nomes dis
   janela do gate, com o controle de envio desabilitado e clique sobre ele recusado. É execução, não
   decisão — por isso não importa o motor de resolução (regra 4).
 
+## A ACL do challenge-guard (0.2.0)
+
+Desde a 0.2.0 o guard publica o ciclo inteiro (`ChallengeRuntime`: observação, rounds, orçamento,
+revalidação, proveniência). O agente consome essa API e traduz o resultado **num lugar só**,
+`jobsearch_agent/challenge_acl.py`:
+
+```text
+ChallengeRuntimeResult  →  ChallengeAclOutcome  →  ApplicationState
+```
+
+A divisão de responsabilidade é explícita porque cada lado tem o que o outro não tem:
+
+| Guard | Host |
+| --- | --- |
+| observa (DOM/frames/rede/respostas) e classifica | abre a janela do operador e trava o submit |
+| conta rounds e limites; revalida com observação nova | possui o relógio entre rounds |
+| produz proveniência de conjunto fechado | persiste a evidência durável da janela |
+| nunca escreve | autoriza UMA escrita e observa o POST |
+
+A ACL não inventa estado forte: `unknown` deixa a Application onde está, e `expired` é retomável
+(nunca rejeição). `provider_rejected` só vira `NEEDS_HUMAN_CAPTCHA` quando **houve** escrita — a
+diferença é o que aconteceu com a candidatura, não o veredito do desafio.
+
 ## Os dois canais de escrita
 
 A candidatura sai por **um** de dois caminhos, e a decisão é dado declarado (`submission_policy`),

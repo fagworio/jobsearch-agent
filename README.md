@@ -589,6 +589,31 @@ Os invariantes rodam em todo PR no job `invariants` (`.github/workflows/runtime-
 `submission_writes <= 1` em todos os cenários, `resume_sha256`/`answers_fingerprint` imutáveis,
 nenhuma tentativa afirmando entrega que o guard não fez, e a fronteira arquitetural preservada.
 
+### O loop sobre o runtime público do guard (challenge-guard 0.2.0)
+
+O `challenge-guard` 0.2.0 publica o ciclo inteiro — observação, rounds, limites, revalidação e
+proveniência — numa API só (`ChallengeRuntime`). O agente passou a consumir essa API em vez de
+remontar a composição por conta própria, e a tradução para o domínio dele vive num módulo único:
+
+```text
+ChallengeRuntimeResult  →  challenge_acl.ChallengeAclOutcome  →  ApplicationState
+```
+
+| Guard (0.2.0) | Host |
+| --- | --- |
+| observação (DOM, frames, rede, respostas) | janela do operador + trava de submit (`LiveViewRelay`) |
+| rounds, orçamento (tempo/total) e revalidação | relógio entre rounds (`--captcha-wait`, `poll_seconds`) |
+| classificação e proveniência (conjunto fechado) | evidência durável no banco (`challenge_handoff_started/finished/abandoned`) |
+| nunca escreve, nunca clica, nunca resolve | autoriza **uma** escrita e observa o POST |
+
+Regras da ACL, testadas campo a campo: `human_required`/`expired` → `NEEDS_CAPTCHA` (retomável);
+`provider_rejected` **com** escrita → `NEEDS_HUMAN_CAPTCHA` (handoff); **sem** escrita → retomável;
+`resolved_externally` → segue; `unknown` → **nenhum** estado forte (não se escreve sem saber).
+
+A ponte CDP (`PlaywrightCdpSession`) permite observar um browser que o host lançou por fora —
+inclusive um aberto por outra ferramenta — sem trocar de observer. O `challenge-guard` **não** é
+dependência de browser aqui: ele instala zero dependências e só importa Playwright quando conecta.
+
 ### Resolução de challenge: Fase 0 (contratos, e desligada)
 
 O `challenge-guard` continua sendo **olhos** — detecta, classifica, observa e decide, e nunca

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .challenge_acl import ChallengeAclOutcome, map_runtime_result
+
 from challenge_resolution.models import OrchestratorOutcome
 from challenge_resolution.protocols import ChallengeObserver, ChallengeResolutionOrchestrator
 from challenge_resolution.session import ChallengeSession
@@ -55,6 +57,9 @@ class ChallengeHandlingResult:
     handling: ChallengeHandling
     outcome: OrchestratorOutcome | None = None
     observation: ChallengeObservation | None = None
+    #: Caminho CG-036 (runtime publico do guard). Presente = a projecao do
+    #: journal vem da ACL, que ja e um conjunto fechado de campos.
+    acl: ChallengeAclOutcome | None = None
 
     @property
     def blocks(self) -> bool:
@@ -62,6 +67,8 @@ class ChallengeHandlingResult:
 
     def as_journal(self) -> dict[str, object]:
         """Projecao segura para o journal: sem segredo, sem material da pagina."""
+        if self.acl is not None:
+            return self.acl.as_journal()
         if self.outcome is not None:
             return {
                 "handling": self.handling.value,
@@ -94,12 +101,18 @@ ObserverFactory = Callable[[Any], ChallengeObserver]
 OrchestratorFactory = Callable[[ChallengeObserver], ChallengeResolutionOrchestrator]
 
 
+#: Como o runtime publico nasce a partir da PAGINA (CG-036).
+RuntimeFactory = Callable[[Any], Any]
+
+
 @dataclass
 class ChallengeIntegration:
     """Coordena o tratamento de um desafio dentro de uma execucao do loop."""
 
-    observer_factory: ObserverFactory
-    orchestrator_factory: OrchestratorFactory
+    #: Caminho 0.1.0 (observer + orquestrador do host). Opcional desde que exista
+    #: `runtime_factory`: o host de 0.2.0 usa o runtime publico do guard.
+    observer_factory: ObserverFactory | None = None
+    orchestrator_factory: OrchestratorFactory | None = None
     relay: LiveViewRelay | None = None
     #: Desabilita o controle de envio durante a janela do operador.
     lock_submit: bool = True
@@ -109,10 +122,21 @@ class ChallengeIntegration:
     database: Any | None = None
     #: Quanto se espera a pessoa, em segundos. Vai para a evidencia.
     wait_seconds: float = 0.0
+    #: CG-036: quando presente, o guard entrega o ciclo (observacao, rounds,
+    #: revalidacao, limites) pela API publica e a ACL traduz o resultado.
+    runtime_factory: RuntimeFactory | None = None
+    #: Espera entre rounds, na thread do loop. O RELOGIO e do host: e ele que
+    #: sabe quanto tempo uma pessoa leva, e o guard so conta rounds e limites.
+    sleep: Callable[[float], None] | None = None
+    poll_seconds: float = 0.0
 
     def handle(self, page: Any, application_id: str) -> ChallengeHandlingResult:
         if page is None:
             return ChallengeHandlingResult(ChallengeHandling.NOT_DETECTED)
+        if self.runtime_factory is not None:
+            return self._handle_with_runtime(page, application_id)
+        if self.observer_factory is None or self.orchestrator_factory is None:  # pragma: no cover - config
+            raise ValueError("challenge integration requires observer/orchestrator factories or a runtime factory")
 
         observer = self.observer_factory(page)
         observation = observer.observe(phase=ChallengePhase.PRE_SUBMIT)
@@ -151,6 +175,67 @@ class ChallengeIntegration:
 
         handling = ChallengeHandling.CONTINUE if outcome.resolved else ChallengeHandling.NEEDS_HUMAN
         result = ChallengeHandlingResult(handling, outcome=outcome, observation=observation)
+        self._record(application_id, HANDOFF_FINISHED, dict(result.as_journal()))
+        return result
+
+    def _handle_with_runtime(self, page: Any, application_id: str) -> ChallengeHandlingResult:
+        """O ciclo inteiro pelo runtime publico do guard (CG-036).
+
+        O host continua dono de tres coisas que o guard nao tem como ter: a
+        JANELA do operador (relay + trava de submit), o RELOGIO entre rounds e a
+        evidencia duravel no banco dele. O guard e dono da observacao, dos
+        rounds, dos limites e da validacao.
+        """
+        runtime = self.runtime_factory(page)
+        runtime.start()
+        # `evaluate()` devolve a DECISAO; o retrato factual esta no monitor — e e
+        # o retrato que diz se havia desafio para tratar.
+        runtime.evaluate(phase=ChallengePhase.PRE_SUBMIT)
+        observation = runtime.monitor.observation
+        if observation is None or not observation.detected:
+            runtime.close()
+            return ChallengeHandlingResult(ChallengeHandling.NOT_DETECTED, observation=observation)
+
+        acl = map_runtime_result(runtime.result())
+        self._record(application_id, HANDOFF_STARTED, {
+            "session_id": acl.session_id,
+            "provider": acl.provider,
+            "challenge_type": acl.challenge_type,
+            "wait_seconds": round(float(self.wait_seconds), 3),
+        })
+        locked = False
+        if self.relay is not None and self.lock_submit:
+            self.relay.lock_submit(page)
+            locked = True
+        try:
+            while acl.waitable:
+                if self.sleep is not None:
+                    # A pessoa age AQUI. O guard reobserva depois.
+                    self.sleep(self.poll_seconds)
+                if self.relay is not None:
+                    # E e AQUI que os comandos dela sao executados: sem o drain na
+                    # thread da pagina, a janela existiria e nao deixaria ninguem
+                    # agir — a trava de submit so e util com a janela funcionando.
+                    self.relay.drain(page)
+                if runtime.budget.expired():
+                    runtime.timed_out()
+                    break
+                runtime.revalidate(phase=ChallengePhase.PRE_SUBMIT)
+                acl = map_runtime_result(runtime.result())
+        except Exception:
+            # O guard promete nao levantar; se levantar, o host para — retomavel.
+            runtime.close()
+            raise
+        finally:
+            if locked and self.relay is not None:
+                try:
+                    self.relay.restore_submit(page)
+                except Exception:  # pragma: no cover - restaurar nunca derruba o loop
+                    pass
+        runtime.close()
+
+        handling = ChallengeHandling.CONTINUE if acl.resolved else ChallengeHandling.NEEDS_HUMAN
+        result = ChallengeHandlingResult(handling, observation=observation, acl=acl)
         self._record(application_id, HANDOFF_FINISHED, dict(result.as_journal()))
         return result
 
