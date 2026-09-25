@@ -119,7 +119,11 @@ def test_the_mypy_ring_bites_where_it_is_declared() -> None:
             "def probe(value: str) -> int:\n    return value\n",
             encoding="utf-8",
         )
-        result = _run([sys.executable, "-m", "mypy"])
+        # `_tool` pula quando a ferramenta nao esta instalada: nem todo job de CI
+        # instala mypy, e um teste que exige a ferramenta transformaria "job sem
+        # mypy" em "contrato quebrado" — foi assim que este arquivo derrubou
+        # tres workflows (full-runtime, core-runtime e contract-selfcheck).
+        result = _run(_tool("mypy"))
         assert result.returncode != 0, "mypy nao percebeu o erro deliberado no pacote protegido"
         assert "return-value" in (result.stdout + result.stderr)
     finally:
@@ -135,7 +139,7 @@ def test_the_mypy_ring_ignores_the_legacy_it_declares_as_legacy() -> None:
             "from typing import Any\n\n\ndef legacy(value: Any) -> Any:\n    return value\n",
             encoding="utf-8",
         )
-        result = _run([sys.executable, "-m", "mypy"])
+        result = _run(_tool("mypy"))
         assert result.returncode == 0, f"o legado declarado voltou a ser ruido: {result.stdout[-400:]}"
     finally:
         MYPY_LEGACY_FILE.unlink(missing_ok=True)

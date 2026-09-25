@@ -82,7 +82,7 @@ jobs:
       - name: Install project and tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . "pytest>=8,<9" "import-linter>=2.0,<3.0"
+          python -m pip install -e . "pytest>=8,<9" "import-linter>=2.0,<3.0" "mypy>=1.11,<2.0"
       # Um contrato que nunca falha nao testa nada: aqui uma violacao deliberada
       # tem de ser detectada por cada anel.
       - name: Contracts are not vacuous
