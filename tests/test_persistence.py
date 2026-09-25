@@ -70,12 +70,17 @@ def test_legacy_database_migrates_idempotently_without_merging_weak_matches(tmp_
     connection.close()
 
     db = Database(path)
-    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6]
+    # Banco LEGADO abre, migra o que falta e nao repete o que ja foi aplicado.
+    # A lista inclui a migracao das sessoes de browser (BHOST-001): uma versao
+    # nova entra aqui de forma explicita, para que "migrou tudo" seja uma
+    # afirmacao verificada e nao uma suposicao.
+    expected = [1, 2, 3, 4, 5, 6, 7]
+    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == expected
     assert len(db.list_jobs()) == 2
     assert db.list_duplicate_candidates()
     db.close()
     db = Database(path)
-    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6]
+    assert [row[0] for row in db.connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == expected
     assert len(db.list_jobs()) == 2
     db.close()
 
