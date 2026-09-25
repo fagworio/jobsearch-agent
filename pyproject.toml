@@ -26,7 +26,7 @@ pypdf = ">=5.0,<7.0"
 # JSA-CG-020: artefato publicado, fixado por SHA IMUTAVEL do release v0.1.0.
 # Nao usar branch: um branch tornaria o build nao reproduzivel. O SHA tambem
 # protege contra tag movida no remoto, que uma tag sozinha nao impede.
-challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev = "eae056ee7e42a31a8297c2f95bacd734859c12a7" }
+challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev = "9d2bfe4f7e4ab772d665c36be38c261b43cea18e" }
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=8.0,<9.0"
