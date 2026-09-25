@@ -19,7 +19,6 @@ Se um destes quebrar, a fase seguinte está construída sobre areia.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import inspect
 import re
@@ -286,12 +285,16 @@ def test_risk_assessment_is_human_required_for_turnstile() -> None:
 # --- 8. NullStrategy e StrategyRegistry -----------------------------------
 
 def test_null_strategy_never_invents_success() -> None:
-    """A estratégia nula devolve UNSUPPORTED — nunca um sucesso inventado."""
+    """A estratégia nula devolve UNSUPPORTED — nunca um sucesso inventado.
+
+    Contratos da Fase 1 são SÍNCRONOS (decisão registrada em `protocols.py`):
+    a chamada é direta, não por `asyncio.run`.
+    """
     strategy = NullStrategy()
     observation = _observation()
     session = ChallengeSession.from_observation(observation, application_id="application-1")
 
-    result = asyncio.run(strategy.resolve(session, observation, executor=None))  # type: ignore[arg-type]
+    result = strategy.resolve(session, observation, executor=None)  # type: ignore[arg-type]
 
     assert result.status is ResolutionStatus.UNSUPPORTED
     assert result.strategy_name == "null"

@@ -39,11 +39,25 @@ SUBMISSION_WRITE_COUNT: Final[str] = "submission_write_count"
 #: Estado final da Application, para fechar a leitura do journal.
 FINAL_STATE: Final[str] = "final_state"
 
+#: A orquestração começou a rodar para esta sessão.
+CHALLENGE_ORCHESTRATION_STARTED: Final[str] = "challenge_orchestration_started"
+
+#: O engine levantou exceção (contida: nunca chega ao loop).
+CHALLENGE_ENGINE_EXCEPTION: Final[str] = "challenge_engine_exception"
+
+#: O validator levantou exceção (contida).
+CHALLENGE_VALIDATOR_EXCEPTION: Final[str] = "challenge_validator_exception"
+
+#: Não havia desafio na primeira observação: saída antecipada, rounds=0.
+CHALLENGE_EARLY_EXIT_NO_CHALLENGE: Final[str] = "challenge_early_exit_no_challenge"
+
+#: Um limite duro foi atingido (rounds, timeout ou duração).
+CHALLENGE_LIMIT_EXCEEDED: Final[str] = "challenge_limit_exceeded"
+
 #: Ordem esperada no journal de uma orquestração completa. Serve de contrato
 #: para a Fase 7 (observabilidade) e para os testes da Fase 1.
 ORCHESTRATION_SEQUENCE: Final[tuple[str, ...]] = (
-    CHALLENGE_DETECTED,
-    CHALLENGE_RESOLUTION_STARTED,
+    CHALLENGE_ORCHESTRATION_STARTED,
     CHALLENGE_ROUND_STARTED,
     CHALLENGE_RESOLUTION_RESULT,
     CHALLENGE_VALIDATION_RESULT,
@@ -53,8 +67,35 @@ ORCHESTRATION_SEQUENCE: Final[tuple[str, ...]] = (
     FINAL_STATE,
 )
 
+#: Conjunto FECHADO dos eventos deste subsistema. Um `kind` fora daqui é typo,
+#: e o journal de teste recusa.
+ALL_EVENT_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        CHALLENGE_DETECTED,
+        CHALLENGE_ORCHESTRATION_STARTED,
+        CHALLENGE_RESOLUTION_STARTED,
+        CHALLENGE_RESOLUTION_RESULT,
+        CHALLENGE_VALIDATION_RESULT,
+        CHALLENGE_ROUND_STARTED,
+        CHALLENGE_ROUND_FINISHED,
+        CHALLENGE_ORCHESTRATION_FINISHED,
+        CHALLENGE_ENGINE_EXCEPTION,
+        CHALLENGE_VALIDATOR_EXCEPTION,
+        CHALLENGE_EARLY_EXIT_NO_CHALLENGE,
+        CHALLENGE_LIMIT_EXCEEDED,
+        SUBMISSION_WRITE_COUNT,
+        FINAL_STATE,
+    }
+)
+
 __all__ = [
+    "ALL_EVENT_KINDS",
     "CHALLENGE_DETECTED",
+    "CHALLENGE_ORCHESTRATION_STARTED",
+    "CHALLENGE_ENGINE_EXCEPTION",
+    "CHALLENGE_VALIDATOR_EXCEPTION",
+    "CHALLENGE_EARLY_EXIT_NO_CHALLENGE",
+    "CHALLENGE_LIMIT_EXCEEDED",
     "CHALLENGE_RESOLUTION_STARTED",
     "CHALLENGE_RESOLUTION_RESULT",
     "CHALLENGE_VALIDATION_RESULT",

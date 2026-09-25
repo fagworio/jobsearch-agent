@@ -600,11 +600,16 @@ um contrato que nunca falha não testa nada. Tudo isso roda em todo PR no job `A
 Flags reservadas para as fases seguintes, todas desligadas: `ENABLE_CHALLENGE_HANDOFF`,
 `ENABLE_CHALLENGE_EXTERNAL_RESOLVER`, `ENABLE_CHALLENGE_AUTO_SUBMIT_AFTER`.
 
-O que **não** existe ainda: estratégia concreta, orquestrador executável, integração com o
-`ApplicationLoop` e qualquer forma de interação com desafio. A decisão aberta da Fase 1 é
-sync/async: os protocols são `async`, mas o executor concreto fala com a API **síncrona** do
-Playwright, que recusa ser chamada dentro de um event loop — a saída é executor em thread,
-orquestrador síncrono, ou migração para a API async.
+O que existe desde a Fase 1: **orquestrador executável** (`ChallengeOrchestrator`, com limites de
+rounds/tempo/duração, journal de cada transição e proveniência auditável), `Journal` (Protocol +
+in-memory + null) e o validador de observação (`MonitorValidator`). Contratos são **síncronos** —
+decisão registrada em `protocols.py`: o produto inteiro, a API do Playwright usada pelo agente e o
+gate/relay de produção são síncronos, e um contrato `async` só seria executável movendo o loop (com
+journal e banco) para uma thread dona da sessão.
+
+O que **não** existe ainda: estratégia concreta de interação (a resolução de um checkbox por clique,
+por exemplo), integração do orquestrador no `ApplicationLoop` (hoje o gate faz essa política inline)
+e o executor real entregue ao engine.
 
 ## Princípios
 

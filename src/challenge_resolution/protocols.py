@@ -10,11 +10,12 @@ consome o orçamento de submissão. Verificado por
 `tests/test_challenge_resolution_boundaries.py` e pelo contrato do
 import-linter.
 
-Nota de runtime (decidir antes da Fase 1): estes contratos são `async`, como no
-plano, mas o executor concreto fala com a **API síncrona** do Playwright, que
-levanta erro se chamada dentro de um event loop. A Fase 1 precisa escolher:
-executor em thread (`asyncio.to_thread`), orquestrador síncrono, ou migração
-para a API async do Playwright. O contrato não esconde essa decisão.
+DECISÃO DE RUNTIME (Fase 1): estes contratos são **síncronos**. O produto inteiro
+é síncrono, a API do Playwright usada pelo agente é síncrona e presa à thread, e
+o gate/relay que já rodam em produção são síncronos. Um contrato `async` só seria
+executável movendo o loop (com journal e banco) para uma thread dona da sessão —
+arquitetura que não foi decidida. Se ela for decidida, a mudança é mecânica:
+quatro assinaturas em `protocols.py` mais as implementações.
 """
 
 from __future__ import annotations
@@ -28,7 +29,30 @@ from .models import (
     ValidationResult,
 )
 from .session import ChallengeSession
-from .types import ChallengeObservation
+from .types import ChallengeObservation, ChallengePhase
+
+
+# ---------------------------------------------------------------------------
+# Observador — percepção pura, satisfeita pelo `challenge-guard`
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class ChallengeObserver(Protocol):
+    """Quem sabe responder "há desafio agora?".
+
+    O `ChallengeMonitor` do `challenge-guard` satisfaz este Protocol sem
+    adapter: `observe(self, *, phase=..., **extras)`. Declarar o Protocol (em vez
+    de receber `object`) é o que permite `mypy --strict` cobrir o orquestrador —
+    e não cria ciclo algum, porque o pacote já depende do guard.
+    """
+
+    def observe(
+        self,
+        *,
+        phase: ChallengePhase = ChallengePhase.PRE_SUBMIT,
+        browser_write_sent: bool = False,
+        submission_confirmed: bool = False,
+    ) -> ChallengeObservation: ...
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +74,7 @@ class ChallengeInteractionExecutor(Protocol):
     A assinatura NÃO recebe `AuthorizedWrite`.
     """
 
-    async def execute(
+    def execute(
         self,
         session: ChallengeSession,
         observation: ChallengeObservation,
@@ -76,7 +100,7 @@ class ResolutionStrategy(Protocol):
 
     def supports(self, observation: ChallengeObservation) -> bool: ...
 
-    async def resolve(
+    def resolve(
         self,
         session: ChallengeSession,
         observation: ChallengeObservation,
@@ -97,7 +121,7 @@ class ChallengeResolutionEngine(Protocol):
     apropriado.
     """
 
-    async def resolve(
+    def resolve(
         self,
         session: ChallengeSession,
         observation: ChallengeObservation,
@@ -117,7 +141,7 @@ class ChallengeResolutionValidator(Protocol):
     interage com a UI — apenas observa.
     """
 
-    async def validate(
+    def validate(
         self,
         session: ChallengeSession,
         *,
@@ -138,4 +162,4 @@ class ChallengeResolutionOrchestrator(Protocol):
     Engine, Executor e Validator.
     """
 
-    async def run(self, session: ChallengeSession) -> OrchestratorOutcome: ...
+    def run(self, session: ChallengeSession) -> OrchestratorOutcome: ...

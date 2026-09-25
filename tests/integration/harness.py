@@ -102,6 +102,20 @@ class Harness:
     def run(self, *, submit: bool = True):
         return self.loop.run(self.job_id, submit=submit)
 
+    def runtime_session(self):
+        """Abre a sessão do loop (browser + página) sem rodar o loop.
+
+        Existe para os testes que precisam observar a página real — o
+        orquestrador, por exemplo — sem depender de um ciclo completo.
+        """
+        job = self.database.get_job(self.job_id)
+        adapter = __import__("jobsearch_agent.ats", fromlist=["GreenhouseAdapter"]).GreenhouseAdapter()
+        session = self.loop.runtime.open_session(job, adapter)
+        # Quem navega ate o formulario e o orquestrador do loop; ao abrir a
+        # sessao por fora, a navegacao e nossa — senao a pagina fica em branco.
+        session.open(self.loop.runtime.form_url(job, adapter))
+        return session
+
     def application(self):
         return self.database.get_application_for_job(self.job_id)
 

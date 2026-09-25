@@ -15,11 +15,14 @@ divergir do contrato.
             │  pode importar
             ▼
 ┌──────────────────────────────┐
-│  challenge_resolution        │  contratos da resolução: orquestrador,
-│  (Protocols, modelos,        │  engine, estratégias, validador. NÃO importa
-│   capability matrix)         │  jobsearch_agent e não alcança a fronteira
-│                              │  de escrita (AuthorizedWrite / SubmissionIntent
-│                              │  / NetworkWriteGuard).
+│  challenge_resolution        │  contratos + orquestrador executável
+│  (orquestrador, journal,     │  (limites, rounds, journal, proveniência),
+│   validador, Protocols,      │  validador de observação, engine/estratégias e
+│   capability matrix)         │  capability matrix. NÃO importa jobsearch_agent
+│                              │  e não alcança a fronteira de escrita
+│                              │  (AuthorizedWrite / SubmissionIntent /
+│                              │  NetworkWriteGuard). Contratos SÍNCRONOS:
+│                              │  o produto e a API do Playwright são síncronos.
 └───────────┬──────────────────┘
             │  pode importar
             ▼

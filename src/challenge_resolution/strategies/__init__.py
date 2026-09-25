@@ -8,6 +8,6 @@ entram depois, cada uma com feature flag própria e com a `CapabilityMatrix`
 atualizada — nunca por padrão ligadas.
 """
 
-from .base import NullStrategy, StrategyRegistry
+from .base import NullExecutor, NullStrategy, StrategyRegistry
 
-__all__ = ["NullStrategy", "StrategyRegistry"]
+__all__ = ["NullExecutor", "NullStrategy", "StrategyRegistry"]

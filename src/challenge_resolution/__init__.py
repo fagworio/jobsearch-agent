@@ -21,6 +21,7 @@ Invariantes arquiteturais (verificados por
   - nada aqui emite evento nem toca browser: a Fase 0 é invisível em runtime.
 """
 
+from .journal import InMemoryJournal, Journal, NullJournal
 from .models import (
     CapabilityLookup,
     OrchestratorLimits,
@@ -29,9 +30,11 @@ from .models import (
     ResolutionResult,
     ValidationResult,
 )
+from .orchestrator import ChallengeOrchestrator
 from .provenance import ChallengeProvenance
 from .protocols import (
     ChallengeInteractionExecutor,
+    ChallengeObserver,
     ChallengeResolutionEngine,
     ChallengeResolutionOrchestrator,
     ChallengeResolutionValidator,
@@ -55,9 +58,15 @@ __all__ = [
     # provenance / session
     "ChallengeProvenance",
     "ChallengeSession",
+    # orquestração e observabilidade
+    "ChallengeOrchestrator",
+    "Journal",
+    "InMemoryJournal",
+    "NullJournal",
     # protocols
     "ChallengeResolutionEngine",
     "ChallengeInteractionExecutor",
+    "ChallengeObserver",
     "ChallengeResolutionValidator",
     "ChallengeResolutionOrchestrator",
     "ResolutionStrategy",

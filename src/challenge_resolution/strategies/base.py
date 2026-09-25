@@ -12,10 +12,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from ..models import ResolutionResult
+from ..models import ResolutionPayload, ResolutionResult
 from ..protocols import ChallengeInteractionExecutor, ResolutionStrategy
 from ..session import ChallengeSession
 from ..types import ChallengeObservation, ResolutionStatus, enum_value
+
+
+class NullExecutor:
+    """Executor nulo: nao interage com nada.
+
+    Existe para que o orquestrador possa ser montado sem executor (testes e
+    composicao sem browser). Tentar usar LEVANTA: um executor nulo que
+    silenciosamente nao faz nada esconderia uma estrategia mal ligada.
+    """
+
+    def execute(
+        self,
+        session: ChallengeSession,
+        observation: ChallengeObservation,
+        payload: ResolutionPayload,
+    ) -> None:
+        raise NotImplementedError("NullExecutor nao interage. Entregue um executor real.")
 
 
 class NullStrategy:
@@ -30,7 +47,7 @@ class NullStrategy:
     def supports(self, observation: ChallengeObservation) -> bool:
         return True
 
-    async def resolve(
+    def resolve(
         self,
         session: ChallengeSession,
         observation: ChallengeObservation,
