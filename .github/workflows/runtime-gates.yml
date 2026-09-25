@@ -66,6 +66,27 @@ jobs:
       - name: Run local Playwright dry-run fixture
         run: make test-browser-runtime
 
+  invariants:
+    name: invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project, test, and browser dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . "pytest>=8,<9" playwright
+          python -m playwright install --with-deps chromium
+      # O portao que precisa passar ANTES de ligar ENABLE_CHALLENGE_RESOLUTION em
+      # qualquer ambiente: escritas <= 1, material imutavel, sem reenvio depois de
+      # submissao entregue, e fronteira arquitetural preservada.
+      - name: Challenge/submit invariants
+        run: make test-invariants
+      - name: Architecture boundary (contracts and imports)
+        run: python -m pytest -q tests/test_challenge_resolution_contracts.py tests/test_challenge_resolution_boundaries.py tests/test_challenge_gate.py
+
   gmail-runtime:
     name: gmail-runtime
     runs-on: ubuntu-latest

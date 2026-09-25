@@ -61,6 +61,7 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "requires_libreoffice: test requires LibreOffice for PDF resume conversion",
+    "integration: integracao entre o ApplicationLoop e o challenge-guard (Chromium real)",
 ]
 pythonpath = ["src"]
 

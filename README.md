@@ -498,6 +498,42 @@ O registry de skills vive em [knowledge/skills.yaml](knowledge/skills.yaml), com
 empacotável em `src/jobsearch_agent/knowledge/skills.yaml`. Matching segue aliases exatos,
 matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 
+### Challenge antes do POST: observar, esperar a pessoa, e então escrever
+
+Com `ENABLE_CHALLENGE_RESOLUTION=true`, o loop passa a **olhar** o estado anti-bot antes de autorizar
+a escrita:
+
+```bash
+ENABLE_CHALLENGE_RESOLUTION=true jobsearch-agent apply-to-completion <job-id> \
+    --no-headless --submit --captcha-wait 120
+```
+
+O gate (`src/jobsearch_agent/challenge_gate.py`) pergunta ao `challenge-guard` se há desafio. Se
+houver, ele **espera** — dentro de `--captcha-wait` segundos — que o guard passe a reportar
+`resolved_externally`, que é o que acontece quando a pessoa resolve na janela visível. Ele não
+clica, não digita, não copia token e não injeta nada: quem interage é a pessoa. Sem resolução dentro
+do orçamento, o loop para em **`NEEDS_CAPTCHA`** (retomável) com **zero escritas** — nem intent, nem
+tentativa registrada.
+
+| situação | estado | escritas |
+| --- | --- | --- |
+| desafio antes do POST, resolvido a tempo | `SUBMITTED` | 1 |
+| desafio antes do POST, ninguém resolve | `NEEDS_CAPTCHA` (retomável) | 0 |
+| provedor recusa a submissão entregue | `NEEDS_HUMAN_CAPTCHA` | 1 |
+
+`NEEDS_HUMAN_CAPTCHA` entrou em "nunca reenviar": uma submissão **foi entregue** e não confirmada,
+então reabrir o browser sozinho não é permitido. Quem reabre é uma pessoa, com
+`application retry-submit` — e é isso que a suíte `tests/integration/` prova, cenário por cenário,
+contra o `challenge-guard` real num Chromium real:
+
+```bash
+make test-invariants      # ou: .venv/bin/python -m pytest tests/integration -m integration
+```
+
+Os invariantes rodam em todo PR no job `invariants` (`.github/workflows/runtime-gates.yml`):
+`submission_writes <= 1` em todos os cenários, `resume_sha256`/`answers_fingerprint` imutáveis,
+nenhuma tentativa afirmando entrega que o guard não fez, e a fronteira arquitetural preservada.
+
 ### Resolução de challenge: Fase 0 (contratos, e desligada)
 
 O `challenge-guard` continua sendo **olhos** — detecta, classifica, observa e decide, e nunca

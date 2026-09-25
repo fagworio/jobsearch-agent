@@ -12,6 +12,7 @@ from .analysis import analyze_requirements, build_strategy, calculate_fit, detec
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
 from .ats import GreenhouseAdapter, adapter_for
 from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
+from .challenge_gate import PreSubmitChallengeGate
 from .challenges import JobsearchChallengeAdapter
 from .config import Settings
 from .coordinator import SubmissionCoordinator
@@ -813,6 +814,7 @@ def loop_runtime(
     allow_advance: bool = True,
     max_cycles: int = 5,
     submission_timeout: float = 45.0,
+    captcha_wait: float = 0.0,
     session_factory: Any | None = None,
     policy_factory: Any | None = None,
     adapter_resolver: Any | None = None,
@@ -915,11 +917,18 @@ def loop_runtime(
             str(getattr(form, "action", "") or ""),
         )
 
+    # Gate de challenge ANTES da escrita: opt-in por
+    # `ENABLE_CHALLENGE_RESOLUTION=true`. Desligado (o padrao) o loop nem
+    # instancia o gate, e o comportamento e exatamente o de antes.
+    challenge_gate = PreSubmitChallengeGate() if settings.challenge_resolution_enabled else None
+
     return LoopRuntime(
         adapter_for=adapter_resolver or resolve_adapter,
         form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
         upload_permits=upload_permits,
         submission_destination=submission_destination,
+        challenge_gate=challenge_gate,
+        challenge_wait_seconds=max(float(captcha_wait), 0.0),
         profile=candidate_profile,
         preferences=preferences,
         answers=answers,

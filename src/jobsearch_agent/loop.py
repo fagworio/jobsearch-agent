@@ -64,6 +64,12 @@ NO_RESEND_STATES: frozenset[ApplicationState] = frozenset(
         ApplicationState.SUBMITTED,
         ApplicationState.SUBMIT_UNKNOWN,
         ApplicationState.AWAITING_SUBMISSION_CONFIRMATION,
+        # Uma submissao FOI ENTREGUE e o provedor nao confirmou. Reabrir o
+        # browser sozinho refaria o preenchimento e tentaria a intent de novo —
+        # e a intent recusa (`requires READY_TO_APPLY`), o que virava excecao
+        # crua em vez de resultado. Quem reabre e uma pessoa, por
+        # `application retry-submit`. Achado no cenario 2 da suite de integracao.
+        ApplicationState.NEEDS_HUMAN_CAPTCHA,
     }
 )
 
@@ -176,6 +182,15 @@ class LoopRuntime:
     #: preenchimento e SOMENTE quando o envio foi autorizado: com `--submit`
     #: ausente nada e armado e o dry-run continua sem nenhuma escrita.
     upload_permits: Callable[[Job, ATSAdapter, str], list[Any]] | None = None
+    #: Gate de challenge ANTES da escrita (opt-in). `None` = comportamento
+    #: legado, byte a byte: o loop so descobre desafio quando o proprio submit
+    #: falha. Ligado por `ENABLE_CHALLENGE_RESOLUTION=true` no runtime de
+    #: producao. Ele apenas observa — nunca interage com o desafio.
+    challenge_gate: Any | None = None
+    #: Orcamento (segundos) para uma PESSOA resolver o desafio na janela visivel
+    #: enquanto o gate reobserva. Zero = uma unica leitura, e desafio presente
+    #: ja bloqueia.
+    challenge_wait_seconds: float = 0.0
     #: Endereco que RECEBE o POST da candidatura. Nao e o mesmo que a URL do
     #: formulario: no Workable o formulario vive em
     #: `/apply.workable.com/<account>/j/<shortcode>/apply` e a candidatura sobe
@@ -298,6 +313,22 @@ class ApplicationLoop:
                     upload_writes_used=upload_writes_used,
                 )
 
+            gate = self._evaluate_challenge_gate(session, application)
+            if gate is not None and gate.blocking:
+                # Desafio presente e nao resolvido dentro do orcamento: nao ha
+                # escrita, nao ha intent armada, e o estado e retomavel.
+                return self._challenge_blocked(
+                    service,
+                    application,
+                    job,
+                    live,
+                    journey,
+                    phases,
+                    gate=gate,
+                    resume_sha256=material.resume_sha256,
+                    answers_fingerprint=journey.answers_fingerprint(),
+                )
+
             form = live.form
             # `form_fingerprint` = superficie FINAL onde o Submit acontece.
             # `answers_fingerprint` = TODAS as respostas, de TODAS as etapas.
@@ -373,6 +404,74 @@ class ApplicationLoop:
             return int(getattr(guard, "authorized_writes_used", 0) or 0)
         except (TypeError, ValueError):  # pragma: no cover - defensivo
             return 0
+
+    # -- challenge antes da escrita --------------------------------------------
+
+    def _evaluate_challenge_gate(self, session: Any, application: Application):
+        """Observa o estado anti-bot antes de qualquer autorizacao de escrita.
+
+        Sem gate configurado, devolve `None` e nada muda. Com gate, a unica
+        acao no browser e a observacao do `challenge-guard`.
+        """
+        gate = self.runtime.challenge_gate
+        page = getattr(session, "page", None)
+        if gate is None or page is None:
+            return None
+        try:
+            return gate.evaluate(page, wait_seconds=self.runtime.challenge_wait_seconds)
+        except Exception as exc:  # gate quebrado nunca libera escrita
+            from .challenge_gate import ChallengeGateResult
+
+            return ChallengeGateResult(
+                blocking=True,
+                resolved=False,
+                decision=f"gate_failed:{type(exc).__name__}",
+                provider="",
+                rounds=0,
+                waited_seconds=0.0,
+            )
+
+    def _challenge_blocked(
+        self,
+        service: ApplicationService,
+        application: Application,
+        job: Job,
+        live: LiveApplicationResult,
+        journey: ApplicationJourney,
+        phases: list[str],
+        *,
+        gate: Any,
+        resume_sha256: str,
+        answers_fingerprint: str,
+    ) -> ApplicationLoopResult:
+        """Persiste `NEEDS_CAPTCHA` e para, com zero escritas.
+
+        `NEEDS_CAPTCHA` (e nao `NEEDS_HUMAN_CAPTCHA`): nada saiu do browser, e
+        este estado e retomavel por desenho (`NEEDS_CAPTCHA -> PREPARING`). O
+        vocabulario distingue "a etapa foi interrompida por um desafio" de "o
+        provedor recusou uma candidatura entregue".
+        """
+        state = self._state(application.id)
+        if ApplicationState.NEEDS_CAPTCHA in TRANSITIONS[state]:
+            application = service.transition(
+                application.id,
+                ApplicationState.NEEDS_CAPTCHA,
+                "challenge_detected_before_submit",
+                gate.as_journal() if hasattr(gate, "as_journal") else {},
+            )
+        return self._result(
+            application,
+            job,
+            status="NEEDS_CAPTCHA",
+            live=live,
+            journey=journey,
+            phases=phases,
+            resume_sha256=resume_sha256,
+            answers_fingerprint=answers_fingerprint,
+            terminal=False,
+            requires_action=ApplicationState.NEEDS_CAPTCHA.value,
+            reason=f"challenge_before_submit:{getattr(gate, 'decision', '')}",
+        )
 
     # -- destino da submissao --------------------------------------------------
 

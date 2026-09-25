@@ -257,6 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
     completion_parser.add_argument("--no-advance", dest="advance", action="store_false", default=True, help="não clicar em Next/Continue")
     completion_parser.add_argument("--max-cycles", type=int, default=5)
     completion_parser.add_argument("--timeout", type=float, default=45.0)
+    completion_parser.add_argument(
+        "--captcha-wait",
+        type=float,
+        default=0.0,
+        help=(
+            "segundos para uma PESSOA resolver um desafio na janela visivel antes de "
+            "desistir; so tem efeito com ENABLE_CHALLENGE_RESOLUTION=true"
+        ),
+    )
     completion_parser.set_defaults(handler="apply_to_completion")
 
     status = sub.add_parser("status", help="lista vagas e estados")
@@ -530,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                     allow_advance=args.advance,
                     max_cycles=args.max_cycles,
                     submission_timeout=args.timeout,
+                    captcha_wait=args.captcha_wait,
                 )
                 result = ApplicationLoop(db, runtime).run(args.job_id, submit=args.submit)
                 application = db.get_application(result.application_id)
