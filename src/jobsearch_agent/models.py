@@ -474,6 +474,15 @@ class SubmissionAttempt:
     started_at: str = field(default_factory=now_iso)
     completed_at: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: Marcador CONSERVADOR da fronteira de risco: a partir deste instante o passo
+    #: seguinte pode habilitar a unica escrita autorizada. Sua presenca significa
+    #: que, depois de um crash, NAO e mais seguro afirmar que nada saiu.
+    #:
+    #:   vazio      -> a escrita ainda nao era possivel (retomar e seguro)
+    #:   preenchido -> o POST pode ter saido (nunca reenviar; reconciliar)
+    #:
+    #: Monotonico: `"" -> timestamp`, uma vez. Nunca volta, nunca troca.
+    write_possible_at: str = ""
 
 
 @domain_dataclass

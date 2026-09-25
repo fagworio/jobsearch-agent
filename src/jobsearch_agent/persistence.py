@@ -582,6 +582,199 @@ class Database:
         ).fetchall()
         return [SubmissionAttempt(**json.loads(row[0])) for row in rows]
 
+    def mark_write_possible(self, attempt_id: str, *, at: str = "") -> bool:
+        """Cruza a fronteira de risco da escrita: monotono e condicional.
+
+        Nao e "SELECT, modifica em Python, UPDATE sem condicao": a condicao viaja
+        no proprio UPDATE (`attempt_json=?`), e antes dela o payload e conferido
+        (`status == SUBMITTING` e `write_possible_at == ""`). Quem perde a
+        corrida recebe `False`, e uma fronteira cruzada nunca e descruzada.
+        """
+        moment = at or now_iso()
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT attempt_json FROM submission_attempts WHERE id=?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            payload = json.loads(row[0])
+            if str(payload.get("status", "")) != "SUBMITTING":
+                return False
+            if str(payload.get("write_possible_at", "")):
+                return False
+            payload["write_possible_at"] = moment
+            cursor = self.connection.execute(
+                "UPDATE submission_attempts SET attempt_json=? WHERE id=? AND attempt_json=?",
+                (canonical_json(payload), attempt_id, row[0]),
+            )
+            return cursor.rowcount == 1
+
+    RECOVERY_NOOP = "noop"
+    RECOVERY_PRE_WRITE = "pre_write"
+    RECOVERY_UNKNOWN = "unknown"
+
+    def raw_attempt_json(self, attempt_id: str) -> str:
+        """JSON BRUTO da tentativa. E a unica forma de distinguir chave ausente de
+        chave vazia — o dataclass apaga essa diferenca."""
+        row = self.connection.execute("SELECT attempt_json FROM submission_attempts WHERE id=?", (attempt_id,)).fetchone()
+        return str(row[0]) if row else ""
+
+    def rearm_submission_intent(self, intent_id: str, *, expires_at: str) -> bool:
+        """`INTERRUPTED -> CREATED` com validade nova, coluna e JSON juntos.
+
+        Compare-and-swap: exige a intent em INTERRUPTED nas DUAS representacoes.
+        Quem chama ja provou (fora daqui) que a tentativa morreu antes da
+        fronteira de escrita; esta funcao apenas nao aceita outro estado.
+        """
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT status, intent_json FROM submission_intents WHERE id=?", (intent_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            status, raw = str(row[0]), row[1]
+            payload = json.loads(raw)
+            if status != "INTERRUPTED" or str(payload.get("status", "")) != "INTERRUPTED":
+                return False
+            payload["status"] = "CREATED"
+            payload["authorized_at"] = ""
+            payload["expires_at"] = expires_at
+            cursor = self.connection.execute(
+                "UPDATE submission_intents SET status='CREATED', intent_json=?, authorized_at='', expires_at=? "
+                "WHERE id=? AND status='INTERRUPTED' AND intent_json=?",
+                (canonical_json(payload), expires_at, intent_id, raw),
+            )
+            return cursor.rowcount == 1
+
+    #: Como a fronteira de escrita foi encontrada no JSON BRUTO da tentativa.
+    BOUNDARY_LEGACY_MISSING = "legacy_missing"
+    BOUNDARY_PRE_WRITE = "pre_write"
+    BOUNDARY_CROSSED = "crossed"
+
+    def recover_stranded_submission(self, application_id: str) -> str:
+        """Unica interpretacao autorizada de uma tentativa estranda (P0.2).
+
+        Le o `attempt_json` BRUTO, porque o dataclass apaga a diferenca entre
+        "chave ausente" (tentativa LEGACY: pode ter chegado ao POST sem marcar
+        nada) e "chave presente e vazia" (codigo novo, comprovadamente antes da
+        fronteira):
+
+            chave AUSENTE        -> unknown     (ambiguo; nunca retry)
+            chave presente == ""  -> pre_write  (seguro: INTERRUPTED -> REVIEW_REACHED)
+            chave presente != ""  -> unknown    (fronteira cruzada; reconciliar)
+
+        Tudo numa transacao, com CAS em attempt, intent e Application: cada UPDATE
+        condicional exige `rowcount == 1`, e perder a corrida LEVANTA (revertendo
+        tudo) em vez de registrar um recovery que nao tomou posse do estado.
+        Validar antes, e nao reparar: divergencia entre JSON e coluna e corrupcao
+        de exactly-once, e nao se resolve por heuristica.
+        """
+        with self.connection:
+            recovered_at = now_iso()
+            row = self.connection.execute("SELECT state FROM applications WHERE id=?", (application_id,)).fetchone()
+            if row is None:
+                raise ApplicationConflict(f"application not found: {application_id}")
+            if str(row[0]) != ApplicationState.SUBMITTING.value:
+                return self.RECOVERY_NOOP
+
+            attempts = self.connection.execute(
+                "SELECT id, intent_id, attempt_json FROM submission_attempts WHERE application_id=? AND status=?",
+                (application_id, ApplicationState.SUBMITTING.value),
+            ).fetchall()
+            if len(attempts) != 1:
+                raise ApplicationConflict(
+                    f"stranded SUBMITTING requires exactly one active attempt, found {len(attempts)} (refusing to guess)"
+                )
+            attempt_id, intent_id, raw = attempts[0]
+            payload = json.loads(raw)
+            if (
+                str(payload.get("status", "")) != ApplicationState.SUBMITTING.value
+                or str(payload.get("id", "")) != str(attempt_id)
+                or str(payload.get("intent_id", "")) != str(intent_id)
+                or str(payload.get("application_id", "")) != str(application_id)
+            ):
+                raise ApplicationConflict(f"attempt {attempt_id}: attempt_json diverges from its columns; refusing to recover")
+
+            intent_row = self.connection.execute(
+                "SELECT status, intent_json FROM submission_intents WHERE id=?", (intent_id,)
+            ).fetchone()
+            if intent_row is None:
+                raise ApplicationConflict(f"attempt {attempt_id} references unknown intent {intent_id}")
+            intent_status, intent_raw = str(intent_row[0]), intent_row[1]
+            intent_payload = json.loads(intent_raw)
+            if (
+                intent_status != ApplicationState.SUBMITTING.value
+                or str(intent_payload.get("status", "")) != ApplicationState.SUBMITTING.value
+                or str(intent_payload.get("id", "")) != str(intent_id)
+                or str(intent_payload.get("application_id", "")) != str(application_id)
+            ):
+                raise ApplicationConflict(f"intent {intent_id}: state diverges (column vs json); refusing to recover")
+
+            if "write_possible_at" not in payload:
+                boundary, branch = self.BOUNDARY_LEGACY_MISSING, self.RECOVERY_UNKNOWN
+            elif str(payload.get("write_possible_at") or ""):
+                boundary, branch = self.BOUNDARY_CROSSED, self.RECOVERY_UNKNOWN
+            else:
+                boundary, branch = self.BOUNDARY_PRE_WRITE, self.RECOVERY_PRE_WRITE
+
+            if branch == self.RECOVERY_PRE_WRITE:
+                attempt_status = intent_target = "INTERRUPTED"
+                application_status, event = ApplicationState.REVIEW_REACHED.value, "submission_recovery_pre_write"
+                action = "resume"
+            else:
+                attempt_status = intent_target = application_status = ApplicationState.SUBMIT_UNKNOWN.value
+                event, action = "submission_recovery_unknown", "reconcile_confirmation"
+
+            payload["status"] = attempt_status
+            payload["completed_at"] = recovered_at
+            cursor = self.connection.execute(
+                "UPDATE submission_attempts SET status=?, attempt_json=?, completed_at=? "
+                "WHERE id=? AND status=? AND attempt_json=?",
+                (attempt_status, canonical_json(payload), recovered_at, attempt_id, ApplicationState.SUBMITTING.value, raw),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict("submission recovery lost attempt race")
+
+            intent_payload["status"] = intent_target
+            cursor = self.connection.execute(
+                "UPDATE submission_intents SET status=?, intent_json=? WHERE id=? AND status=? AND intent_json=?",
+                (intent_target, canonical_json(intent_payload), intent_id, ApplicationState.SUBMITTING.value, intent_raw),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict("submission recovery lost intent race")
+
+            cursor = self.connection.execute(
+                "UPDATE applications SET state=?, updated_at=? WHERE id=? AND state=?",
+                (application_status, recovered_at, application_id, ApplicationState.SUBMITTING.value),
+            )
+            if cursor.rowcount != 1:
+                raise ApplicationConflict("submission recovery lost application race")
+
+            self.connection.execute(
+                """INSERT INTO application_events
+                   (application_id, from_state, to_state, event, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    application_id,
+                    ApplicationState.SUBMITTING.value,
+                    application_status,
+                    event,
+                    canonical_json(
+                        {
+                            "attempt_id": attempt_id,
+                            "attempt_status": attempt_status,
+                            "branch": branch,
+                            "write_boundary": boundary,
+                            "write_possible_at_present": "write_possible_at" in json.loads(raw),
+                            "recovered_at": recovered_at,
+                            "action": action,
+                        }
+                    ),
+                    recovered_at,
+                ),
+            )
+        return branch
+
     def begin_submission_attempt(self, intent: SubmissionIntent, attempt: SubmissionAttempt, event: ApplicationEvent) -> None:
         """Persist the attempt before network I/O and advance state atomically."""
         with self.connection:
