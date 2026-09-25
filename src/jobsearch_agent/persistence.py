@@ -613,6 +613,39 @@ class Database:
     RECOVERY_PRE_WRITE = "pre_write"
     RECOVERY_UNKNOWN = "unknown"
 
+    def raw_attempt_json(self, attempt_id: str) -> str:
+        """JSON BRUTO da tentativa. E a unica forma de distinguir chave ausente de
+        chave vazia — o dataclass apaga essa diferenca."""
+        row = self.connection.execute("SELECT attempt_json FROM submission_attempts WHERE id=?", (attempt_id,)).fetchone()
+        return str(row[0]) if row else ""
+
+    def rearm_submission_intent(self, intent_id: str, *, expires_at: str) -> bool:
+        """`INTERRUPTED -> CREATED` com validade nova, coluna e JSON juntos.
+
+        Compare-and-swap: exige a intent em INTERRUPTED nas DUAS representacoes.
+        Quem chama ja provou (fora daqui) que a tentativa morreu antes da
+        fronteira de escrita; esta funcao apenas nao aceita outro estado.
+        """
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT status, intent_json FROM submission_intents WHERE id=?", (intent_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            status, raw = str(row[0]), row[1]
+            payload = json.loads(raw)
+            if status != "INTERRUPTED" or str(payload.get("status", "")) != "INTERRUPTED":
+                return False
+            payload["status"] = "CREATED"
+            payload["authorized_at"] = ""
+            payload["expires_at"] = expires_at
+            cursor = self.connection.execute(
+                "UPDATE submission_intents SET status='CREATED', intent_json=?, authorized_at='', expires_at=? "
+                "WHERE id=? AND status='INTERRUPTED' AND intent_json=?",
+                (canonical_json(payload), expires_at, intent_id, raw),
+            )
+            return cursor.rowcount == 1
+
     #: Como a fronteira de escrita foi encontrada no JSON BRUTO da tentativa.
     BOUNDARY_LEGACY_MISSING = "legacy_missing"
     BOUNDARY_PRE_WRITE = "pre_write"

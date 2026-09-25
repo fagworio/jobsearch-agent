@@ -612,9 +612,50 @@ class SubmissionService:
         )
         existing = self.database.get_submission_intent(intent.id)
         if existing:
-            return existing
+            if existing.status != "INTERRUPTED":
+                return existing
+            # Identidade deterministica + tentativa morta ANTES da fronteira de
+            # escrita: a mesma intent pode ser rearmada. Sem prova persistida, o
+            # rearm falha fechado (nunca cria intent nova para "escapar").
+            self._rearm_interrupted_intent(existing, expires_at=intent.expires_at)
+            return self.database.get_submission_intent(intent.id) or intent
         self.database.save_submission_intent(intent)
         return intent
+
+    def _rearm_interrupted_intent(self, existing: SubmissionIntent, *, expires_at: str) -> None:
+        application = self.database.get_application(existing.application_id)
+        if application is None or application.state not in {
+            ApplicationState.READY_TO_APPLY,
+            ApplicationState.REVIEW_REACHED,
+        }:
+            raise SubmissionBoundaryError(
+                "interrupted intent can only be rearmed from READY_TO_APPLY/REVIEW_REACHED, "
+                f"got {application.state.value if application else 'no application'}"
+            )
+        attempts = [item for item in self.database.list_submission_attempts(existing.application_id) if item.intent_id == existing.id]
+        if len(attempts) != 1:
+            raise SubmissionBoundaryError(
+                f"interrupted intent rearm requires exactly one attempt for this intent, found {len(attempts)}"
+            )
+        attempt = attempts[0]
+        if attempt.status != "INTERRUPTED":
+            raise SubmissionBoundaryError(
+                f"interrupted intent rearm requires an INTERRUPTED attempt, got {attempt.status}"
+            )
+        # A prova tem de estar no JSON BRUTO: chave presente E vazia. Ausente =
+        # registro LEGACY (pode ter chegado ao POST); preenchida = fronteira
+        # cruzada. Nenhum dos dois rearma.
+        payload = json.loads(self.database.raw_attempt_json(attempt.id) or "{}")
+        if "write_possible_at" not in payload:
+            raise SubmissionBoundaryError(
+                "interrupted intent rearm refused: attempt predates the write boundary marker"
+            )
+        if str(payload.get("write_possible_at") or ""):
+            raise SubmissionBoundaryError(
+                "interrupted intent rearm refused: the write boundary was crossed"
+            )
+        if not self.database.rearm_submission_intent(existing.id, expires_at=expires_at):  # pragma: no cover - CAS
+            raise SubmissionBoundaryError("interrupted intent rearm lost the race")
 
     def save_review_snapshot(self, snapshot: ReviewSnapshot) -> ReviewSnapshot:
         self.database.save_review_snapshot(snapshot)
