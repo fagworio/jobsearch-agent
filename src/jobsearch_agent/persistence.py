@@ -305,6 +305,40 @@ def _migration_006_confirmation_evidence(connection: sqlite3.Connection) -> None
     )
 
 
+def _migration_007_browser_sessions(connection: sqlite3.Connection) -> None:
+    """Sessoes de browser do host persistente (BHOST-001).
+
+    Estado OPERACIONAL CORRENTE, nao historico: o historico fica em
+    `application_events` (`browser_session_*`), como ja acontece com
+    `applications` e `application_events`. Nenhuma coluna guarda URL, cookie,
+    token ou conteudo de formulario — a sessao do Chromium carrega isso, e o
+    banco nao.
+
+    O indice parcial e a invariante "no maximo UMA sessao viva por Application",
+    garantida pelo banco e nao por convencao de quem chama.
+    """
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS browser_sessions (
+            session_id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            cdp_host TEXT NOT NULL,
+            cdp_port INTEGER NOT NULL,
+            owner_pid INTEGER NOT NULL,
+            owner_instance_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL DEFAULT '',
+            closed_at TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    connection.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_browser_session_live
+           ON browser_sessions(application_id)
+           WHERE state IN ('STARTING','READY','STOPPING')"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "initial", _migration_001_initial),
     (2, "namespaced_identities_and_duplicate_candidates", _migration_002_identities),
@@ -312,6 +346,9 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (4, "submission_boundary", _migration_004_submission_boundary),
     (5, "human_handoff_packages", _migration_005_human_handoff),
     (6, "confirmation_evidence", _migration_006_confirmation_evidence),
+    # BHOST-001 entra DEPOIS das existentes: `schema_migrations` e chave primaria
+    # por versao, e reaproveitar o numero 5 quebrava toda abertura de banco.
+    (7, "browser_sessions", _migration_007_browser_sessions),
 )
 
 
@@ -789,6 +826,70 @@ class Database:
             record["accepted"] = bool(row[1])
             result.append(record)
         return result
+
+    # -- sessoes de browser do host (BHOST-001) ---------------------------------
+
+    _BROWSER_COLUMNS = (
+        "session_id",
+        "application_id",
+        "state",
+        "cdp_host",
+        "cdp_port",
+        "owner_pid",
+        "owner_instance_id",
+        "created_at",
+        "last_seen_at",
+        "expires_at",
+        "closed_at",
+    )
+
+    def save_browser_session(self, session: Mapping[str, Any]) -> None:
+        """Insere a sessao. O indice parcial recusa uma segunda sessao viva."""
+        values = [session.get(column, "") for column in self._BROWSER_COLUMNS]
+        placeholders = ",".join("?" for _ in self._BROWSER_COLUMNS)
+        self.connection.execute(
+            f"INSERT INTO browser_sessions({','.join(self._BROWSER_COLUMNS)}) VALUES ({placeholders})",
+            values,
+        )
+        self.connection.commit()
+
+    def get_browser_session(self, session_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            f"SELECT {','.join(self._BROWSER_COLUMNS)} FROM browser_sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        return dict(zip(self._BROWSER_COLUMNS, row)) if row else None
+
+    def live_browser_session_for_application(self, application_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            f"SELECT {','.join(self._BROWSER_COLUMNS)} FROM browser_sessions "
+            "WHERE application_id=? AND state IN ('STARTING','READY','STOPPING')",
+            (application_id,),
+        ).fetchone()
+        return dict(zip(self._BROWSER_COLUMNS, row)) if row else None
+
+    def list_browser_sessions(self, application_id: str | None = None) -> list[dict[str, Any]]:
+        if application_id is None:
+            rows = self.connection.execute(
+                f"SELECT {','.join(self._BROWSER_COLUMNS)} FROM browser_sessions ORDER BY created_at"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                f"SELECT {','.join(self._BROWSER_COLUMNS)} FROM browser_sessions WHERE application_id=? ORDER BY created_at",
+                (application_id,),
+            ).fetchall()
+        return [dict(zip(self._BROWSER_COLUMNS, row)) for row in rows]
+
+    def update_browser_session(self, session_id: str, **fields: Any) -> dict[str, Any] | None:
+        allowed = {key: value for key, value in fields.items() if key in self._BROWSER_COLUMNS}
+        if allowed:
+            assignments = ",".join(f"{key}=?" for key in allowed)
+            self.connection.execute(
+                f"UPDATE browser_sessions SET {assignments} WHERE session_id=?",
+                (*allowed.values(), session_id),
+            )
+            self.connection.commit()
+        return self.get_browser_session(session_id)
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}
