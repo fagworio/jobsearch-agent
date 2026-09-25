@@ -21,13 +21,31 @@ FORBIDDEN_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _purge_ours() -> None:
-    for name in list(sys.modules):
-        if name.startswith(("jobsearch_agent", "challenge_resolution")):
-            del sys.modules[name]
+def _import_every_module(package: str) -> tuple[list[str], set[str]]:
+    """Importa o pacote E TODOS os submódulos, e devolve o que foi carregado.
+
+    A verificação é por DIFERENÇA (`antes` vs `depois`), não por ausência global:
+    outro teste da mesma sessão pode já ter importado `playwright`, e um anel que
+    depende de ordem passa sozinho e falha na suíte — que é pior do que não
+    existir. Importar só o `__init__` também não bastaria: um import dinâmico no
+    corpo de um módulo só executa quando aquele módulo é importado.
+    """
+    before = set(sys.modules)
+    imported = [package]
+    importlib.import_module(package)
+    package_file = importlib.import_module(package).__file__
+    assert package_file is not None
+    for module in pkgutil.walk_packages([str(Path(package_file).parent)], prefix=f"{package}."):
+        importlib.import_module(module.name)
+        imported.append(module.name)
+    return imported, set(sys.modules) - before
 
 
-def _import_every_module(package: str) -> list[str]:
+def _leaks(loaded: set[str]) -> list[str]:
+    return sorted(name for name in loaded if name.startswith(FORBIDDEN_PREFIXES))
+
+
+def _unused_legacy_helper() -> list[str]:
     """Importa o pacote E TODOS os submódulos.
 
     Importar só o `__init__` deixaria passar um import dinâmico que vive no
@@ -44,21 +62,16 @@ def _import_every_module(package: str) -> list[str]:
 
 @pytest.mark.parametrize("package", ["challenge_resolution"])
 def test_importing_the_package_loads_nothing_from_the_agent(package: str) -> None:
-    _purge_ours()
+    imported, loaded = _import_every_module(package)
 
-    imported = _import_every_module(package)
-
-    leaked = [name for name in sys.modules if name.startswith(FORBIDDEN_PREFIXES)]
-    assert leaked == [], f"{package} ({len(imported)} módulos) carregou: {leaked}"
+    assert _leaks(loaded) == [], f"{package} ({len(imported)} módulos) carregou: {_leaks(loaded)}"
 
 
 def test_importing_the_package_does_not_load_playwright() -> None:
     """O pacote de resolução não tem browser: nem por tabela."""
-    _purge_ours()
+    _imported, loaded = _import_every_module("challenge_resolution")
 
-    _import_every_module("challenge_resolution")
-
-    assert not [name for name in sys.modules if name.startswith("playwright")]
+    assert not [name for name in loaded if name.startswith("playwright")]
 
 
 @pytest.mark.parametrize("package", ["challenge_resolution"])

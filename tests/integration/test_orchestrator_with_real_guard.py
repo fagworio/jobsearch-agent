@@ -47,13 +47,17 @@ class _PageMonitor:
         phase: ChallengePhase = ChallengePhase.PRE_SUBMIT,
         browser_write_sent: bool = False,
         submission_confirmed: bool = False,
+        response_texts: object = (),
     ) -> ChallengeObservation:
-        # Os dois extras importam: o validador os usa para separar "recusa de
-        # candidatura entregue" de "desafio ainda pendente".
+        # TODOS os extras importam, e o Protocol declara os tres: o validador os
+        # usa para separar "recusa de candidatura entregue" de "desafio ainda
+        # pendente". Um wrapper que engole um deles transforma validacao em
+        # excecao — foi assim que o conflito apareceu, duas vezes.
         return self._monitor.observe(
             phase=phase,
             browser_write_sent=browser_write_sent,
             submission_confirmed=submission_confirmed,
+            response_texts=response_texts,
         )
 
     def decide(self, observation: ChallengeObservation):

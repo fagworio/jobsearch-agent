@@ -28,6 +28,7 @@ mesma direcao (ver `protocols.py`).
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -72,6 +73,12 @@ class ChallengeOrchestrator:
     #: fabrica um executor "de mentira" para o engine usar — quem interage e
     #: quem o chamador entregar (na Fase 6, o executor do browser).
     executor: ChallengeInteractionExecutor = field(default_factory=NullExecutor)
+    #: Já houve escrita autorizada nesta tentativa? O guard usa isto para separar
+    #: "recusou a candidatura" de "desafio ainda na frente".
+    browser_write_sent: bool = False
+    #: Erros que a própria página mostrou, colhidos pelo chamador. É o canal de
+    #: evidência da recusa (o guard casa marcadores de resposta contra eles).
+    page_errors: Sequence[str] = ()
 
     def run(self, session: ChallengeSession) -> OrchestratorOutcome:
         started_at = _utcnow()
@@ -150,6 +157,11 @@ class ChallengeOrchestrator:
                     session_id=session.session_id,
                     round=rounds,
                     status=validation.status.value,
+                    guard_decision_status=(
+                        validation.guard_decision_status.value
+                        if validation.guard_decision_status is not None
+                        else None
+                    ),
                 )
 
                 if validation.accepted:
@@ -196,9 +208,18 @@ class ChallengeOrchestrator:
             return None
 
     def _validate(self, session: ChallengeSession, rounds: int) -> ValidationResult | None:
-        """Chama o validator. Excecao vira `None`."""
+        """Chama o validator. Excecao vira `None`.
+
+        `browser_write_sent` e `page_errors` vem do que o chamador sabe sobre a
+        tentativa: sem eles o guard não consegue distinguir recusa de candidatura
+        entregue de desafio pendente (ver `protocols.py`).
+        """
         try:
-            return self.validator.validate(session)
+            return self.validator.validate(
+                session,
+                browser_write_sent=self.browser_write_sent,
+                page_errors=self.page_errors,
+            )
         except Exception as exc:
             self.journal.emit(
                 ev.CHALLENGE_VALIDATOR_EXCEPTION,

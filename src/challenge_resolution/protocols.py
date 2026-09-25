@@ -20,6 +20,7 @@ quatro assinaturas em `protocols.py` mais as implementações.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from .models import (
@@ -52,6 +53,7 @@ class ChallengeObserver(Protocol):
         phase: ChallengePhase = ChallengePhase.PRE_SUBMIT,
         browser_write_sent: bool = False,
         submission_confirmed: bool = False,
+        response_texts: Sequence[str] = (),
     ) -> ChallengeObservation: ...
 
 
@@ -139,6 +141,12 @@ class ChallengeResolutionValidator(Protocol):
 
     Implementações concretas usam o `ChallengeMonitor` do guard. O validator NÃO
     interage com a UI — apenas observa.
+
+    `page_errors` é o canal de EVIDÊNCIA: o texto que a própria página mostrou
+    (colhido pelo chamador). Sem ele, um envio entregue e recusado seria
+    indistinguível de um desafio ainda pendente — medido contra o guard real:
+    com a escrita e o texto, a decisão é `provider_rejected`; sem o texto, é
+    `observe`. Quem tem o material em mãos é o chamador; o validator só repassa.
     """
 
     def validate(
@@ -147,6 +155,7 @@ class ChallengeResolutionValidator(Protocol):
         *,
         browser_write_sent: bool = False,
         submission_confirmed: bool = False,
+        page_errors: Sequence[str] = (),
     ) -> ValidationResult: ...
 
 

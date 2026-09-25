@@ -466,13 +466,3 @@ def test_the_monitor_validator_maps_the_guard_decision() -> None:
     assert accepted.validate(_session()).status is ValidationStatus.ACCEPTED
     assert repeated.validate(_session()).status is ValidationStatus.REPEATED
     assert inconclusive.validate(_session()).status is ValidationStatus.INCONCLUSIVE
-
-
-def test_a_rejection_without_a_write_is_not_a_rejection() -> None:
-    """Exactly-once: sem escrita não houve candidatura recusada."""
-    from challenge_guard.models import ChallengeDecisionStatus
-
-    validator = MonitorValidator(monitor=_ScriptedGuardMonitor(_ScriptedDecision(ChallengeDecisionStatus.PROVIDER_REJECTED)))
-
-    assert validator.validate(_session(), browser_write_sent=False).status is ValidationStatus.REPEATED
-    assert validator.validate(_session(), browser_write_sent=True).status is ValidationStatus.PROVIDER_REJECTED

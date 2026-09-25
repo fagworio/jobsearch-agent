@@ -16,6 +16,7 @@ from typing import Mapping
 from .provenance import ChallengeProvenance, _assert_no_sensitive_fields
 from .types import (
     CapabilityStatus,
+    ChallengeDecisionStatus,
     ChallengeObservation,
     ChallengeProvider,
     ResolutionStatus,
@@ -97,11 +98,15 @@ class ValidationResult:
     """Veredito do validador após uma tentativa.
 
     Sempre carrega a `ChallengeObservation` que fundamentou a decisão, para que
-    o journal registre o "porquê" sem reobservar.
+    o journal registre o "porquê" sem reobservar — e a decisão do guard que
+    originou o status, para que `INCONCLUSIVE` não seja um saco sem fundo: um
+    dashboard distingue "o guard pediu para observar" de "o guard devolveu algo
+    que o validador não conhece".
     """
 
     status: ValidationStatus
     observation: ChallengeObservation
+    guard_decision_status: ChallengeDecisionStatus | None = None
 
     @property
     def accepted(self) -> bool:
