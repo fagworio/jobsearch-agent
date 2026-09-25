@@ -83,6 +83,11 @@ A ACL não inventa estado forte: `unknown` deixa a Application onde está, e `ex
 (nunca rejeição). `provider_rejected` só vira `NEEDS_HUMAN_CAPTCHA` quando **houve** escrita — a
 diferença é o que aconteceu com a candidatura, não o veredito do desafio.
 
+**CG-037 fica adiado, com nota:** o pacote `challenge_resolution` (orquestrador, engine, estratégias,
+matriz de capability) continua no repositório e ainda é o caminho do `ChallengeIntegration` quando
+`runtime_factory` não é injetado. Removê-lo é a etapa seguinte, e só depois de a 0.2.0 estar estável —
+apagar a duplicação antes disso trocaria uma duplicação verificada por um buraco não verificado.
+
 ## Os dois canais de escrita
 
 A candidatura sai por **um** de dois caminhos, e a decisão é dado declarado (`submission_policy`),
