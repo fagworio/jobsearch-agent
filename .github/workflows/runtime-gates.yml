@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install project and test dependencies
-        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<9"
+        run: python -m pip install --upgrade pip && python -m pip install -e . "pytest>=8,<9"
       - name: Run provider-neutral tests
         run: make test-core-runtime
       - name: Compile sources
@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install project and test dependencies
-        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<9"
+        run: python -m pip install --upgrade pip && python -m pip install -e . "pytest>=8,<9"
       - name: Run local LinkedIn fixtures only
         run: make test-linkedin-runtime
 
@@ -46,7 +46,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install project and test dependencies
-        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<9"
+        run: python -m pip install --upgrade pip && python -m pip install -e . "pytest>=8,<9"
       - name: Run controlled local submission tests
         run: make test-submission-runtime
 
@@ -61,7 +61,7 @@ jobs:
       - name: Install project, test, and browser dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . "pytest>=8,<9" playwright
+          python -m pip install -e . "pytest>=8,<9" playwright
           python -m playwright install --with-deps chromium
       - name: Run local Playwright dry-run fixture
         run: make test-browser-runtime
@@ -77,7 +77,7 @@ jobs:
       - name: Install project, test, and browser dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . "pytest>=8,<9" playwright
+          python -m pip install -e . "pytest>=8,<9" playwright
           python -m playwright install --with-deps chromium
       # O portao que precisa passar ANTES de ligar ENABLE_CHALLENGE_RESOLUTION em
       # qualquer ambiente: escritas <= 1, material imutavel, sem reenvio depois de
@@ -98,7 +98,7 @@ jobs:
       - name: Install project with the optional Gmail group
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . "pytest>=8,<9" \
+          python -m pip install -e . "pytest>=8,<9" \
             "google-api-python-client>=2.100,<3.0" "google-auth-oauthlib>=1.2,<2.0"
       - name: Run the confirmation source tests
         # Sem credencial e sem rede: o que se prova aqui e least privilege,

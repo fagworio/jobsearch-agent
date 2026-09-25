@@ -12,7 +12,7 @@ from .analysis import analyze_requirements, build_strategy, calculate_fit, detec
 from .application import ApplicationService, context_from_dict, evaluate_safety_gate, load_application_policy
 from .ats import GreenhouseAdapter, adapter_for
 from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
-from .challenge_gate import PreSubmitChallengeGate
+from .challenge_integration import production_challenge_integration
 from .live_view import LiveViewRelay
 from .challenges import JobsearchChallengeAdapter
 from .config import Settings
@@ -816,6 +816,7 @@ def loop_runtime(
     max_cycles: int = 5,
     submission_timeout: float = 45.0,
     captcha_wait: float = 0.0,
+    database: Database | None = None,
     session_factory: Any | None = None,
     policy_factory: Any | None = None,
     adapter_resolver: Any | None = None,
@@ -925,8 +926,23 @@ def loop_runtime(
     # mesma flag. Sem a flag, nenhum dos dois existe e o comportamento e o de
     # antes.
     live_view_relay = LiveViewRelay() if settings.challenge_resolution_enabled else None
-    challenge_gate = (
-        PreSubmitChallengeGate(relay=live_view_relay)
+    # CG-036: o caminho de PRODUCAO e o runtime publico do guard (0.2.0), via
+    # `ChallengeIntegration` — a mesma composicao que os testes de integracao
+    # exercitam. O gate inline continua existindo no modulo (e o caminho quando
+    # nao ha integracao), mas nao e mais o que o CLI monta: manter os dois
+    # ligados seria manter duas politicas paralelas, que e o que esta fase veio
+    # eliminar.
+    if settings.challenge_resolution_enabled and database is None:
+        # Fail-closed: com o tratamento de desafio ligado, a janela do operador
+        # PRECISA ser duravel (started/finished/abandoned). Sem banco, um processo
+        # que morre no meio nao deixa rastro — o defeito que a Fase 6 fechou.
+        raise ValueError("challenge resolution requires a database for the durable operator window")
+    challenge_integration = (
+        production_challenge_integration(
+            database=database,
+            relay=live_view_relay,
+            wait_seconds=max(float(captcha_wait), 0.0),
+        )
         if settings.challenge_resolution_enabled
         else None
     )
@@ -936,7 +952,8 @@ def loop_runtime(
         form_url=lambda job, adapter: provider_apply_url(adapter.provider, job.url),
         upload_permits=upload_permits,
         submission_destination=submission_destination,
-        challenge_gate=challenge_gate,
+        challenge_gate=None,
+        challenge_integration=challenge_integration,
         challenge_wait_seconds=max(float(captcha_wait), 0.0),
         live_view_relay=live_view_relay,
         profile=candidate_profile,

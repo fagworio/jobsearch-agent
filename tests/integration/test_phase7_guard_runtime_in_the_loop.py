@@ -100,11 +100,14 @@ def test_the_guard_runtime_blocks_with_zero_writes_when_nobody_resolves(tmp_path
         events = {event.event: event.payload for event in harness.database.list_application_events(harness.application().id)}
         blocked = events["challenge_detected_before_submit"]
         assert blocked["handling"] == "needs_human"
-        assert blocked["final_status"] == "human_required"
         # O orcamento do guard e o relogio do host: com 400ms de janela e passos
-        # de 50ms, ele reobservou varias vezes antes de desistir.
+        # de 50ms, ele reobservou varias vezes e ENTROU EM EXPIRACAO. O journal
+        # tem de dizer isso: antes o `acl` nao era remapeado depois de
+        # `timed_out()`, e o evento gravava `human_required`/`expired=false` —
+        # herdado do retrato anterior. O teste antigo consolidava esse defeito.
+        assert blocked["final_status"] == "expired", blocked
+        assert blocked["expired"] is True
         assert blocked["rounds"] >= 2, blocked
-        assert blocked["expired"] is False
         assert blocked["session_id"], "a proveniencia do guard precisa chegar ao host"
 
 

@@ -26,7 +26,7 @@ pypdf = ">=5.0,<7.0"
 # JSA-CG-020: artefato publicado, fixado por SHA IMUTAVEL do release v0.1.0.
 # Nao usar branch: um branch tornaria o build nao reproduzivel. O SHA tambem
 # protege contra tag movida no remoto, que uma tag sozinha nao impede.
-challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev = "df454fb7bb3f6a791c15e78c8f085674770879b3" }
+challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev = "eae056ee7e42a31a8297c2f95bacd734859c12a7" }
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=8.0,<9.0"
@@ -95,9 +95,25 @@ disallow_any_explicit = true
 disallow_any_generics = true
 disallow_subclassing_any = true
 
+# --- Rigor POR PACOTE, e nao por big-bang -----------------------------------
+#
+# `files` acima diz o que se quer proteger. O `strict` do topo, porem, tambem
+# vale para o que mypy SEGUE a partir dali — e o agente tem anos de codigo que
+# nunca esteve sob strict. Sem as duas regras abaixo, o build ficava vermelho por
+# divida antiga (296 erros em 21 arquivos) em vez de por regressao no que se quer
+# proteger: o rigor virava ruido, e ruido esconde regressao.
+#
+# A ORDEM importa: a ultima regra que casa vence. Por isso o legado vem primeiro
+# e o que esta sob rigor vem depois, com `ignore_errors = false` explicito
+# (`strict` nao desliga `ignore_errors`).
 [[tool.mypy.overrides]]
-module = "challenge_guard.*"
-ignore_missing_imports = true
+module = ["jobsearch_agent.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["challenge_resolution", "challenge_resolution.*", "jobsearch_agent.submission_api"]
+strict = true
+ignore_errors = false
 
 # Os dois modulos do agente que falam com o browser recebem a `page` como tipo
 # opaco: tipar como Playwright acoplaria a fronteira a biblioteca. `strict`
@@ -105,7 +121,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["jobsearch_agent.live_view", "jobsearch_agent.challenge_gate"]
 strict = true
+ignore_errors = false
 disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = "challenge_guard.*"
+ignore_missing_imports = true
 
 [tool.importlinter]
 # `root_packages` (plural) com os pacotes REAIS. Um `root_package` simbolico

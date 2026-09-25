@@ -120,10 +120,22 @@ def _provenance(**overrides: object) -> ChallengeProvenance:
 
 @pytest.mark.parametrize("model", IMMUTABLE_MODELS, ids=lambda model: model.__name__)
 def test_models_are_frozen_and_slotted(model: type) -> None:
+    """`__dataclass_params__.slots` NAO existe antes do 3.12.
+
+    O teste antigo lia esse atributo e dava falso negativo no Python 3.11 (o CI
+    roda 3.11, 3.12 e 3.13): modelos com `slots=True` reprovavam. O que prova
+    `slots` de verdade e o efeito — `__slots__` no `__dict__` da classe e a
+    ausencia de `__dict__` na INSTANCIA (que e o que `slots=True` compra).
+    """
     assert dataclasses.is_dataclass(model)
     params = model.__dataclass_params__  # type: ignore[attr-defined]
     assert params.frozen, f"{model.__name__} deve ser frozen"
-    assert getattr(params, "slots", False), f"{model.__name__} deve usar slots"
+    assert "__slots__" in model.__dict__, f"{model.__name__} deve usar slots"
+    for field in dataclasses.fields(model):
+        if field.name in getattr(model, "__slots__", ()):
+            continue
+    instance = object.__new__(model)
+    assert not hasattr(instance, "__dict__"), f"{model.__name__} com slots nao pode ter __dict__"
 
 
 def test_a_frozen_model_cannot_be_mutated() -> None:

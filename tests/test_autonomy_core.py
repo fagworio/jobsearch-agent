@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jobsearch_agent.ats import GreenhouseAdapter, LeverAdapter, WorkableAdapter
 from jobsearch_agent.config import Settings
 from jobsearch_agent.loop import ApplicationLoop, LoopRuntime
@@ -123,3 +125,56 @@ def test_the_loop_falls_back_to_the_form_url_when_no_destination_is_declared(tmp
     loop = ApplicationLoop(database, declared)
     assert loop._submission_destination(job, WorkableAdapter(), form, WORKABLE_FORM_URL) == WORKABLE_SUBMIT_URL
     database.close()
+
+
+# --- CG-036: o caminho de PRODUCAO e o runtime publico do guard --------------
+
+
+def test_the_production_runtime_uses_the_guard_runtime_path(tmp_path: Path):
+    """O CLI nao pode continuar montando o gate antigo (CG-036).
+
+    Antes disto, `loop_runtime()` configurava `challenge_gate` e nenhuma
+    integracao: o caminho novo existia e passava no harness, mas o comando real
+    seguia a politica inline. "Tem teste" e "e o caminho de producao" sao
+    afirmacoes diferentes.
+    """
+    from dataclasses import replace
+
+    from challenge_guard import ChallengeRuntime
+    from jobsearch_agent.persistence import Database
+
+    settings = replace(_settings(tmp_path), challenge_resolution_enabled=True)
+    database = Database(tmp_path / "production.db")
+    try:
+        runtime = loop_runtime(settings, headless=True, captcha_wait=1.5, database=database)
+
+        assert runtime.challenge_gate is None, "o gate antigo nao pode continuar ligado em paralelo"
+        integration = runtime.challenge_integration
+        assert integration is not None
+        assert integration.runtime_factory is not None
+        assert integration.database is database, "a janela precisa do MESMO banco da Application"
+        assert integration.wait_seconds == 1.5
+
+        guard_runtime = integration.runtime_factory(object())
+        assert isinstance(guard_runtime, ChallengeRuntime)
+        assert guard_runtime.budget.limits.max_rounds >= 1
+        guard_runtime.close()
+    finally:
+        database.close()
+
+
+def test_the_production_runtime_has_no_challenge_handling_by_default(tmp_path: Path):
+    """Sem a flag, nada muda: nem gate, nem integracao, nem janela."""
+    runtime = loop_runtime(_settings(tmp_path), headless=True)
+    assert runtime.challenge_gate is None
+    assert runtime.challenge_integration is None
+
+
+def test_challenge_resolution_without_a_database_is_refused(tmp_path: Path):
+    """Fail-closed: sem banco nao ha janela duravel, e sem janela duravel um
+    processo que morre no meio nao deixa rastro."""
+    from dataclasses import replace
+
+    settings = replace(_settings(tmp_path), challenge_resolution_enabled=True)
+    with pytest.raises(ValueError, match="requires a database"):
+        loop_runtime(settings, headless=True)

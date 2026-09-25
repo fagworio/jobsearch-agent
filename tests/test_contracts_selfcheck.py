@@ -11,6 +11,7 @@ comportamento correto.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,15 @@ def _tool(name: str) -> list[str]:
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+    """Roda a ferramenta sobre a ARVORE, nao sobre o pacote instalado.
+
+    Sem `PYTHONPATH=src`, o import-linter resolve `challenge_resolution` e
+    `jobsearch_agent` em site-packages (o `pip install .` do CI). A sonda escrita
+    em `src/` fica invisivel, o lint devolve "6 kept" e o selfcheck falha — foi
+    exatamente o que aconteceu no CI. A sonda tem de ser vista onde ela e escrita.
+    """
+    environment = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    return subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, env=environment)
 
 
 def test_the_import_contract_detects_a_deliberate_violation() -> None:
@@ -95,3 +104,38 @@ def test_the_runtime_ring_detects_a_dynamic_import() -> None:
         assert result.returncode != 0, "o anel 4 não percebeu o import dinâmico"
     finally:
         AST_FILE.unlink(missing_ok=True)
+
+#: Sondas do rigor de tipagem: uma no pacote protegido, uma no legado declarado.
+MYPY_STRICT_FILE = PACKAGE / "_mypy_probe.py"
+MYPY_LEGACY_FILE = REPO_ROOT / "src" / "jobsearch_agent" / "_mypy_legacy_probe.py"
+
+
+def test_the_mypy_ring_bites_where_it_is_declared() -> None:
+    """Se o pacote protegido deixar de ser verificado, o rigor virou decoracao."""
+    if MYPY_STRICT_FILE.exists():
+        pytest.skip("sonda presente de uma execução interrompida")
+    try:
+        MYPY_STRICT_FILE.write_text(
+            "def probe(value: str) -> int:\n    return value\n",
+            encoding="utf-8",
+        )
+        result = _run([sys.executable, "-m", "mypy"])
+        assert result.returncode != 0, "mypy nao percebeu o erro deliberado no pacote protegido"
+        assert "return-value" in (result.stdout + result.stderr)
+    finally:
+        MYPY_STRICT_FILE.unlink(missing_ok=True)
+
+
+def test_the_mypy_ring_ignores_the_legacy_it_declares_as_legacy() -> None:
+    """O rigor e POR PACOTE: o legado tem de ser contexto, nao ruido."""
+    if MYPY_LEGACY_FILE.exists():
+        pytest.skip("sonda presente de uma execução interrompida")
+    try:
+        MYPY_LEGACY_FILE.write_text(
+            "from typing import Any\n\n\ndef legacy(value: Any) -> Any:\n    return value\n",
+            encoding="utf-8",
+        )
+        result = _run([sys.executable, "-m", "mypy"])
+        assert result.returncode == 0, f"o legado declarado voltou a ser ruido: {result.stdout[-400:]}"
+    finally:
+        MYPY_LEGACY_FILE.unlink(missing_ok=True)

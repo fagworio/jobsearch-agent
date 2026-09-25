@@ -253,11 +253,11 @@ class NetworkWriteGuard:
         porque e o que sobrevive a redacao na auditoria.
         """
         last_reason = "INSPECTION_OPERATION_NOT_ALLOWED"
-        for position, permit in enumerate(self._authorized_inspections):
-            if self._inspection_usage[position] >= permit.max_requests:
+        for position, inspection_permit in enumerate(self._authorized_inspections):
+            if self._inspection_usage[position] >= inspection_permit.max_requests:
                 last_reason = "INSPECTION_BUDGET_EXHAUSTED"
                 continue
-            verdict = permit.validate(
+            verdict = inspection_permit.validate(
                 method=method,
                 url=url,
                 body=body,
@@ -295,10 +295,10 @@ class NetworkWriteGuard:
             return False
         if method not in self.READ_METHODS:
             url = str(getattr(request, "url", ""))
-            for position, permit in enumerate(self._authorized_writes):
-                if self._authorized_usage[position] >= permit.max_writes:
+            for position, write_permit in enumerate(self._authorized_writes):
+                if self._authorized_usage[position] >= write_permit.max_writes:
                     continue
-                if permit.covers(method, url):
+                if write_permit.covers(method, url):
                     self._authorized_usage[position] += 1
                     self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, "authorized submission write"))
                     return True
@@ -321,12 +321,12 @@ class NetworkWriteGuard:
             # Runtime de widget anti-bot: orcamento proprio, origem e caminho
             # declarados pelo provider do desafio. Nao autoriza submissao, e a
             # submissao nao autoriza isto.
-            for position, permit in enumerate(self._challenge_runtime):
-                if self._challenge_usage[position] >= permit.max_requests:
+            for position, challenge_permit in enumerate(self._challenge_runtime):
+                if self._challenge_usage[position] >= challenge_permit.max_requests:
                     continue
-                if permit.covers(method, url):
+                if challenge_permit.covers(method, url):
                     self._challenge_usage[position] += 1
-                    self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, f"authorized challenge runtime: {permit.provider}"))
+                    self.events.append(NetworkRequestEvent(origin, path_hash, method, resource_type, True, f"authorized challenge runtime: {challenge_permit.provider}"))
                     return True
             reason = (
                 "write method blocked in dry-run"

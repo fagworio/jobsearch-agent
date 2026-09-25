@@ -540,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
                     max_cycles=args.max_cycles,
                     submission_timeout=args.timeout,
                     captcha_wait=args.captcha_wait,
+                    # A janela do operador e duravel: precisa do MESMO banco que
+                    # registra a Application.
+                    database=db,
                 )
                 result = ApplicationLoop(db, runtime).run(args.job_id, submit=args.submit)
                 application = db.get_application(result.application_id)
