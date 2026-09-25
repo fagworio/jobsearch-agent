@@ -164,7 +164,15 @@ class BrowserSubmitter:
             # marco — e um crash ali seria indistinguivel de "nada saiu". O falso
             # positivo (marcador gravado e `arm_writes` falhando) e aceitavel de
             # proposito: exactly-once prefere perder um retry a duplicar.
-            self.database.mark_write_possible(attempt.id)
+            # FAIL-CLOSED: sem a fronteira persistida, a escrita nao e armada. Um
+            # CAS que devolve False (corrida, estado inesperado, tentativa ja
+            # alterada) significa que nao ha prova de onde estamos — e armar
+            # assim mesmo seria a unica falha possivel do CAS nao impedir nada.
+            marked = self.database.mark_write_possible(attempt.id)
+            if not marked:
+                raise SubmissionBoundaryError(
+                    "write boundary could not be persisted; refusing to arm submission"
+                )
             session.arm_writes(permits)
             # Runtime do widget anti-bot: boundary PROPRIA, com orcamento
             # independente do de submissao. Os requisitos vem do challenge-guard
