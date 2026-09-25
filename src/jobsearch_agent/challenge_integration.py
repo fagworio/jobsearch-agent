@@ -50,6 +50,13 @@ HANDOFF_STARTED = "challenge_handoff_started"
 HANDOFF_FINISHED = "challenge_handoff_finished"
 HANDOFF_ABANDONED = "challenge_handoff_abandoned"
 
+#: Janela de espera AUTONOMA (provider_supported). Nomes PROPRIOS de proposito:
+#: a auditoria nao pode dizer que houve intervencao humana quando ninguem foi
+#: chamado, e `reconcile_abandoned_handoffs` nao pode tratar esta janela como um
+#: handoff orfao.
+PROVIDER_WAIT_STARTED = "challenge_provider_wait_started"
+PROVIDER_WAIT_FINISHED = "challenge_provider_wait_finished"
+
 
 class ChallengeHandling(str, Enum):
     """O que o loop deve fazer depois do tratamento."""
@@ -219,6 +226,7 @@ class ChallengeIntegration:
         runtime: Any | None = None
         observation: Any | None = None
         acl: ChallengeAclOutcome | None = None
+        waiting_for_provider = False
         opened = False
         locked = False
         failed = ""
@@ -233,19 +241,28 @@ class ChallengeIntegration:
                 return ChallengeHandlingResult(ChallengeHandling.NOT_DETECTED, observation=observation)
 
             acl = map_runtime_result(runtime.result())
-            self._record(application_id, HANDOFF_STARTED, {
+            # Espera autonoma e espera humana tem EVIDENCIA diferente. Sem esta
+            # separacao o journal diria "challenge_handoff_started" (intervencao
+            # humana) para um desafio que o provedor liberou sozinho.
+            waiting_for_provider = acl.handling is ChallengeAclHandling.WAIT_PROVIDER
+            window_event = PROVIDER_WAIT_STARTED if waiting_for_provider else HANDOFF_STARTED
+            self._record(application_id, window_event, {
                 "session_id": acl.session_id,
                 "provider": acl.provider,
                 "challenge_type": acl.challenge_type,
                 "wait_seconds": round(float(self.wait_seconds), 3),
             })
             opened = True
-            locked = _lock(self.relay, page, self.lock_submit)
+            # Sem relay na espera autonoma: nao ha operador para constranger, e
+            # travar o controle de envio sem ninguem olhando so esconderia o
+            # estado da pagina de quem for auditar depois.
+            locked = False if waiting_for_provider else _lock(self.relay, page, self.lock_submit)
             while acl.waitable:
                 if self.sleep is not None:
-                    # A pessoa age AQUI. O guard reobserva depois.
+                    # A pessoa age AQUI — ou o provedor decide sozinho. O guard
+                    # reobserva depois, nos dois casos.
                     self.sleep(self.poll_seconds)
-                if self.relay is not None:
+                if self.relay is not None and not waiting_for_provider:
                     # E e AQUI que os comandos dela sao executados: sem o drain na
                     # thread da pagina, a janela existiria e nao deixaria ninguem
                     # agir — a trava de submit so e util com a janela funcionando.
@@ -277,7 +294,8 @@ class ChallengeIntegration:
         handling = ChallengeHandling.CONTINUE if acl.resolved else ChallengeHandling.NEEDS_HUMAN
         result = ChallengeHandlingResult(handling, observation=observation, acl=acl, failed_with=failed)
         if opened:
-            self._record(application_id, HANDOFF_FINISHED, dict(result.as_journal()))
+            finished_event = PROVIDER_WAIT_FINISHED if waiting_for_provider else HANDOFF_FINISHED
+            self._record(application_id, finished_event, dict(result.as_journal()))
         return result
 
     def _record(self, application_id: str, event: str, payload: dict[str, object]) -> None:
@@ -455,5 +473,7 @@ __all__ = [
     "HANDOFF_ABANDONED",
     "HANDOFF_FINISHED",
     "HANDOFF_STARTED",
+    "PROVIDER_WAIT_FINISHED",
+    "PROVIDER_WAIT_STARTED",
     "reconcile_abandoned_handoffs",
 ]

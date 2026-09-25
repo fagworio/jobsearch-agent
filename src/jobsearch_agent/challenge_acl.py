@@ -35,6 +35,7 @@ class ChallengeAclHandling(str, Enum):
     """O que o loop faz com o resultado do runtime."""
 
     CONTINUE = "continue"                    # sem desafio no caminho: seguir
+    WAIT_PROVIDER = "wait_provider"          # espera AUTONOMA: observa, nao chama ninguem
     NEEDS_HUMAN = "needs_human"              # parar, retomavel
     PROVIDER_REJECTED = "provider_rejected"  # escrita recusada: handoff
     UNKNOWN = "unknown"                      # sem estado forte
@@ -65,6 +66,7 @@ class ChallengeAclOutcome:
     def blocks(self) -> bool:
         """O loop NAO pode seguir para a escrita."""
         return self.handling in {
+            ChallengeAclHandling.WAIT_PROVIDER,
             ChallengeAclHandling.NEEDS_HUMAN,
             ChallengeAclHandling.PROVIDER_REJECTED,
             ChallengeAclHandling.UNKNOWN,
@@ -78,7 +80,10 @@ class ChallengeAclOutcome:
         rodadas, e `unknown` nao melhora com palpite. So `needs_human` (e que
         ainda nao expirou) justifica esperar.
         """
-        return self.handling is ChallengeAclHandling.NEEDS_HUMAN and not self.expired
+        return self.handling in {
+            ChallengeAclHandling.WAIT_PROVIDER,
+            ChallengeAclHandling.NEEDS_HUMAN,
+        } and not self.expired
 
     @property
     def resolved(self) -> bool:
@@ -121,8 +126,10 @@ def map_runtime_result(result: ChallengeRuntimeResult, *, browser_write_sent: bo
     ```text
     none / observe (sem deteccao)   -> NOT_DETECTED  (nada a fazer)
     resolved_externally             -> CONTINUE      (o desafio saiu do caminho)
+    observe + provider_supported    -> WAIT_PROVIDER (espera sozinho, sem relay)
     human_required                  -> NEEDS_HUMAN   -> NEEDS_CAPTCHA
-    expired                         -> NEEDS_HUMAN   -> NEEDS_CAPTCHA (retomavel)
+    expired                         -> NEEDS_HUMAN ou WAIT_PROVIDER, conforme quem
+                                       era esperado -> NEEDS_CAPTCHA (retomavel)
     provider_rejected + escrita     -> PROVIDER_REJECTED -> NEEDS_HUMAN_CAPTCHA
     provider_rejected sem escrita   -> NEEDS_HUMAN       -> NEEDS_CAPTCHA
     unknown                         -> UNKNOWN        (sem estado)
@@ -169,8 +176,17 @@ def map_runtime_result(result: ChallengeRuntimeResult, *, browser_write_sent: bo
             **base,
         )
     if status == "expired":
+        # Expirar nao muda QUEM era esperado: a espera autonoma continua
+        # autonoma ao acabar o orcamento. So o desfecho (parar, retomavel) e o
+        # mesmo — o estado do host nao tem uma versao "sem humano" para
+        # pre-write, e inventar uma seria pior.
+        handling = (
+            ChallengeAclHandling.NEEDS_HUMAN
+            if result.human_required
+            else ChallengeAclHandling.WAIT_PROVIDER
+        )
         return ChallengeAclOutcome(
-            ChallengeAclHandling.NEEDS_HUMAN,
+            handling,
             state=ApplicationState.NEEDS_CAPTCHA,
             expired=True,
             reason="observation budget expired without an outcome",
@@ -184,6 +200,16 @@ def map_runtime_result(result: ChallengeRuntimeResult, *, browser_write_sent: bo
             **base,
         )
     if status == "observe":
+        # Espera AUTONOMA quando o provedor resolve sozinho (`invisible`,
+        # `risk_assessment`): bloqueia a escrita enquanto observa, e nao chama
+        # ninguem. Antes disto a ACL dizia `needs_human` — e o host rotulava de
+        # intervencao humana uma espera que nunca teve humano.
+        if not result.human_required:
+            return ChallengeAclOutcome(
+                ChallengeAclHandling.WAIT_PROVIDER,
+                reason="waiting for the provider to release the challenge on its own",
+                **base,
+            )
         return ChallengeAclOutcome(
             ChallengeAclHandling.NEEDS_HUMAN,
             state=ApplicationState.NEEDS_CAPTCHA,

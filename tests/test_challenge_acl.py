@@ -126,8 +126,8 @@ def test_unknown_does_not_invent_a_state():
     assert outcome.waitable is False
 
 
-def test_an_observed_non_interactive_challenge_blocks_the_write():
-    """O guard diz "siga observando"; o host concorda — sem escrever com o widget na tela."""
+def test_a_provider_supported_challenge_becomes_an_autonomous_wait():
+    """JSA-CG-039: espera autonoma nao pode ser rotulada de intervencao humana."""
     outcome = map_runtime_result(
         _result(
             decision="observe",
@@ -137,8 +137,43 @@ def test_an_observed_non_interactive_challenge_blocks_the_write():
             capability="provider_supported",
         )
     )
+    assert outcome.handling is ChallengeAclHandling.WAIT_PROVIDER
+    assert outcome.blocks is True, "nao se escreve com o challenge na tela"
+    assert outcome.waitable is True, "e vale continuar observando"
+    assert outcome.human_required is False
+    assert outcome.state is None, "espera autonoma nao inventa estado de humano"
+
+
+def test_an_observed_challenge_that_does_need_a_human_still_asks_for_one():
+    outcome = map_runtime_result(
+        _result(
+            decision="observe",
+            final_status="observe",
+            reason_token="challenge_detected_interactive",
+            human_required=True,
+            capability="human_required",
+        )
+    )
     assert outcome.handling is ChallengeAclHandling.NEEDS_HUMAN
     assert outcome.state is ApplicationState.NEEDS_CAPTCHA
+
+
+def test_a_provider_wait_that_expires_does_not_become_a_human_request():
+    outcome = map_runtime_result(
+        _result(
+            decision="unknown",
+            final_status="expired",
+            reason_token="provider_observation_timeout",
+            human_required=False,
+            capability="provider_supported",
+        )
+    )
+    assert outcome.handling is ChallengeAclHandling.WAIT_PROVIDER
+    assert outcome.expired is True
+    assert outcome.waitable is False, "orcamento estourado nao espera mais"
+    assert outcome.blocks is True
+    assert outcome.human_required is False
+    assert outcome.state is ApplicationState.NEEDS_CAPTCHA, "para, mas de forma retomavel"
 
 
 def test_the_journal_projection_is_closed_and_has_the_loop_vocabulary():

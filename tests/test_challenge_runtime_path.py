@@ -27,6 +27,8 @@ from jobsearch_agent.challenge_acl import ChallengeAclHandling, map_runtime_resu
 from jobsearch_agent.challenge_integration import (
     HANDOFF_FINISHED,
     HANDOFF_STARTED,
+    PROVIDER_WAIT_FINISHED,
+    PROVIDER_WAIT_STARTED,
     ChallengeHandling,
     ChallengeIntegration,
 )
@@ -251,3 +253,60 @@ def test_the_runtime_path_uses_the_same_acl_as_the_unit_table(tmp_path: Path):
 
     assert result.acl == map_runtime_result(_result())
     assert result.failed_with == ""
+
+
+def _provider_wait_result() -> ChallengeRuntimeResult:
+    return _result(
+        decision="observe",
+        final_status="observe",
+        reason_token="challenge_observed_non_interactive",
+        human_required=False,
+        capability="provider_supported",
+    )
+
+
+def _provider_expired_result() -> ChallengeRuntimeResult:
+    return _result(
+        decision="unknown",
+        final_status="expired",
+        reason_token="provider_observation_timeout",
+        human_required=False,
+        capability="provider_supported",
+    )
+
+
+def test_a_provider_wait_has_its_own_evidence_and_never_touches_the_relay(tmp_path: Path):
+    """JSA-CG-039: espera autonoma sem `handoff_started`, sem relay, sem humano.
+
+    Com um unico nome de evento, a auditoria diria "intervencao humana" para um
+    desafio que o provedor liberou sozinho — e `reconcile_abandoned_handoffs`
+    trataria a janela autonoma como handoff orfao.
+    """
+    relay = FakeRelay()
+    runtime = FakeRuntime([_provider_wait_result(), _provider_expired_result()], budget=FakeBudget([True]))
+    integration, database, application_id = _integration(tmp_path, runtime, relay)
+
+    result = integration.handle(object(), application_id)
+
+    kinds = [kind for kind, _payload in _events(database, application_id)]
+    assert PROVIDER_WAIT_STARTED in kinds and PROVIDER_WAIT_FINISHED in kinds
+    assert HANDOFF_STARTED not in kinds and HANDOFF_FINISHED not in kinds
+    finished = dict(_events(database, application_id))[PROVIDER_WAIT_FINISHED]
+    assert finished["final_status"] == "expired"
+    assert finished["human_required"] is False
+    assert relay.locked == 0 and relay.drained == 0, "sem operador nao ha relay"
+    assert result.handling is ChallengeHandling.NEEDS_HUMAN, "o host para (retomavel)"
+    assert result.acl is not None and result.acl.human_required is False
+    assert result.acl.state is ApplicationState.NEEDS_CAPTCHA
+
+
+def test_a_provider_wait_that_resolves_lets_the_loop_continue(tmp_path: Path):
+    runtime = FakeRuntime([_provider_wait_result(), _result(detected=False, decision="resolved_externally", final_status="resolved_externally", reason_token="challenge_resolved_externally", human_required=False)], budget=FakeBudget([False]))
+    integration, database, application_id = _integration(tmp_path, runtime)
+
+    result = integration.handle(object(), application_id)
+
+    assert result.handling is ChallengeHandling.CONTINUE
+    kinds = [kind for kind, _payload in _events(database, application_id)]
+    assert PROVIDER_WAIT_STARTED in kinds and PROVIDER_WAIT_FINISHED in kinds
+    assert HANDOFF_STARTED not in kinds
