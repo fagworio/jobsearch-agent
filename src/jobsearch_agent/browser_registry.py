@@ -149,7 +149,9 @@ class BrowserSessionRecord:
 
     @property
     def cdp_url(self) -> str:
-        return f"http://{self.cdp_host}:{self.cdp_port}"
+        """Endpoint CDP. `::1` PRECISA de colchetes: `http://::1:9222` e invalido."""
+        host = f"[{self.cdp_host}]" if ":" in self.cdp_host else self.cdp_host
+        return f"http://{host}:{self.cdp_port}"
 
     def describe(self) -> dict[str, object]:
         """Forma segura para log/journal: nada alem do que ja esta na tabela."""
@@ -206,8 +208,7 @@ class BrowserRegistry:
             last_seen_at=_iso(now),
             expires_at=_iso(now + timedelta(seconds=ttl_seconds)) if ttl_seconds > 0 else "",
         )
-        self.database.save_browser_session(record.__dict__)
-        self._event(record, "browser_session_started")
+        self.database.begin_browser_session(record.__dict__, "browser_session_started", record.describe())
         return record
 
     def mark_ready(self, session_id: str) -> BrowserSessionRecord:
@@ -257,8 +258,12 @@ class BrowserRegistry:
         """O processo dono ainda existe?
 
         PID sozinho nao identifica instancia (PID se recicla): quem decide se a
-        sessao e a MESMA e o `owner_instance_id`, que o browser-host gera no
-        nascimento e o agente confere ao reconectar.
+        sessao e a MESMA e o `owner_instance_id`.
+
+        LIMITE ATUAL, dito sem enfeite: aqui so da para provar que o PID existe.
+        Provar que ele e o MESMO browser-host exige o control plane
+        (`owner_instance_id` devolvido pelo host no health) — BHOST-002. Ate
+        entao, `is_owner_alive` responde "o numero existe", nao "e o mesmo dono".
         """
         record = self.get(session_id)
         if record is None:
@@ -293,17 +298,32 @@ class BrowserRegistry:
         return record
 
     def _transition(self, session_id: str, target: BrowserSessionState, event: str, *, notes: str = "") -> BrowserSessionRecord:
+        """Transicao com compare-and-swap.
+
+        A tabela `_TRANSITIONS` diz o que e permitido; o `UPDATE ... WHERE
+        state=?` garante que ninguem avancou a sessao entre a leitura e a
+        escrita. Dois processos nao conseguem marcar a mesma sessao como READY.
+        """
         record = self._require(session_id)
         if target.value not in _TRANSITIONS.get(record.state, frozenset()):
             raise BrowserRegistryError(f"invalid browser session transition: {record.state} -> {target.value}")
-        fields: dict[str, object] = {"state": target.value, "last_seen_at": _iso(self._clock())}
-        if target in {BrowserSessionState.CLOSED, BrowserSessionState.DEAD, BrowserSessionState.EXPIRED}:
-            fields["closed_at"] = fields["last_seen_at"]
-        row = self.database.update_browser_session(session_id, **fields)
-        updated = BrowserSessionRecord.from_row(row) if row else record
-        if event:
-            self._event(updated, event, notes=notes)
-        return updated
+        now = _iso(self._clock())
+        closing = target in {BrowserSessionState.CLOSED, BrowserSessionState.DEAD, BrowserSessionState.EXPIRED}
+        payload = {**record.describe(), "state": target.value}
+        if notes:
+            payload["notes"] = notes
+        applied = self.database.transition_browser_session(
+            session_id,
+            expected_state=record.state,
+            target_state=target.value,
+            event=event,
+            payload=payload,
+            last_seen_at=now,
+            closed_at=now if closing else "",
+        )
+        if not applied:
+            raise SessionConflict(f"browser session {session_id} changed state concurrently (expected {record.state})")
+        return self._require(session_id)
 
     def _touch(self, record: BrowserSessionRecord) -> BrowserSessionRecord:
         row = self.database.update_browser_session(record.session_id, last_seen_at=_iso(self._clock()))

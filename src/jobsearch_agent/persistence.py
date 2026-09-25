@@ -7,6 +7,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from .models import Application, ApplicationEvent, ApplicationState, Job, JobState, ReviewSnapshot, SubmissionAttempt, SubmissionIntent, now_iso
@@ -308,24 +309,23 @@ def _migration_006_confirmation_evidence(connection: sqlite3.Connection) -> None
 def _migration_007_browser_sessions(connection: sqlite3.Connection) -> None:
     """Sessoes de browser do host persistente (BHOST-001).
 
-    Estado OPERACIONAL CORRENTE, nao historico: o historico fica em
-    `application_events` (`browser_session_*`), como ja acontece com
-    `applications` e `application_events`. Nenhuma coluna guarda URL, cookie,
-    token ou conteudo de formulario — a sessao do Chromium carrega isso, e o
-    banco nao.
+    Estado OPERACIONAL CORRENTE; o historico fica em `application_events`
+    (`browser_session_*`), como ja acontece com `applications`/`application_events`.
 
-    O indice parcial e a invariante "no maximo UMA sessao viva por Application",
-    garantida pelo banco e nao por convencao de quem chama.
+    As invariantes sao do BANCO, e nao convencao de quem chama: FK para a
+    Application, estado no conjunto fechado, CDP so em loopback literal, porta
+    valida, dono identificavel e no maximo UMA sessao viva por Application.
+    Nenhuma coluna guarda URL, cookie, token, query ou conteudo de formulario.
     """
     connection.execute(
         """CREATE TABLE IF NOT EXISTS browser_sessions (
             session_id TEXT PRIMARY KEY,
-            application_id TEXT NOT NULL,
-            state TEXT NOT NULL,
-            cdp_host TEXT NOT NULL,
-            cdp_port INTEGER NOT NULL,
-            owner_pid INTEGER NOT NULL,
-            owner_instance_id TEXT NOT NULL,
+            application_id TEXT NOT NULL REFERENCES applications(id),
+            state TEXT NOT NULL CHECK (state IN ('STARTING','READY','STOPPING','CLOSED','DEAD','EXPIRED')),
+            cdp_host TEXT NOT NULL CHECK (cdp_host IN ('127.0.0.1','::1')),
+            cdp_port INTEGER NOT NULL CHECK (cdp_port BETWEEN 1 AND 65535),
+            owner_pid INTEGER NOT NULL CHECK (owner_pid > 0),
+            owner_instance_id TEXT NOT NULL CHECK (length(owner_instance_id) > 0),
             created_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
             expires_at TEXT NOT NULL DEFAULT '',
@@ -880,8 +880,13 @@ class Database:
             ).fetchall()
         return [dict(zip(self._BROWSER_COLUMNS, row)) for row in rows]
 
+    #: Campos que uma transicao pode alterar. O resto e IMUTAVEL no registro:
+    #: reescrever `application_id`/`owner_*`/`cdp_*` seria trocar a identidade da
+    #: sessao, e nada no fluxo legitimo faz isso.
+    _BROWSER_MUTABLE = ("state", "last_seen_at", "expires_at", "closed_at")
+
     def update_browser_session(self, session_id: str, **fields: Any) -> dict[str, Any] | None:
-        allowed = {key: value for key, value in fields.items() if key in self._BROWSER_COLUMNS}
+        allowed = {key: value for key, value in fields.items() if key in self._BROWSER_MUTABLE}
         if allowed:
             assignments = ",".join(f"{key}=?" for key in allowed)
             self.connection.execute(
@@ -890,6 +895,72 @@ class Database:
             )
             self.connection.commit()
         return self.get_browser_session(session_id)
+
+    def _browser_event(
+        self, application_id: str, session: Mapping[str, Any], event: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Evento da sessao DENTRO da transacao corrente (nao commita sozinho)."""
+        row = self.connection.execute("SELECT state FROM applications WHERE id=?", (application_id,)).fetchone()
+        if row is None:
+            raise ApplicationConflict(f"application not found: {application_id}")
+        self.connection.execute(
+            """INSERT INTO application_events
+               (application_id, from_state, to_state, event, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (application_id, str(row[0]), str(row[0]), event, canonical_json(dict(payload)), now_iso()),
+        )
+
+    def begin_browser_session(
+        self, session: Mapping[str, Any], event: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Sessao + evento na MESMA transacao (mesmo padrao de begin_submission_attempt).
+
+        Duas transacoes aqui deixariam, numa queda entre elas, uma sessao viva no
+        indice parcial sem `browser_session_started` — auditoria inconsistente e,
+        pior, o slot ocupado impedindo uma sessao nova.
+        """
+        values = [session.get(column, "") for column in self._BROWSER_COLUMNS]
+        placeholders = ",".join("?" for _ in self._BROWSER_COLUMNS)
+        with self.connection:
+            self.connection.execute(
+                f"INSERT INTO browser_sessions({','.join(self._BROWSER_COLUMNS)}) VALUES ({placeholders})",
+                values,
+            )
+            self._browser_event(str(session.get("application_id", "")), session, event, payload)
+
+    def transition_browser_session(
+        self,
+        session_id: str,
+        *,
+        expected_state: str,
+        target_state: str,
+        event: str,
+        payload: Mapping[str, Any],
+        last_seen_at: str,
+        closed_at: str = "",
+    ) -> bool:
+        """Compare-and-swap: exige `rowcount == 1`.
+
+        Ler o estado, decidir em Python e depois fazer `UPDATE` sem condicao
+        permite que dois processos avancem a MESMA sessao em silencio. Aqui o
+        segundo perde, e o chamador sabe disso.
+        """
+        application_id = str(payload.get("application_id", ""))
+        with self.connection:
+            if closed_at:
+                cursor = self.connection.execute(
+                    "UPDATE browser_sessions SET state=?, last_seen_at=?, closed_at=? WHERE session_id=? AND state=?",
+                    (target_state, last_seen_at, closed_at, session_id, expected_state),
+                )
+            else:
+                cursor = self.connection.execute(
+                    "UPDATE browser_sessions SET state=?, last_seen_at=? WHERE session_id=? AND state=?",
+                    (target_state, last_seen_at, session_id, expected_state),
+                )
+            if cursor.rowcount != 1:
+                return False
+            self._browser_event(application_id, payload, event, payload)
+        return True
 
     def save_analysis(self, job_id: str, **values: Any) -> None:
         fields = {key: canonical_json(value) if value is not None else None for key, value in values.items() if key in {"analysis", "fit", "strategy", "resume", "validation"}}

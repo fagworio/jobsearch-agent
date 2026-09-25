@@ -196,3 +196,103 @@ def test_the_live_slot_is_a_database_invariant_not_a_convention(tmp_path: Path):
             }
         )
     assert "UNIQUE" in str(error.value).upper()
+
+
+# --- endurecimento da parte 1: invariantes do banco, atomicidade e IPv6 --------
+
+
+def test_the_database_refuses_a_session_for_an_unknown_application(tmp_path: Path):
+    """FK: sessao de browser sem Application e estado orfao, e o banco recusa."""
+    database = Database(tmp_path / "fk.db")
+    registry = _registry(database)
+    with pytest.raises(Exception) as error:
+        registry.register(application_id="app-inexistente", cdp_host="127.0.0.1", cdp_port=9222)
+    assert "application not found" in str(error.value) or "FOREIGN KEY" in str(error.value).upper()
+    assert database.list_browser_sessions() == [], "a transacao precisa ter sido revertida"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("state", "ATTACHED"), ("cdp_host", "0.0.0.0"), ("cdp_port", 70000), ("owner_pid", 0), ("owner_instance_id", "")],
+)
+def test_direct_writes_cannot_create_an_impossible_session(tmp_path: Path, field: str, value: object):
+    """`CHECK` no banco: a afirmacao 'loopback e estado valido' vale para escrita direta."""
+    database, application_id = _application(tmp_path)
+    row = {
+        "session_id": "bsess-direto",
+        "application_id": application_id,
+        "state": "READY",
+        "cdp_host": "127.0.0.1",
+        "cdp_port": 9222,
+        "owner_pid": 123,
+        "owner_instance_id": "x",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "last_seen_at": "2026-01-01T00:00:00+00:00",
+    }
+    row[field] = value
+    with pytest.raises(Exception) as error:
+        database.save_browser_session(row)
+    assert "CHECK" in str(error.value).upper() or "CONSTRAINT" in str(error.value).upper()
+
+
+def test_a_failed_event_insert_rolls_back_the_session_row(tmp_path: Path):
+    """Atomicidade: sessao + evento na MESMA transacao (sem `STARTING` orfao)."""
+    database = Database(tmp_path / "atomic.db")
+    database.save_browser_session  # sanity: metodo existe
+    # Sem Application, `begin_browser_session` levanta ANTES de commitar.
+    from jobsearch_agent.persistence import ApplicationConflict
+
+    with pytest.raises(ApplicationConflict):
+        database.begin_browser_session(
+            {
+                "session_id": "bsess-orfa",
+                "application_id": "app-que-nao-existe",
+                "state": "STARTING",
+                "cdp_host": "127.0.0.1",
+                "cdp_port": 9222,
+                "owner_pid": 1,
+                "owner_instance_id": "x",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "last_seen_at": "2026-01-01T00:00:00+00:00",
+            },
+            "browser_session_started",
+            {"session_id": "bsess-orfa"},
+        )
+    assert database.list_browser_sessions() == [], "nao pode sobrar sessao viva sem evento"
+
+
+def test_a_stale_transition_loses_the_compare_and_swap(tmp_path: Path):
+    database, application_id = _application(tmp_path)
+    registry = _registry(database)
+    session = registry.register(application_id=application_id, cdp_host="127.0.0.1", cdp_port=9222)
+
+    # Outro processo ja avancou a sessao: a transicao deste perde.
+    assert database.transition_browser_session(
+        session.session_id,
+        expected_state="STARTING",
+        target_state="READY",
+        event="browser_session_ready",
+        payload={"application_id": application_id, "session_id": session.session_id},
+        last_seen_at="2026-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(SessionConflict, match="concurrently"):
+        registry.mark_ready(session.session_id)
+
+
+def test_immutable_fields_cannot_be_rewritten_by_an_update(tmp_path: Path):
+    database, application_id = _application(tmp_path)
+    registry = _registry(database)
+    session = registry.register(application_id=application_id, cdp_host="127.0.0.1", cdp_port=9222)
+
+    updated = database.update_browser_session(session.session_id, cdp_port=9999, owner_instance_id="outro")
+    assert updated is not None
+    assert updated["cdp_port"] == 9222 and updated["owner_instance_id"] == session.owner_instance_id
+    assert updated["state"] == "STARTING", "o estado so muda por transicao"
+
+
+def test_the_cdp_url_brackets_ipv6(tmp_path: Path):
+    database, application_id = _application(tmp_path)
+    registry = _registry(database)
+    session = registry.register(application_id=application_id, cdp_host="::1", cdp_port=9222)
+    assert session.cdp_url == "http://[::1]:9222"
+    assert registry.get(session.session_id) is not None
