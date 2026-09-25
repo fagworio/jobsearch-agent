@@ -463,6 +463,25 @@ class Database:
                 (event.application_id, event.from_state.value, event.to_state.value, event.event, canonical_json(event.payload), event.created_at),
             )
 
+    def append_application_event(self, application_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
+        """Evento de AUDITORIA: registra sem mudar estado.
+
+        Usado pelo handoff do operador, cuja evidencia precisa sobreviver a um
+        restart mesmo quando nao ha transicao de estado para gravar (a janela
+        abre e fecha com a Application no mesmo estado).
+        """
+        row = self.connection.execute("SELECT state FROM applications WHERE id=?", (application_id,)).fetchone()
+        if row is None:
+            raise ApplicationConflict(f"application not found: {application_id}")
+        state = str(row[0])
+        self.connection.execute(
+            """INSERT INTO application_events
+               (application_id, from_state, to_state, event, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (application_id, state, state, event, canonical_json(payload or {}), now_iso()),
+        )
+        self.connection.commit()
+
     def list_application_events(self, application_id: str) -> list[ApplicationEvent]:
         rows = self.connection.execute("SELECT * FROM application_events WHERE application_id=? ORDER BY id", (application_id,)).fetchall()
         return [ApplicationEvent(str(row["application_id"]), ApplicationState(row["from_state"]), ApplicationState(row["to_state"]), str(row["event"]), json.loads(row["payload_json"]), str(row["created_at"])) for row in rows]

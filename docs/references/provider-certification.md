@@ -91,3 +91,44 @@ Critérios de aceite propostos:
 
 O retry no browser automatizado permanece existindo como operação **explícita e avançada**, para
 diagnóstico ou quando houver evidência de que a recusa anterior não veio do ambiente.
+
+## Cobertura por canal: o adaptador é pré-requisito, o ganho precisa de credencial
+
+Uma leitura anterior deste material apresentou o canal de API como "60% → 0%" — como se escrever o
+adaptador convertesse sozinho a taxa de falha em zero. A medição não sustenta essa moldura, e a
+diferença importa para o próximo ticket.
+
+O que foi **medido**, no provider real:
+
+```text
+GET  boards-api.greenhouse.io/v1/boards/fueledcareers/jobs/5428960008   -> 200
+POST boards-api.greenhouse.io/v1/boards/fueledcareers/jobs/5428960008   -> 401 HTTP Basic: Access denied
+```
+
+Leitura correta das duas linhas:
+
+```text
+o adaptador de API e PRE-REQUISITO       sem ele a credencial nao serve para nada
+o ganho depende da CREDENCIAL            sem ela, o cliente nao pode sequer ser exercitado
+```
+
+Ou seja: o que o código compra é a **capacidade** de usar um canal que não passa por browser,
+desafio nem observação de POST. O que ele não compra é nenhuma redução de falha enquanto não existir
+uma credencial declarada — e reduzir a falha é uma afirmação **empírica**, que só pode ser feita
+depois de exercitar o endpoint autenticado. Até então, a cobertura do canal de API é **zero
+observações**, não "zero falhas".
+
+Por isso a política de canal é conservadora e verificável (`submission_policy.DomainPolicy`):
+
+```text
+canal API exige credencial DECLARADA; sem ela, degrada para BROWSER
+LinkedIn / Indeed sao sempre HANDOFF
+```
+
+A degradação é o ponto: um erro de configuração não deve virar uma tentativa de escrita
+sem credencial. E o `SubmissionRouter` (próximo ticket) traz o **próprio** guard — paralelo ao
+`NetworkWriteGuard` do browser, não uma reutilização dele: o ciclo de vida é outro (não há página,
+DOM, challenge ou trava de submit), e compartilhar o guard do browser acoplaria a contabilidade de
+intenção/tentativa a uma fronteira que não existe nesse canal. Enquanto não houver credencial real,
+esse router só pode ser exercitado com mocks; o número de cobertura permanece uma **projeção**, e
+projeção não entra no placar acima.

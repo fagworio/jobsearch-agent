@@ -213,7 +213,7 @@ def build_harness(
                 time.sleep(seconds)
 
         if orchestrator_handling:
-            integration = _orchestrator_integration(relay, captcha_wait, poll_seconds, on_wait, observed)
+            integration = _orchestrator_integration(relay, captcha_wait, poll_seconds, on_wait, observed, database)
         else:
             gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)
 
@@ -265,6 +265,7 @@ def _orchestrator_integration(
     poll_seconds: float,
     on_wait: Callable[[Any, list], None] | None,
     observed: list,
+    database=None,
 ):
     """Integracao da Fase 6: orquestrador real + validador real + estrategia de relay.
 
@@ -343,6 +344,8 @@ def _orchestrator_integration(
         observer_factory=observer_with_page,
         orchestrator_factory=orchestrator_for,
         relay=relay,
+        database=database,
+        wait_seconds=wait_seconds,
     )
 
 

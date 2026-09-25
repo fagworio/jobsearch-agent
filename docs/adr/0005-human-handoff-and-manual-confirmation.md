@@ -288,3 +288,72 @@ The real run that this design came from, including the corrected framing of the 
 is recorded in [the CI&T evidence note](../evidence/2026-09-24-lever-ciandt-antibot-refusal.md).
 
 
+
+## Addendum: o relay in-process vs. o serviço de handoff completo, e o que ele custa
+
+O desenho de referência desta ADR descreve um **serviço**: transporte HTTP autenticado (HMAC),
+webhook de retorno, fila/store durável e um `reconciler` que fecha janelas órfãs. O que está
+implementado é menor, e a diferença precisa estar registrada — uma simplificação não declarada é
+indistinguível de um requisito esquecido.
+
+### O que existe hoje
+
+```text
+LiveViewRelay              janela do operador DENTRO do processo do loop (offer/drain, lock de submit)
+HumanRelayExecutor         estrategia sincrona que espera a pessoa resolver e reobserva o guard
+challenge_handoff_started  evidencia DURAVEL de que a janela abriu (session_id, provider, wait_seconds)
+challenge_handoff_finished evidencia DURAVEL de que a janela fechou (outcome)
+reconcile_abandoned_handoffs  fecha janela aberta por processo que morreu, com motivo explicito
+HANDOFF_IN_PROGRESS + pacote persistido + `report-manual-submit` + evidencia de confirmacao
+```
+
+O operador é a mesma pessoa que roda o loop. Nesse arranjo, o relay **é** o canal: não há segundo
+processo para atravessar, então não há transporte a autenticar. Um HMAC sem consumidor remoto não
+protege nada — apenas adiciona uma superfície de rede que nenhum teste de ponta a ponta exercita.
+
+### O que foi sacrificado, por nome
+
+```text
+durabilidade entre processos da SESSAO   a janela sobrevive como evidencia, nao como browser vivo
+operador remoto                          o relay e em memoria; nao ha endpoint a expor
+callbacks autenticados / webhook         nao existe; o retorno e o proprio `drain` no processo
+fila/store dedicados                     o journal da Application e o store; nao ha broker
+```
+
+O primeiro item é o que importa para o handoff humano: **um browser do Playwright não sobrevive ao
+processo que o abriu**, e a API síncrona é presa à thread. Um `reconciler` que "retomasse" a sessão
+morta teria de reabrir a página, repor o estado do formulário e reautenticar — ou seja, fabricar uma
+sessão nova e chamá-la de continuação. O que se preserva sem mentir é a **evidência** e o
+**fechamento explícito** da janela órfã; o que a pessoa perde é o trabalho de resolução daquela
+tentativa, e ela resolve de novo na tentativa seguinte.
+
+### A lacuna que este addendum fecha: restart no meio da resolução
+
+Antes desta correção: o processo morria com a janela aberta e **não deixava rastro nenhum** — a
+Application ficava no estado anterior e o trabalho do operador desaparecia em silêncio. Um segundo
+processo não tinha como saber que uma pessoa estava no meio de uma resolução.
+
+Agora:
+
+```text
+janela abre   -> challenge_handoff_started   (append-only, mesmo estado; so auditoria)
+janela fecha  -> challenge_handoff_finished
+loop inicia   -> _reconcile_handoffs ANTES de prepare
+                 janela aberta sem fechamento -> challenge_handoff_abandoned
+                 reason = "process_restarted_with_window_open"
+```
+
+Propriedades, todas verificadas em teste:
+
+```text
+a evidencia NAO altera o estado da Application (append-only, sem transicao)
+a reconciliacao e idempotente (rodar de novo nao duplica nem reescreve)
+uma janela normal (aberta e fechada) nao e tocada
+um segundo crash depois da reconciliacao tambem e pego
+DB quebrado ou historico vazio NUNCA derrubam o loop (reconcile nao levanta)
+```
+
+Residual aceito e declarado: a janela órfã é fechada como **abandonada**, não retomada. Retomar
+exigiria o browser vivo; ADR-0003 já proíbe reconstruir o ambiente automatizado a partir de estado
+persistido, e esta ADR não abre exceção. O operador continua no controle: a execução seguinte oferece
+uma janela nova.

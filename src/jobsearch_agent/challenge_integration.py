@@ -31,6 +31,17 @@ from challenge_resolution.types import ChallengeObservation, ChallengePhase
 from .live_view import LiveViewRelay
 
 
+#: Eventos duraveis da janela do operador.
+#:
+#: `started` sem `finished` e a assinatura de um processo que morreu no meio da
+#: resolucao: a pessoa podia estar agindo, e o trabalho dela se perdeu junto com
+#: o browser. Como o browser NAO volta, o que se pode fazer — e se deve — e
+#: registrar o abandono em vez de fingir que a janela nunca existiu.
+HANDOFF_STARTED = "challenge_handoff_started"
+HANDOFF_FINISHED = "challenge_handoff_finished"
+HANDOFF_ABANDONED = "challenge_handoff_abandoned"
+
+
 class ChallengeHandling(str, Enum):
     """O que o loop deve fazer depois do tratamento."""
 
@@ -92,6 +103,12 @@ class ChallengeIntegration:
     relay: LiveViewRelay | None = None
     #: Desabilita o controle de envio durante a janela do operador.
     lock_submit: bool = True
+    #: Banco para a evidencia DURAVEL da janela. Ausente = sem registro
+    #: (testes de unidade da composicao); presente = `started`/`finished` e
+    #: reconciliacao de janela abandonada por restart.
+    database: Any | None = None
+    #: Quanto se espera a pessoa, em segundos. Vai para a evidencia.
+    wait_seconds: float = 0.0
 
     def handle(self, page: Any, application_id: str) -> ChallengeHandlingResult:
         if page is None:
@@ -105,6 +122,12 @@ class ChallengeIntegration:
 
         session = ChallengeSession.from_observation(observation, application_id=application_id)
         orchestrator = self.orchestrator_factory(observer)
+        self._record(application_id, HANDOFF_STARTED, {
+            "session_id": session.session_id,
+            "provider": session.provider.value,
+            "challenge_type": session.challenge_type,
+            "wait_seconds": round(float(self.wait_seconds), 3),
+        })
         locked = False
         if self.relay is not None and self.lock_submit:
             # O submit sai do alcance ANTES de qualquer comando ser aceito.
@@ -127,7 +150,58 @@ class ChallengeIntegration:
             _detach(observer)
 
         handling = ChallengeHandling.CONTINUE if outcome.resolved else ChallengeHandling.NEEDS_HUMAN
-        return ChallengeHandlingResult(handling, outcome=outcome, observation=observation)
+        result = ChallengeHandlingResult(handling, outcome=outcome, observation=observation)
+        self._record(application_id, HANDOFF_FINISHED, dict(result.as_journal()))
+        return result
+
+    def _record(self, application_id: str, event: str, payload: dict[str, object]) -> None:
+        """Grava a evidencia da janela. Falha de persistencia nunca derruba o loop."""
+        if self.database is None:
+            return
+        try:
+            self.database.append_application_event(application_id, event, dict(payload))
+        except Exception:  # pragma: no cover - auditoria nao pode parar a candidatura
+            pass
+
+
+def reconcile_abandoned_handoffs(database: Any, application_id: str) -> int:
+    """Fecha janelas do operador que ficaram abertas por um restart.
+
+    Uma janela `started` sem `finished` significa que o processo morreu enquanto
+    a pessoa agia. O browser nao volta, entao o que resta e registrar o
+    abandono — com o motivo — e deixar a Application seguir o fluxo normal (nada
+    foi escrito, e a retomada e segura por desenho).
+
+    Idempotente: o proprio evento de abandono fecha a janela, e uma segunda
+    chamada nao encontra nada pendente.
+    """
+    try:
+        events = database.list_application_events(application_id)
+    except Exception:  # pragma: no cover - banco indisponivel nao derruba o loop
+        return 0
+
+    pending: dict[str, object] = {}
+    abandoned = 0
+    for item in events:
+        event = str(getattr(item, "event", ""))
+        if event == HANDOFF_STARTED:
+            pending = dict(getattr(item, "payload", {}) or {})
+        elif event in {HANDOFF_FINISHED, HANDOFF_ABANDONED}:
+            pending = {}
+    if not pending:
+        return 0
+    database.append_application_event(
+        application_id,
+        HANDOFF_ABANDONED,
+        {
+            "reason": "process_restarted_with_window_open",
+            "session_id": str(pending.get("session_id", "")),
+            "provider": str(pending.get("provider", "")),
+            "challenge_type": str(pending.get("challenge_type", "")),
+        },
+    )
+    abandoned = 1
+    return abandoned
 
 
 def _detach(observer: object) -> None:
@@ -166,4 +240,12 @@ def _failed_outcome(session: ChallengeSession) -> OrchestratorOutcome:
     )
 
 
-__all__ = ["ChallengeHandling", "ChallengeHandlingResult", "ChallengeIntegration"]
+__all__ = [
+    "ChallengeHandling",
+    "ChallengeHandlingResult",
+    "ChallengeIntegration",
+    "HANDOFF_ABANDONED",
+    "HANDOFF_FINISHED",
+    "HANDOFF_STARTED",
+    "reconcile_abandoned_handoffs",
+]

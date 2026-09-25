@@ -248,6 +248,10 @@ class ApplicationLoop:
             return blocked
 
         phases: list[str] = [LoopPhase.PREPARE.value]
+        # Uma janela do operador aberta por um processo que morreu e fechada AQUI,
+        # antes de qualquer trabalho novo: a evidencia do abandono fica gravada e
+        # a execucao comeca sem herdar uma janela fantasma.
+        self._reconcile_handoffs(application)
         material = self.runtime.prepare(job)
         application = self._record_materials(service, application, material)
         adapter = self.runtime.adapter_for(job)
@@ -416,6 +420,18 @@ class ApplicationLoop:
             return 0
 
     # -- challenge antes da escrita --------------------------------------------
+
+    def _reconcile_handoffs(self, application: Application) -> None:
+        """Fecha janelas do operador que ficaram abertas por restart."""
+        integration = self.runtime.challenge_integration
+        if integration is None or getattr(integration, "database", None) is None:
+            return
+        try:
+            from .challenge_integration import reconcile_abandoned_handoffs
+
+            reconcile_abandoned_handoffs(self.database, application.id)
+        except Exception:  # pragma: no cover - reconciliar nunca derruba o loop
+            pass
 
     def _handle_challenge(self, session: Any, application: Application) -> Any | None:
         """Trata o desafio antes da escrita. Devolve o bloqueio, ou `None`.

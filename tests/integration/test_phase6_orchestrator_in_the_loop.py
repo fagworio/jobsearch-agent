@@ -148,3 +148,50 @@ def test_the_operator_still_cannot_submit_through_the_orchestrator_path(tmp_path
         relay = harness.relay
         assert relay is not None
         assert any(not entry.accepted for entry in relay.results)
+
+
+def test_a_window_left_open_by_a_restart_is_reconciled_before_the_new_attempt(tmp_path: Path):
+    """O cenário que faltava: processo morreu no meio da resolução.
+
+    Antes desta correção, um crash na janela do operador não deixava **rastro
+    nenhum** — a Application ficava no estado anterior e o trabalho da pessoa
+    desaparecia em silêncio. Agora a janela é durável, e a execução seguinte
+    fecha a janela fantasma com motivo explícito antes de começar.
+    """
+    from jobsearch_agent.application import ApplicationService
+
+    with ChallengeCapableATS(challenge_before=True) as ats:
+        harness = build_harness(
+            tmp_path,
+            ats,
+            resolution_enabled=True,
+            captcha_wait=3.0,
+            poll_seconds=0.05,
+            on_wait=_solve_once,
+            orchestrator_handling=True,
+        )
+        # A Application já existia (o processo anterior criou), mas o processo
+        # morreu com a janela do operador aberta: nenhum evento de fechamento.
+        application = ApplicationService(harness.database).create_for_job(harness.job_id)
+        harness.database.append_application_event(
+            application.id,
+            "challenge_handoff_started",
+            {"session_id": "sessao-do-processo-morto", "provider": "recaptcha", "challenge_type": "checkbox"},
+        )
+
+        result = harness.run()
+
+        assert result.status == SUBMITTED, (result.status, result.reason)
+        events = [(event.event, dict(event.payload)) for event in harness.database.list_application_events(application.id)]
+        kinds = [kind for kind, _payload in events]
+
+        # A janela fantasma foi fechada ANTES da nova (ordem é evidência).
+        abandoned = [payload for kind, payload in events if kind == "challenge_handoff_abandoned"]
+        assert len(abandoned) == 1, kinds  # reconciliar é idempotente
+        assert abandoned[0]["reason"] == "process_restarted_with_window_open"
+        assert abandoned[0]["session_id"] == "sessao-do-processo-morto"
+        # O fechamento vem ANTES de qualquer trabalho da execução nova.
+        assert kinds.index("challenge_handoff_abandoned") < kinds.index("application_preparing")
+        # A janela nova abriu e fechou normalmente.
+        assert kinds.count("challenge_handoff_started") == 2
+        assert kinds.count("challenge_handoff_finished") == 1
