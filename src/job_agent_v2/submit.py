@@ -407,19 +407,34 @@ def _classify(
 
 
 def _await_outcome(
-    page: Any, posts: list[Any], responses: list[dict[str, Any]], apply_url: str, budget_ms: int
+    page: Any,
+    posts: list[Any],
+    responses: list[dict[str, Any]],
+    apply_url: str,
+    budget_ms: int,
+    grace_ms: int = 25_000,
 ) -> None:
     """Espera o desfecho e PARA assim que ele aparece.
 
     Sem isso, o handoff humano ficava preso o orcamento inteiro mesmo depois de a
     pessoa resolver o desafio e o POST ja ter saido.
+
+    E a escrita NAO encerra a espera sozinha: detectar a requisicao e mais cedo
+    que receber a resposta, e foi assim que um 400 do servidor passou em branco.
+    Depois da escrita, espera-se a RESPOSTA (ou o limite de graca).
     """
     deadline = time.monotonic() + budget_ms / 1000
+    write_seen_at: float | None = None
     while time.monotonic() < deadline:
         page.wait_for_timeout(2_000)
         writes, _ = _split_posts(posts, apply_url)
-        if writes or responses or CONFIRMATION.search(_safe_content(page)):
+        if responses or CONFIRMATION.search(_safe_content(page)):
             return
+        if writes:
+            if write_seen_at is None:
+                write_seen_at = time.monotonic()
+            elif time.monotonic() - write_seen_at >= grace_ms / 1000:
+                return
 
 
 def _page_state(page: Any) -> tuple[str, str, bool, re.Match[str] | None]:
