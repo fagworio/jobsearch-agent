@@ -159,6 +159,12 @@ class BrowserSubmitter:
         guard = getattr(session, "network_guard", None)
         submit_writes_used = 0
         try:
+            # P0.1: a fronteira e cruzada ANTES de armar a escrita. Marcar depois
+            # de `arm_writes()` deixaria uma janela em que o POST pode sair sem
+            # marco — e um crash ali seria indistinguivel de "nada saiu". O falso
+            # positivo (marcador gravado e `arm_writes` falhando) e aceitavel de
+            # proposito: exactly-once prefere perder um retry a duplicar.
+            self.database.mark_write_possible(attempt.id)
             session.arm_writes(permits)
             # Runtime do widget anti-bot: boundary PROPRIA, com orcamento
             # independente do de submissao. Os requisitos vem do challenge-guard

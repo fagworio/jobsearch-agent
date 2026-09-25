@@ -582,6 +582,33 @@ class Database:
         ).fetchall()
         return [SubmissionAttempt(**json.loads(row[0])) for row in rows]
 
+    def mark_write_possible(self, attempt_id: str, *, at: str = "") -> bool:
+        """Cruza a fronteira de risco da escrita: monotono e condicional.
+
+        Nao e "SELECT, modifica em Python, UPDATE sem condicao": a condicao viaja
+        no proprio UPDATE (`attempt_json=?`), e antes dela o payload e conferido
+        (`status == SUBMITTING` e `write_possible_at == ""`). Quem perde a
+        corrida recebe `False`, e uma fronteira cruzada nunca e descruzada.
+        """
+        moment = at or now_iso()
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT attempt_json FROM submission_attempts WHERE id=?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            payload = json.loads(row[0])
+            if str(payload.get("status", "")) != "SUBMITTING":
+                return False
+            if str(payload.get("write_possible_at", "")):
+                return False
+            payload["write_possible_at"] = moment
+            cursor = self.connection.execute(
+                "UPDATE submission_attempts SET attempt_json=? WHERE id=? AND attempt_json=?",
+                (canonical_json(payload), attempt_id, row[0]),
+            )
+            return cursor.rowcount == 1
+
     def begin_submission_attempt(self, intent: SubmissionIntent, attempt: SubmissionAttempt, event: ApplicationEvent) -> None:
         """Persist the attempt before network I/O and advance state atomically."""
         with self.connection:
