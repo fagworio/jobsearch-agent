@@ -171,6 +171,24 @@ def _css_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+#: Caracteres de CONTROLE (newline inclusive). Dentro de uma CSS string eles tem
+#: de virar escape `\<hex> `: o parser recusa o seletor antes de procurar o
+#: elemento. O ATS real produz id de ancestral com `\n\n` no meio.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _css_string_escape(value: str) -> str:
+    """Escapa um valor para dentro de uma CSS string (`[id="..."]`).
+
+    Aspas e barra invertida tem escape classico; controles/newlines viram
+    `backslash + hex + espaco`, a forma que o parser aceita. O valor NAO e normalizado: colapsar
+    espaco transformaria `countrySurvey\n\n_all-...` em outra string, e o seletor
+    apontaria para outro elemento — ou para nenhum.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return _CONTROL_CHARS.sub(lambda match: "\\%x " % ord(match.group(0)), text)
+
+
 def _id_selector(value: str) -> str:
     """CSS selector for an id that may not be a valid CSS identifier.
 
@@ -182,7 +200,7 @@ def _id_selector(value: str) -> str:
     text = str(value)
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", text):
         return f"#{_css_escape(text)}"
-    return f'[id="{_css_escape(text)}"]'
+    return f'[id="{_css_string_escape(text)}"]'
 
 
 def _key(element: Tag, index: int) -> str:
@@ -261,7 +279,7 @@ def _option_locator(element: Tag, index: int, group_locator: str) -> str:
     if element.get("id"):
         return _id_selector(element["id"])
     if element.get("name") and element.get("value") is not None:
-        return f'{element.name}[name="{_css_escape(str(element["name"]))}"][value="{_css_escape(str(element["value"]))}"]'
+        return f'{element.name}[name="{_css_string_escape(str(element["name"]))}"][value="{_css_string_escape(str(element["value"]))}"]'
     return _ancestor_locator(element)
 
 
@@ -386,7 +404,7 @@ class ATSInspector:
         if first.name == "select":
             for option in first.find_all("option"):
                 label = option.get_text(" ", strip=True) or str(option.get("value", ""))
-                value = _css_escape(str(option.get("value", "")))
+                value = _css_string_escape(str(option.get("value", "")))
                 option_locators[label] = f'{locator} option[value="{value}"]'
                 option_values[label] = str(option.get("value", ""))
         elif field_type == "combobox":
