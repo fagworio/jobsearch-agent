@@ -89,6 +89,9 @@ def test_a_new_code_attempt_with_an_explicit_empty_marker_is_safely_pre_write(tm
     assert database.get_submission_attempt(attempt_id).status == "INTERRUPTED"
     events = _events(database, application_id)
     assert events["submission_recovery_pre_write"]["action"] == "resume"
+    # FONTE DE VERDADE do dominio: coluna e JSON sincronizados.
+    assert database.get_submission_intent(_raw(database, attempt_id)["intent_id"]).status == "INTERRUPTED"
+    assert events["submission_recovery_pre_write"]["write_boundary"] == "pre_write"
 
 
 def test_a_legacy_attempt_without_the_key_is_ambigUOUS_never_pre_write(tmp_path: Path):
@@ -110,6 +113,101 @@ def test_a_legacy_attempt_without_the_key_is_ambigUOUS_never_pre_write(tmp_path:
     events = _events(database, application_id)
     assert events["submission_recovery_unknown"]["action"] == "reconcile_confirmation"
     assert "submission_recovery_pre_write" not in events
+    # A auditoria nao pode apagar a diferenca que decidiu o ramo: chave AUSENTE.
+    assert events["submission_recovery_unknown"]["write_boundary"] == "legacy_missing"
+    assert events["submission_recovery_unknown"]["write_possible_at_present"] is False
+    assert database.get_submission_intent(payload["intent_id"]).status == "SUBMIT_UNKNOWN"
+
+
+def _race(database: Database, mutation) -> None:
+    """Simula OUTRO processo alterando o estado entre a leitura e o CAS."""
+    import jobsearch_agent.persistence as persistence
+
+    original = persistence.json.loads
+    calls = {"n": 0}
+
+    def hooked(raw, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            mutation()
+        return original(raw, *args, **kwargs)
+
+    persistence.json.loads = hooked
+    try:
+        yield_call = None
+    finally:
+        persistence.json.loads = original
+
+
+def test_losing_the_attempt_race_rolls_everything_back(tmp_path: Path):
+    database, application_id, attempt_id = _stranded(tmp_path)
+    intent_id = _raw(database, attempt_id)["intent_id"]
+    import sqlite3
+
+    from jobsearch_agent import persistence as persistence_module
+
+    original = persistence_module.json.loads
+    state = {"mutated": False}
+
+    def hooked(raw, *args, **kwargs):
+        if not state["mutated"]:
+            state["mutated"] = True
+            other = sqlite3.connect(database.path)
+            other.execute("UPDATE submission_attempts SET attempt_json='{\"status\": \"SUBMITTING\"}' WHERE id=?", (attempt_id,))
+            other.commit()
+            other.close()
+        return original(raw, *args, **kwargs)
+
+    persistence_module.json.loads = hooked
+    try:
+        with pytest.raises(ApplicationConflict, match="lost attempt race|diverges"):
+            database.recover_stranded_submission(application_id)
+    finally:
+        persistence_module.json.loads = original
+
+    assert database.get_application(application_id).state is ApplicationState.SUBMITTING
+    assert database.get_submission_intent(intent_id).status == "SUBMITTING", "rollback completo"
+    assert "submission_recovery_unknown" not in _events(database, application_id)
+
+
+def test_losing_the_application_race_rolls_everything_back(tmp_path: Path):
+    database, application_id, attempt_id = _stranded(tmp_path)
+    import sqlite3
+
+    from jobsearch_agent import persistence as persistence_module
+
+    original = persistence_module.json.loads
+    state = {"mutated": False}
+
+    def hooked(raw, *args, **kwargs):
+        if not state["mutated"]:
+            state["mutated"] = True
+            other = sqlite3.connect(database.path)
+            other.execute("UPDATE applications SET state='SUBMIT_UNKNOWN' WHERE id=?", (application_id,))
+            other.commit()
+            other.close()
+        return original(raw, *args, **kwargs)
+
+    persistence_module.json.loads = hooked
+    try:
+        with pytest.raises(ApplicationConflict, match="lost application race"):
+            database.recover_stranded_submission(application_id)
+    finally:
+        persistence_module.json.loads = original
+
+    assert database.get_submission_attempt(attempt_id).status == "SUBMITTING", "rollback completo"
+    assert database.get_submission_intent(_raw(database, attempt_id)["intent_id"]).status == "SUBMITTING"
+
+
+def test_an_attempt_json_divergent_from_its_columns_fail_closed(tmp_path: Path):
+    database, application_id, attempt_id = _stranded(tmp_path)
+    payload = _raw(database, attempt_id)
+    payload["id"] = "attempt-fantasma"
+    _write_raw(database, attempt_id, payload)
+
+    with pytest.raises(ApplicationConflict, match="diverges"):
+        database.recover_stranded_submission(application_id)
+    assert database.get_application(application_id).state is ApplicationState.SUBMITTING
 
 
 def test_a_crossed_boundary_is_ambiguous(tmp_path: Path):
@@ -159,7 +257,12 @@ def test_an_attempt_pointing_to_an_unknown_intent_fail_closed(tmp_path: Path):
     # Simula banco inconsistente (FK desligada, importacao externa): o guard tem
     # de falhar fechado mesmo quando o SQLite nao impede a corrupcao.
     database.connection.execute("PRAGMA foreign_keys=OFF")
-    database.connection.execute("UPDATE submission_attempts SET intent_id='intent-fantasma' WHERE id=?", (attempt_id,))
+    payload = _raw(database, attempt_id)
+    payload["intent_id"] = "intent-fantasma"
+    database.connection.execute(
+        "UPDATE submission_attempts SET intent_id='intent-fantasma', attempt_json=? WHERE id=?",
+        (canonical_json(payload), attempt_id),
+    )
     database.connection.commit()
     database.connection.execute("PRAGMA foreign_keys=ON")
 
