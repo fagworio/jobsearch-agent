@@ -7,10 +7,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
+    from pydantic import Field
     from pydantic_settings import BaseSettings, SettingsConfigDict
 except ImportError:  # pragma: no cover - fallback do ambiente mínimo
     BaseSettings = None
     SettingsConfigDict = None
+    Field = None  # type: ignore[assignment]
+
+
+#: Valores que ligam uma flag booleana de ambiente. Tudo o mais (inclusive
+#: ausente) e `False`: uma flag de resolucao de challenge nao pode ligar por
+#: acidente, e `"0"`/`"false"`/`"no"` precisam significar desligado.
+_TRUTHY = frozenset({"1", "true", "yes", "on", "sim"})
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in _TRUTHY
 
 
 if BaseSettings:
@@ -20,6 +35,14 @@ if BaseSettings:
         llm_api_key: str = ""
         llm_model: str = ""
         http_timeout: float = 20.0
+        #: Fase 0 do `challenge_resolution`: o nome e SEM prefixo, como no plano
+        #: de evolucao, e por isso tem alias proprio. Default `false` — enquanto
+        #: estiver assim o pacote nao e importado por nenhum caminho de runtime.
+        enable_challenge_resolution: bool = Field(default=False, validation_alias="ENABLE_CHALLENGE_RESOLUTION")
+
+        @property
+        def challenge_resolution_enabled(self) -> bool:
+            return bool(self.enable_challenge_resolution)
 else:
     class EnvironmentSettings:  # type: ignore[no-redef]
         def __init__(self) -> None:
@@ -27,6 +50,11 @@ else:
             self.llm_api_key = os.getenv("JOBSEARCH_LLM_API_KEY", "")
             self.llm_model = os.getenv("JOBSEARCH_LLM_MODEL", "")
             self.http_timeout = float(os.getenv("JOBSEARCH_HTTP_TIMEOUT", "20"))
+            self.enable_challenge_resolution = _env_flag("ENABLE_CHALLENGE_RESOLUTION", False)
+
+        @property
+        def challenge_resolution_enabled(self) -> bool:
+            return bool(self.enable_challenge_resolution)
 
 
 @dataclass(frozen=True)
@@ -44,6 +72,9 @@ class Settings:
     llm_model: str = ""
     request_timeout: float = 20.0
     real_profile: bool = False
+    #: Fase 0 do `challenge_resolution`. O loop so pode consultar o pacote
+    #: quando isto for `True`; hoje nada le a flag alem do teste de contrato.
+    challenge_resolution_enabled: bool = False
 
     @classmethod
     def from_args(cls, root: Path | None = None, **values: object) -> "Settings":
@@ -70,6 +101,7 @@ class Settings:
             llm_model=environment.llm_model,
             request_timeout=environment.http_timeout,
             real_profile=bool(values.get("real_profile", False)),
+            challenge_resolution_enabled=bool(environment.challenge_resolution_enabled),
         )
 
     def resolve(self, path: Path) -> Path:

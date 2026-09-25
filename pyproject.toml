@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "Agente local para análise e preparação segura de candidaturas."
 authors = ["jobsearch-agent contributors"]
 readme = "README.md"
-packages = [{ include = "jobsearch_agent", from = "src" }]
+packages = [
+    { include = "jobsearch_agent", from = "src" },
+    # Fase 0 do challenge_resolution: pacote proprio, com a fronteira verificada
+    # por import-linter. Dependencia de mao unica: o agente pode importa-lo; ele
+    # nao importa nada do agente.
+    { include = "challenge_resolution", from = "src" },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
@@ -24,6 +30,10 @@ challenge-guard = { git = "https://github.com/fagworio/challenge-guard.git", rev
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=8.0,<9.0"
+# Contratos da Fase 0 do challenge_resolution: tipagem estrita e fronteira de
+# import como check estatico (o mesmo invariante do teste de arquitetura).
+mypy = ">=1.11,<2.0"
+import-linter = ">=2.0,<3.0"
 
 [tool.poetry.group.discovery.dependencies]
 python-jobspy = ">=1.1,<2.0"
@@ -57,3 +67,43 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+# O pacote de resolucao e novo e pequeno: ele nasce sob `strict`. O resto do
+# projeto nao esta sob strict e endurecer tudo de uma vez esconderia regressao
+# de tipagem no que ja existe, entao o rigor entra por pacote.
+files = ["src/challenge_resolution"]
+strict = true
+warn_unreachable = true
+no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+module = "challenge_guard.*"
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_packages = ["challenge_resolution", "jobsearch_agent"]
+
+# Contrato 1: o pacote de resolucao nao conhece o agente.
+[[tool.importlinter.contracts]]
+name = "challenge_resolution nao importa jobsearch_agent"
+type = "forbidden"
+source_modules = ["challenge_resolution"]
+forbidden_modules = ["jobsearch_agent"]
+
+# Contrato 2: a fronteira de escrita nao e alcancavel a partir da resolucao.
+# `AuthorizedWrite`/`NetworkWriteGuard` vivem em jobsearch_agent.browser e
+# `SubmissionIntent`/`LiveNetworkPolicy` em jobsearch_agent.submission; como o
+# contrato 1 ja proibe o pacote inteiro, este contrato existe para o dia em que
+# alguem afrouxar o primeiro — a fronteira de escrita continua proibida.
+[[tool.importlinter.contracts]]
+name = "challenge_resolution nao alcanca a fronteira de escrita"
+type = "forbidden"
+source_modules = ["challenge_resolution"]
+forbidden_modules = [
+    "jobsearch_agent.browser",
+    "jobsearch_agent.submission",
+    "jobsearch_agent.submission_browser",
+    "jobsearch_agent.network",
+]

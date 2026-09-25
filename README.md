@@ -498,6 +498,47 @@ O registry de skills vive em [knowledge/skills.yaml](knowledge/skills.yaml), com
 empacotável em `src/jobsearch_agent/knowledge/skills.yaml`. Matching segue aliases exatos,
 matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 
+### Resolução de challenge: Fase 0 (contratos, e desligada)
+
+O `challenge-guard` continua sendo **olhos** — detecta, classifica, observa e decide, e nunca
+resolve. O pacote `challenge_resolution` é a camada de **mãos**, e ela só pode agir no que o agente
+autorizar: o `ApplicationLoop` continua sendo o único que decide se o POST sai.
+
+```text
+guard      detect → classify → observe → decide
+                 ↓
+resolution orquestra tentativas (Engine → Strategy → Executor) e revalida
+                 ↓
+loop       revalida o formulário → autoriza UMA escrita → POST → confirma
+```
+
+A Fase 0 entrega **só contratos** e é invisível em runtime:
+
+- `src/challenge_resolution/`: tipos, modelos imutáveis, proveniência, sessão, matriz de
+  capability, protocols, erros e nomes canônicos de journal. Nenhuma estratégia, nenhuma emissão,
+  nenhum toque em browser.
+- A fronteira é verificada, não prometida: o pacote não importa `jobsearch_agent` e não alcança
+  `AuthorizedWrite`, `SubmissionIntent` ou `NetworkWriteGuard` — é o que garante, por tipo, que
+  resolver um challenge não consome o orçamento de submissão.
+- Nenhum dataclass do pacote pode ter campo com material sensível: um campo com nome proibido
+  derruba o **import** do módulo, antes de qualquer journal em produção.
+
+```bash
+ENABLE_CHALLENGE_RESOLUTION=false    # padrão; a Fase 0 não é importada pelo runtime
+mypy --strict src/challenge_resolution
+lint-imports                          # contratos de fronteira (import-linter)
+pytest tests/test_challenge_resolution_contracts.py tests/test_challenge_resolution_boundaries.py
+```
+
+Flags reservadas para as fases seguintes, todas desligadas: `ENABLE_CHALLENGE_HANDOFF`,
+`ENABLE_CHALLENGE_EXTERNAL_RESOLVER`, `ENABLE_CHALLENGE_AUTO_SUBMIT_AFTER`.
+
+O que **não** existe ainda: estratégia concreta, orquestrador executável, integração com o
+`ApplicationLoop` e qualquer forma de interação com desafio. A decisão aberta da Fase 1 é
+sync/async: os protocols são `async`, mas o executor concreto fala com a API **síncrona** do
+Playwright, que recusa ser chamada dentro de um event loop — a saída é executor em thread,
+orquestrador síncrono, ou migração para a API async.
+
 ## Princípios
 
 - O Career Profile e os locked facts são a fonte factual canônica.
