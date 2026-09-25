@@ -20,6 +20,8 @@ from ..models import Field, Form
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _APPLY_TEXT = re.compile(r"^\s*apply\b", re.IGNORECASE)
+#: Marcador de obrigatorio do label: "✱" na pagina real, "*" nas fixtures.
+_REQUIRED_MARK = "*✱"
 
 
 def _css_string_escape(value: str) -> str:
@@ -33,15 +35,29 @@ def _css_string_escape(value: str) -> str:
     return _CONTROL.sub(lambda m: "\\%x " % ord(m.group(0)), text)
 
 
+def _prompt_text(node: Tag) -> str:
+    return " ".join(node.get_text(" ", strip=True).split()).strip(_REQUIRED_MARK).strip()
+
+
 def _card_prompt(element: Tag) -> str:
-    """Prompt do CARD: so a pergunta, nunca o texto de uma opcao."""
+    """Prompt do CARD: so a pergunta, nunca o texto de uma opcao.
+
+    Preferencia pelo `.application-label` (e, quando existe, pelo `.text` dentro
+    dele). O `<label>` que envolve o card carrega tambem o campo e as mensagens
+    de validacao: no documento real da Spotify isso fazia o prompt da
+    localizacao virar "Current location ✱ No location found. Try entering a
+    different location Loading", e a chave de identidade sairia poluida.
+    """
     question = element.find_parent(class_="application-question")
     if question is None:
         return ""
-    prompt = question.select_one(".application-label .text")
-    if prompt is None:
-        return ""
-    return " ".join(prompt.get_text(" ", strip=True).split()).rstrip("*").strip()
+    for selector in (".application-label .text", ".application-label"):
+        node = question.select_one(selector)
+        if node is not None:
+            text = _prompt_text(node)
+            if text:
+                return text
+    return ""
 
 
 def _option_label(element: Tag) -> str:

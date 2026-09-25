@@ -9,6 +9,9 @@ data/applications/*/
 data/preflight/
 data/public-preflight/
 data/browser_profiles/
+# Diario de envios do V2: marcador de exatamente-uma-vez, fora do git de
+# proposito (contem href/currículo/hashes do candidato).
+data/v2-submissions/
 # Politica fail-closed para dados do candidato: qualquer arquivo novo em
 # profile/ fica IGNORADO por padrao e so entra no repositorio se for
 # explicitamente liberado abaixo. Um arquivo concreto de respostas
