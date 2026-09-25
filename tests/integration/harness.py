@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jobsearch_agent.challenge_gate import PreSubmitChallengeGate
+from jobsearch_agent.live_view import LiveViewRelay
 from jobsearch_agent.loop import ApplicationLoop, LoopRuntime, PreparedMaterial
 from jobsearch_agent.models import (
     ApplicationAnswer,
@@ -95,6 +96,8 @@ class Harness:
     resume_sha256: str = ""
     job_id: str = ""
     gate: PreSubmitChallengeGate | None = None
+    relay: LiveViewRelay | None = None
+    observed: list = field(default_factory=list)
 
     def run(self, *, submit: bool = True):
         return self.loop.run(self.job_id, submit=submit)
@@ -175,15 +178,19 @@ def build_harness(
         )
 
     gate: PreSubmitChallengeGate | None = None
+    relay: LiveViewRelay | None = None
+    observed: list = []
     if resolution_enabled:
+        relay = LiveViewRelay()
+
         def sleep(seconds: float) -> None:
             page = getattr(sessions[-1], "page", None) if sessions else None
             if on_wait is not None and page is not None:
-                on_wait(page)
+                on_wait(page, observed)
             if seconds > 0:
                 time.sleep(seconds)
 
-        gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep)
+        gate = PreSubmitChallengeGate(poll_seconds=poll_seconds, sleep=sleep, relay=relay)
 
     runtime = LoopRuntime(
         adapter_for=lambda job: __import__("jobsearch_agent.ats", fromlist=["GreenhouseAdapter"]).GreenhouseAdapter(),
@@ -205,6 +212,7 @@ def build_harness(
         allow_advance=False,
         challenge_gate=gate,
         challenge_wait_seconds=captcha_wait,
+        live_view_relay=relay,
         # Curto de proposito: quando nada sai, o submitter observa ate o
         # deadline. Num teste isso tem de ser segundos, nao os 45 do padrao.
         submission_timeout=1.5,
@@ -220,12 +228,20 @@ def build_harness(
         resume_sha256=resume_sha256,
         job_id=job_id,
         gate=gate,
+        relay=relay,
+        observed=observed,
     )
 
 
-def remove_challenge_marker(page: Any) -> None:
-    """O que um clique humano produz: o desafio deixa de estar na página."""
+def remove_challenge_marker(page: Any, observed: list | None = None) -> None:
+    """O que um clique humano produz: o desafio deixa de estar na página.
+
+    `observed` (opcional) recebe fatos do DOM lidos NA THREAD DA PÁGINA — é a
+    única forma legítima de um teste inspecionar a página enquanto o loop roda.
+    """
     page.evaluate("() => { const el = document.getElementById('gate-challenge'); if (el) el.remove(); }")
+    if observed is not None:
+        observed.append({"locked": page.evaluate("() => document.querySelectorAll('[data-liveview-locked]').length")})
 
 
 __all__ = [

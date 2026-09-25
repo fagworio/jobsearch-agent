@@ -191,6 +191,12 @@ class LoopRuntime:
     #: enquanto o gate reobserva. Zero = uma unica leitura, e desafio presente
     #: ja bloqueia.
     challenge_wait_seconds: float = 0.0
+    #: Relay do operador. Existe junto com o gate (mesma flag): e por `offer()`
+    #: que uma superficie de operador — hoje um teste, amanha um CLI/HTTP —
+    #: entrega comandos para a thread que possui a pagina. O relay nunca da
+    #: acesso ao controle de envio: `drain()` recusa clique sobre submit e
+    #: teclas que submetem, e o submit fica desabilitado durante a janela.
+    live_view_relay: Any | None = None
     #: Endereco que RECEBE o POST da candidatura. Nao e o mesmo que a URL do
     #: formulario: no Workable o formulario vive em
     #: `/apply.workable.com/<account>/j/<shortcode>/apply` e a candidatura sobe

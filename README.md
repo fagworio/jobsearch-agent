@@ -498,6 +498,33 @@ O registry de skills vive em [knowledge/skills.yaml](knowledge/skills.yaml), com
 empacotável em `src/jobsearch_agent/knowledge/skills.yaml`. Matching segue aliases exatos,
 matching fuzzy e, somente quando configurado, enriquecimento semântico por LLM.
 
+### Operador humano sem alcançar o envio
+
+Quando o gate espera alguém resolver o desafio, essa pessoa pode estar em outro lugar: os comandos
+dela entram por uma fila thread-safe (`LiveViewRelay.offer`) e são executados **na thread que possui
+a página** — a API síncrona do Playwright é presa à thread, então uma ponte de outro processo/thread
+só pode *enfileirar*, nunca tocar a página direto.
+
+Três travas independentes mantêm o envio fora de alcance, cada uma com teste:
+
+| trava | o que impede |
+| --- | --- |
+| lockdown | o controle de envio fica `disabled` durante a janela do operador (medido na página) e é restaurado depois, sem tocar no que a própria página desabilitou |
+| hit-test | clique que cai sobre um controle de envio é recusado (`click_on_submit_control`); clique que não acerta elemento algum também (`click_on_no_element`) |
+| teclas | `Enter`, `Space` e `Tab` são recusados (`key_can_submit`): num formulário HTML eles acionam — ou levam o foco até — o botão de envio |
+
+```bash
+.venv/bin/python -m pytest tests/integration/test_operator_cannot_submit.py -q
+```
+
+O caso central é um operador que **só tenta sequestrar o envio**: mira o botão real (medido na
+página), pressiona Enter/Tab/Space e produz **zero POSTs**. O outro caso é um operador que resolve o
+desafio: um clique no widget e a candidatura segue, com exatamente uma escrita.
+
+Limite declarado: restringir o clique ao *bounding box* do desafio exige geometria que o
+`challenge-guard` v0.1.0 não publica (`ChallengeObservation` traz apenas `challenge_dimensions`).
+Enquanto isso, a garantia é lockdown + hit-test + teclas — que não dependem de conhecer o provider.
+
 ### Challenge antes do POST: observar, esperar a pessoa, e então escrever
 
 Com `ENABLE_CHALLENGE_RESOLUTION=true`, o loop passa a **olhar** o estado anti-bot antes de autorizar

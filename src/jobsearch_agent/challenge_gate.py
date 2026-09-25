@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .challenges import ChallengeOutcome, JobsearchChallengeAdapter
+from .live_view import LiveViewRelay
 
 #: Decisões do guard que significam "pode seguir": não há desafio, ou o desafio
 #: que havia foi resolvido externamente.
@@ -74,11 +75,15 @@ class PreSubmitChallengeGate:
         poll_seconds: float = 1.0,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        relay: "LiveViewRelay | None" = None,
     ) -> None:
         self._adapter_factory = adapter_factory
         self._poll_seconds = max(poll_seconds, 0.05)
         self._sleep = sleep
         self._clock = clock
+        #: Quando presente, a espera vira uma janela de operador: o submit fica
+        #: desabilitado por nos e os comandos dele sao drenados a cada rodada.
+        self._relay = relay
 
     def evaluate(self, page: Any, *, wait_seconds: float = 0.0) -> ChallengeGateResult:
         """Uma leitura quando não há espera; observação repetida quando há.
@@ -91,8 +96,14 @@ class PreSubmitChallengeGate:
         rounds = 0
         resolved = False
         outcome: ChallengeOutcome | None = None
+        operator_window = False
         try:
             adapter.attach(page)
+            if self._relay is not None and wait_seconds > 0:
+                # A partir daqui existe uma janela de operador: o controle de
+                # envio sai do alcance dele ANTES de qualquer comando ser aceito.
+                self._relay.lock_submit(page)
+                operator_window = True
             while True:
                 rounds += 1
                 try:
@@ -130,8 +141,17 @@ class PreSubmitChallengeGate:
                         waited_seconds=self._clock() - started,
                         session_id=str(getattr(outcome, "session_id", "") or ""),
                     )
+                if self._relay is not None:
+                    # Comandos do operador sao executados AQUI: esta e a thread
+                    # que possui a pagina.
+                    self._relay.drain(page)
                 self._sleep(self._poll_seconds)
         finally:
+            if operator_window and self._relay is not None:
+                try:
+                    self._relay.restore_submit(page)
+                except Exception:  # pragma: no cover - restaurar nunca derruba o loop
+                    pass
             try:
                 adapter.detach()
             except Exception:  # pragma: no cover - desanexar nunca derruba o loop

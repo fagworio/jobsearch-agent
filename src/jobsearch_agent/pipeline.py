@@ -13,6 +13,7 @@ from .application import ApplicationService, context_from_dict, evaluate_safety_
 from .ats import GreenhouseAdapter, adapter_for
 from .browser import AuthorizedWrite, DryRunBrowserExecutor, PlaywrightSessionManager
 from .challenge_gate import PreSubmitChallengeGate
+from .live_view import LiveViewRelay
 from .challenges import JobsearchChallengeAdapter
 from .config import Settings
 from .coordinator import SubmissionCoordinator
@@ -920,7 +921,15 @@ def loop_runtime(
     # Gate de challenge ANTES da escrita: opt-in por
     # `ENABLE_CHALLENGE_RESOLUTION=true`. Desligado (o padrao) o loop nem
     # instancia o gate, e o comportamento e exatamente o de antes.
-    challenge_gate = PreSubmitChallengeGate() if settings.challenge_resolution_enabled else None
+    # O relay do operador e a janela em que ele age: nascem com o gate, sob a
+    # mesma flag. Sem a flag, nenhum dos dois existe e o comportamento e o de
+    # antes.
+    live_view_relay = LiveViewRelay() if settings.challenge_resolution_enabled else None
+    challenge_gate = (
+        PreSubmitChallengeGate(relay=live_view_relay)
+        if settings.challenge_resolution_enabled
+        else None
+    )
 
     return LoopRuntime(
         adapter_for=adapter_resolver or resolve_adapter,
@@ -929,6 +938,7 @@ def loop_runtime(
         submission_destination=submission_destination,
         challenge_gate=challenge_gate,
         challenge_wait_seconds=max(float(captcha_wait), 0.0),
+        live_view_relay=live_view_relay,
         profile=candidate_profile,
         preferences=preferences,
         answers=answers,

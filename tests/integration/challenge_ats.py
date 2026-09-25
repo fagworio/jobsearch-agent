@@ -76,6 +76,12 @@ def render_form(*, challenge: bool) -> str:
         document.getElementById('gate-error').hidden = false;
       }}
     }});
+    const gateChallenge = document.getElementById('gate-challenge');
+    if (gateChallenge) {{
+      // Um clique humano no widget resolve: o marcador sai da pagina. E o que
+      // o guard passa a reportar como `resolved_externally`.
+      gateChallenge.addEventListener('click', () => gateChallenge.remove());
+    }}
   </script>
 </body></html>"""
 
