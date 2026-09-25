@@ -48,6 +48,8 @@ def test_post_write_states_stop():
 def test_human_states_stop():
     for state in ("NEEDS_ANSWER", "NEEDS_ARTIFACT", "NEEDS_LOGIN", "NEEDS_MFA", "NEEDS_CAPTCHA", "NEEDS_HUMAN_CAPTCHA", "POLICY_BLOCKED", "REJECTED"):
         assert ra_si.classify(_run(""), _durable(state))[0] == ra_si.HUMAN_REQUIRED, state
+    crossed = (_attempt(write_possible_at="2026-09-25T10:00:00+00:00"),)
+    assert ra_si.classify(_run(""), _durable("NEEDS_LOGIN", crossed))[0] == ra_si.POST_WRITE_STOP
 
 
 def test_submitting_with_crossed_boundary_is_hard_stop():
@@ -131,6 +133,27 @@ def test_fixer_command_is_allowlisted():
             ra_si.assert_fixer_cannot_submit(command)
 
 
+def test_commit_rejects_preexisting_index_entries(monkeypatch):
+    def fake_git(*args):
+        if args == ("diff", "--cached", "--name-only"):
+            return ra_si.subprocess.CompletedProcess(args, 0, "private.env\n", "")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(ra_si, "git", fake_git)
+    with pytest.raises(ra_si.SupervisorError, match="pre-existing staged"):
+        ra_si.commit("test", ["src/fix.py"])
+
+
+def test_changed_files_fails_closed_on_git_status_error(monkeypatch):
+    monkeypatch.setattr(
+        ra_si,
+        "git",
+        lambda *args: ra_si.subprocess.CompletedProcess(args, 128, "", "status failed"),
+    )
+    with pytest.raises(ra_si.SupervisorError, match="git status failed"):
+        ra_si.changed_files()
+
+
 def test_recovery_prewrite_is_classified_before_fixer(tmp_path, monkeypatch):
     args = ra_si.parse_args(["--job-id", "j", "--application-id", "a", "--journal-dir", str(tmp_path)])
     states = iter((_durable("SUBMITTING", (_attempt(),)), _durable("REVIEW_REACHED")))
@@ -165,3 +188,34 @@ def test_the_loop_stops_on_hard_stop_without_calling_the_fixer(tmp_path, monkeyp
     assert exit_code == 3
     assert calls["fix"] == 0
     assert (tmp_path / "journal.jsonl").exists()
+
+
+def test_validation_failure_stops_before_second_real_run(tmp_path, monkeypatch):
+    args = ra_si.parse_args([
+        "--job-id", "j", "--application-id", "a", "--journal-dir", str(tmp_path),
+        "--max-iterations", "2",
+    ])
+    calls = {"run": 0}
+
+    def fake_run():
+        calls["run"] += 1
+        return _run("ERROR")
+
+    monkeypatch.setattr(
+        ra_si,
+        "git",
+        lambda *args: ra_si.subprocess.CompletedProcess(args, 0, "abc123\n", ""),
+    )
+    monkeypatch.setattr(ra_si, "changed_files", lambda: [])
+    monkeypatch.setattr(ra_si, "inspect_database", lambda database, application_id: _durable("READY_TO_APPLY"))
+    monkeypatch.setattr(ra_si, "workspace_snapshot", lambda: {})
+    monkeypatch.setattr(ra_si, "new_fixer_paths", lambda baseline: ["src/fix.py"])
+
+    exit_code = ra_si.supervisor_loop(
+        database=object(), args=args, run_application=fake_run,
+        fix=lambda prompt, timeout: 0,
+        test=lambda selector: (False, "failing test"),
+    )
+
+    assert exit_code == 9
+    assert calls["run"] == 1

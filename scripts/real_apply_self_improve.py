@@ -166,10 +166,10 @@ def classify(result: RunResult, durable: Durable) -> tuple[str, str]:
     """(desfecho, motivo). Nunca inventa permissao de reenvio."""
     if durable.state == ApplicationState.SUBMITTED.value:
         return SUCCESS, "application persistida em SUBMITTED"
-    if durable.state in HUMAN_STATES:
-        return HUMAN_REQUIRED, f"estado exige pessoa: {durable.state}"
     if durable.last_attempt is not None and durable.last_attempt.boundary_crossed:
         return POST_WRITE_STOP, "tentativa persistida com write_possible_at preenchido"
+    if durable.state in HUMAN_STATES:
+        return HUMAN_REQUIRED, f"estado exige pessoa: {durable.state}"
     if durable.state == ApplicationState.SUBMITTING.value:
         # Fronteira cruzada ou tentativa ambigua: quem decide e o recovery, e ele
         # roda UMA vez depois que o processo filho terminou (nunca durante).
@@ -302,6 +302,8 @@ def git(*args: str) -> subprocess.CompletedProcess[str]:
 
 def changed_files() -> list[str]:
     result = git("status", "--porcelain")
+    if result.returncode != 0:
+        raise SupervisorError(f"git status failed: {result.stderr[-500:]}")
     return [line[3:].strip() for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -353,9 +355,21 @@ def run_tests(selector: Sequence[str], *, timeout: int) -> tuple[bool, str]:
 def commit(message: str, paths: Sequence[str]) -> str:
     if not paths or any(not path.startswith(ALLOWED_FIX_PATH_PREFIXES) for path in paths):
         raise SupervisorError("refusing to commit an empty or non-source fixer diff")
+    existing = git("diff", "--cached", "--name-only")
+    if existing.returncode != 0:
+        raise SupervisorError(f"git diff --cached failed: {existing.stderr[-500:]}")
+    if existing.stdout.strip():
+        raise SupervisorError("refusing to commit with pre-existing staged paths")
     staged = git("add", "--", *paths)
     if staged.returncode != 0:
         raise SupervisorError(f"git add failed: {staged.stderr[-500:]}")
+    staged_paths = git("diff", "--cached", "--name-only")
+    if staged_paths.returncode != 0:
+        raise SupervisorError(f"git diff --cached failed after add: {staged_paths.stderr[-500:]}")
+    actual = {line.strip() for line in staged_paths.stdout.splitlines() if line.strip()}
+    expected = set(paths)
+    if actual != expected:
+        raise SupervisorError(f"staged paths differ from fixer paths: expected={sorted(expected)} actual={sorted(actual)}")
     committed = git("commit", "-q", "-m", message)
     if committed.returncode != 0:
         raise SupervisorError(f"git commit failed: {committed.stderr[-500:]}")
@@ -437,7 +451,7 @@ def supervisor_loop(
     journal = Path(args.journal_dir) / "journal.jsonl"
     iteration = 0
     fixes_for_blocker = 0
-    active_blocker: tuple[str, str, str] | None = None
+    active_blocker: tuple[str, str] | None = None
     while iteration < args.max_iterations:
         iteration += 1
         sha = git("rev-parse", "HEAD").stdout.strip()
@@ -477,7 +491,7 @@ def supervisor_loop(
             return 3 if outcome == POST_WRITE_STOP else 4
 
         # PREWRITE_BLOCKER: contexto -> fixer -> validacao -> commit -> run de novo.
-        blocker_key = (durable.state, result.status, reason)
+        blocker_key = (durable.state, "prewrite")
         if blocker_key != active_blocker:
             active_blocker = blocker_key
             fixes_for_blocker = 0
@@ -515,20 +529,20 @@ def supervisor_loop(
             return 6
 
         if git("diff", "--check").returncode != 0:
-            print(f"[iter {iteration}] git diff --check sujo: nao commito")
-            continue
+            print(f"[iter {iteration}] HARD STOP: git diff --check sujo")
+            return 9
 
         run_test = test or (lambda selector: run_tests(selector, timeout=args.tests_timeout))
         focused_ok, focused_out = run_test(["tests"]) if args.focused_tests == ["tests"] else run_test(args.focused_tests)
         if not focused_ok:
             journal_append(journal, {"iteration": iteration, "sha": sha, "focused_failed": True})
-            print(f"[iter {iteration}] teste focado vermelho: volta ao fixer")
-            continue
+            print(f"[iter {iteration}] HARD STOP: teste focado vermelho")
+            return 9
         suite_ok, suite_out = run_test(["tests"])
         if not suite_ok:
             journal_append(journal, {"iteration": iteration, "sha": sha, "suite_failed": True})
-            print(f"[iter {iteration}] suite vermelha: volta ao fixer")
-            continue
+            print(f"[iter {iteration}] HARD STOP: suite vermelha")
+            return 9
 
         try:
             new_sha = commit(f"fix(real-apply): iteration {iteration} {reason[:60]}", touched)
@@ -541,6 +555,11 @@ def supervisor_loop(
             pushed = git("push", "origin", args.branch)
             if pushed.returncode != 0:
                 print(f"[iter {iteration}] HARD STOP: git push failed: {pushed.stderr[-500:]}")
+                return 8
+            remote = git("ls-remote", "origin", f"refs/heads/{args.branch}")
+            remote_sha = remote.stdout.split()[0] if remote.returncode == 0 and remote.stdout.split() else ""
+            if remote.returncode != 0 or remote_sha != new_sha:
+                print(f"[iter {iteration}] HARD STOP: remote ref verification failed")
                 return 8
 
     print(f"[stop] limite de iteracoes atingido ({args.max_iterations})")
