@@ -48,7 +48,7 @@ class ChallengeGateResult:
     waited_seconds: float
     session_id: str = ""
 
-    def as_journal(self) -> dict[str, Any]:
+    def as_journal(self) -> dict[str, object]:
         return {
             "blocking": self.blocking,
             "resolved": self.resolved,

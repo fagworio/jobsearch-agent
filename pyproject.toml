@@ -74,30 +74,62 @@ python_version = "3.11"
 # O pacote de resolucao e novo e pequeno: ele nasce sob `strict`. O resto do
 # projeto nao esta sob strict e endurecer tudo de uma vez esconderia regressao
 # de tipagem no que ja existe, entao o rigor entra por pacote.
-files = ["src/challenge_resolution"]
+files = [
+    "src/challenge_resolution",
+    "src/jobsearch_agent/live_view.py",
+    "src/jobsearch_agent/challenge_gate.py",
+]
 strict = true
 warn_unreachable = true
+warn_unused_ignores = true
 no_implicit_reexport = true
+no_implicit_optional = true
+# `Any` explicito nao entra no pacote protegido: um saco de valores opacos usa
+# `object`. (Nos modulos do agente que recebem a `page`, `Any` continua correto:
+# tipar como Playwright acoplaria a fronteira a biblioteca.)
+disallow_any_explicit = true
+disallow_any_generics = true
+disallow_subclassing_any = true
 
 [[tool.mypy.overrides]]
 module = "challenge_guard.*"
 ignore_missing_imports = true
 
-[tool.importlinter]
-root_packages = ["challenge_resolution", "jobsearch_agent"]
+# Os dois modulos do agente que falam com o browser recebem a `page` como tipo
+# opaco: tipar como Playwright acoplaria a fronteira a biblioteca. `strict`
+# continua valendo; so a proibicao de `Any` explicito nao se aplica.
+[[tool.mypy.overrides]]
+module = ["jobsearch_agent.live_view", "jobsearch_agent.challenge_gate"]
+strict = true
+disallow_any_explicit = false
 
-# Contrato 1: o pacote de resolucao nao conhece o agente.
+[tool.importlinter]
+# `root_packages` (plural) com os pacotes REAIS. Um `root_package` simbolico
+# que nao existe derruba a ferramenta ("Could not find package ...").
+root_packages = ["challenge_resolution", "jobsearch_agent"]
+# `challenge_guard` e dependencia instalada (SHA imutavel), nao pacote do repo:
+# sem isto os contratos que o citam nao resolvem.
+include_external_packages = true
+
+# Contrato 1: as camadas empilham. O topo importa o de baixo; o de baixo nunca
+# importa o de cima. `challenge_guard` e o fundo (percepcao pura).
+[[tool.importlinter.contracts]]
+name = "arquitetura em camadas"
+type = "layers"
+layers = [
+    "jobsearch_agent",
+    "challenge_resolution",
+    "challenge_guard",
+]
+
+# Contrato 2: o pacote de resolucao nao conhece o agente.
 [[tool.importlinter.contracts]]
 name = "challenge_resolution nao importa jobsearch_agent"
 type = "forbidden"
 source_modules = ["challenge_resolution"]
 forbidden_modules = ["jobsearch_agent"]
 
-# Contrato 2: a fronteira de escrita nao e alcancavel a partir da resolucao.
-# `AuthorizedWrite`/`NetworkWriteGuard` vivem em jobsearch_agent.browser e
-# `SubmissionIntent`/`LiveNetworkPolicy` em jobsearch_agent.submission; como o
-# contrato 1 ja proibe o pacote inteiro, este contrato existe para o dia em que
-# alguem afrouxar o primeiro — a fronteira de escrita continua proibida.
+# Contrato 3: a fronteira de escrita e inalcancavel a partir da resolucao.
 [[tool.importlinter.contracts]]
 name = "challenge_resolution nao alcanca a fronteira de escrita"
 type = "forbidden"
@@ -106,5 +138,29 @@ forbidden_modules = [
     "jobsearch_agent.browser",
     "jobsearch_agent.submission",
     "jobsearch_agent.submission_browser",
-    "jobsearch_agent.network",
 ]
+
+# Contrato 4: o relay do operador e o handoff sao EXECUCAO, nao decisao.
+# A decisao de resolver mora no pacote de resolucao; se a execucao passar a
+# importa-la, as duas camadas viram uma so e a fronteira deixa de valer.
+[[tool.importlinter.contracts]]
+name = "execucao (relay e handoff) nao depende do motor de resolucao"
+type = "forbidden"
+source_modules = [
+    "jobsearch_agent.live_view",
+    "jobsearch_agent.handoff",
+]
+forbidden_modules = ["challenge_resolution"]
+
+# Contrato 5: o handoff assincrono (pacote -> envio manual -> confirmacao) nao
+# toca browser. Ele produz material para uma PESSOA, em outro navegador.
+[[tool.importlinter.contracts]]
+name = "o handoff assincrono nao toca browser"
+type = "forbidden"
+source_modules = ["jobsearch_agent.handoff"]
+forbidden_modules = ["jobsearch_agent.browser", "playwright"]
+# Direto, nao transitivo: o handoff importa `challenges` para reconstruir a
+# proveniencia do desafio a partir do conjunto fechado do guard, e `challenges`
+# importa o browser. O que se proibe e o handoff FALAR com o browser — nao
+# herdar essa dependencia por tabela.
+allow_indirect_imports = true

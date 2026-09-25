@@ -11,7 +11,7 @@ pode aparecer aqui.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Mapping
 
 from .provenance import ChallengeProvenance, _assert_no_sensitive_fields
 from .types import (
@@ -37,7 +37,7 @@ class ResolutionPayload:
     """
 
     kind: str
-    data: Mapping[str, Any] = field(default_factory=dict)
+    data: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Rejeita campos proibidos logo na construção, não em runtime.
@@ -159,7 +159,7 @@ class OrchestratorOutcome:
     final_status: ResolutionStatus
     provenance: ChallengeProvenance
 
-    def as_journal(self) -> Mapping[str, Any]:
+    def as_journal(self) -> Mapping[str, object]:
         """Projeção segura para o journal.
 
         NÃO inclui nada da `provenance` que não esteja explicitamente listado.

@@ -1,0 +1,41 @@
+# Os mesmos aneis do CI, rodando antes do commit. `language: system` para os
+# hooks locais porque eles usam o ambiente do projeto (lint-imports/mypy do venv).
+repos:
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter (camadas)
+        entry: lint-imports --no-cache
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: ast-boundaries
+        name: AST boundaries
+        entry: python -m pytest -q tests/test_architecture_boundaries.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: mypy
+        name: mypy (pacotes protegidos)
+        entry: mypy
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: runtime-isolation
+        name: runtime isolation
+        entry: python -m pytest -q tests/test_runtime_module_isolation.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Constrained a arquivos dos pacotes protegidos: nao faz sentido compilar o
+      # repositorio inteiro a cada commit.
+      - id: compile-protected
+        name: compile protected packages
+        entry: python -m compileall -q src/challenge_resolution
+        language: system
+        pass_filenames: false
+        always_run: true

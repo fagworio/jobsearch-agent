@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Mapping
 
 from .provenance import _assert_no_sensitive_fields
 from .types import (
@@ -67,7 +67,7 @@ class ChallengeSession:
             initial_confidence=float(getattr(observation, "confidence", 0.0)),
         )
 
-    def as_journal(self) -> Mapping[str, Any]:
+    def as_journal(self) -> Mapping[str, object]:
         return {
             "session_id": self.session_id,
             "application_id": self.application_id,

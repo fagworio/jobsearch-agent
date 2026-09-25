@@ -588,10 +588,14 @@ A Fase 0 entrega **só contratos** e é invisível em runtime:
 
 ```bash
 ENABLE_CHALLENGE_RESOLUTION=false    # padrão; a Fase 0 não é importada pelo runtime
-mypy --strict src/challenge_resolution
-lint-imports                          # contratos de fronteira (import-linter)
-pytest tests/test_challenge_resolution_contracts.py tests/test_challenge_resolution_boundaries.py
+make test-architecture                # os quatro anéis de contenção
 ```
+
+Os **quatro anéis** (mais o selfcheck) estão descritos em
+[docs/architecture.md](docs/architecture.md) — dependências entre camadas (import-linter), nomes e
+campos proibidos (AST), anotações (mypy strict, com `Any` explícito proibido no pacote protegido) e
+imports dinâmicos (runtime). O quinto roda uma violação deliberada e exige que cada anel a detecte:
+um contrato que nunca falha não testa nada. Tudo isso roda em todo PR no job `Architecture`.
 
 Flags reservadas para as fases seguintes, todas desligadas: `ENABLE_CHALLENGE_HANDOFF`,
 `ENABLE_CHALLENGE_EXTERNAL_RESOLVER`, `ENABLE_CHALLENGE_AUTO_SUBMIT_AFTER`.

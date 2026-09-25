@@ -1,4 +1,4 @@
-.PHONY: test compile test-core-runtime test-browser-runtime test-linkedin-runtime test-submission-runtime test-invariants help
+.PHONY: test compile test-core-runtime test-browser-runtime test-linkedin-runtime test-submission-runtime test-invariants test-architecture help
 
 help:
 	@echo "make test                       - run pytest"
@@ -8,6 +8,7 @@ help:
 	@echo "make test-linkedin-runtime    - run local LinkedIn fixture tests"
 	@echo "make test-submission-runtime  - run local submission-server tests"
 	@echo "make test-invariants          - run the challenge/submit integration invariants"
+	@echo "make test-architecture        - run the four architecture rings (lint-imports, AST, mypy, runtime)"
 
 test:
 	python3 -m pytest
@@ -42,3 +43,12 @@ test-submission-runtime:
 
 compile:
 	python3 -m compileall -q src
+
+# Os quatro aneis de contencao. Cada um pega uma classe diferente de violacao:
+# dependencias (import-linter), nomes/campos/tipos (AST), anotacoes (mypy),
+# imports dinamicos (runtime) — e o selfcheck garante que nao sao vacuos.
+test-architecture:
+	python3 -m compileall -q src
+	$$(dirname $$(which python3))/lint-imports --no-cache
+	$$(dirname $$(which python3))/mypy
+	python3 -m pytest -q tests/test_architecture_boundaries.py tests/test_runtime_module_isolation.py tests/test_contracts_selfcheck.py
