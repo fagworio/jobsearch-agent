@@ -33,6 +33,9 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   const greenhouse = await readFile(new URL("../src/content/greenhouse.ts", import.meta.url), "utf8");
   assert.match(greenhouse, /aria-labelledby/);
   assert.match(greenhouse, /aria-required/);
+  assert.match(source, /getAttribute\("role"\) === "combobox"/);
+  assert.match(source, /\[role="option"\]/);
+  assert.match(source, /single-value/);
 });
 
 test("upload path is PDF-only and does not execute arbitrary code", async () => {

@@ -18,7 +18,7 @@ from typing import Iterable, Mapping
 from .models import Field, Form, Resolution
 
 #: Tipos em que um valor do profile pode ser usado sem julgamento.
-TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea"})
+TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea", "combobox"})
 
 
 def _norm(value: str) -> str:

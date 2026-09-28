@@ -36,16 +36,40 @@ function dispatchInput(control: HTMLInputElement | HTMLTextAreaElement | HTMLSel
   control.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function ensureReadBack(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, expected: string, checked?: boolean): void {
-  const actual = control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)
+function readBackValue(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {
+  if (control instanceof HTMLInputElement && control.getAttribute("role") === "combobox") {
+    const selected = control.closest("[class*='select__control']")?.querySelector("[class*='single-value']");
+    return selected?.textContent?.replace(/\s+/g, " ").trim() || control.value;
+  }
+  return control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)
     ? control.checked
     : control.value;
+}
+
+function ensureReadBack(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, expected: string, checked?: boolean): void {
+  const actual = readBackValue(control);
   if (typeof checked === "boolean" ? actual !== checked : actual !== expected) {
     throw new Error(`FIELD_MISMATCH: expected ${expected || String(checked)} but read ${String(actual)}`);
   }
 }
 
-function fillOne(payload: FillPayload): void {
+async function selectCombobox(control: HTMLInputElement, value: string): Promise<void> {
+  control.focus();
+  control.click();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(control, value);
+  control.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+  await new Promise((resolve) => window.setTimeout(resolve, 100));
+  const option = Array.from(document.querySelectorAll('[role="option"]'))
+    .filter((element) => isVisible(element))
+    .find((element) => element.textContent?.replace(/\s+/g, " ").trim() === value);
+  if (!(option instanceof HTMLElement)) throw new Error("combobox option not found");
+  option.click();
+  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+  ensureReadBack(control, value);
+}
+
+async function fillOne(payload: FillPayload): Promise<void> {
   if (typeof payload.field_id !== "string" || !payload.field_id.trim()) throw new Error("field_id is required");
   if (typeof payload.action !== "string") throw new Error("action is required");
   const value = typeof payload.value === "string" ? payload.value : "";
@@ -65,6 +89,10 @@ function fillOne(payload: FillPayload): void {
 
   const control = controls[0];
   if (payload.action === "select") {
+    if (control instanceof HTMLInputElement && control.getAttribute("role") === "combobox") {
+      await selectCombobox(control, value);
+      return;
+    }
     if (!(control instanceof HTMLSelectElement)) throw new Error("field is not a native select");
     if (!Array.from(control.options).some((option) => option.value === value || option.textContent?.trim() === value)) {
       throw new Error("select option not found");
@@ -164,11 +192,10 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     try {
       const payload = (message as { payload?: unknown }).payload;
       if (!payload || typeof payload !== "object") throw new Error("payload must be an object");
-      fillOne(payload as FillPayload);
-      sendResponse({ ok: true, result: inspectGreenhouse() });
-    } catch (error) {
-      sendResponse({ ok: false, error: String(error) });
-    }
+      void fillOne(payload as FillPayload)
+        .then(() => sendResponse({ ok: true, result: inspectGreenhouse() }))
+        .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
+    } catch (error) { sendResponse({ ok: false, error: String(error) }); }
     return true;
   }
   if (type === "UPLOAD_ARTIFACT") {
