@@ -13,6 +13,7 @@ import sys
 from typing import BinaryIO
 
 from .protocol import Command, ProtocolError, Request, Response
+from .security import SecurityError, validate_request
 
 
 _HEADER = struct.Struct("<I")
@@ -66,10 +67,11 @@ class NativeHostServer:
         try:
             request = json.loads(raw.decode("utf-8"))
             parsed = Request.from_object(request)
+            validate_request(parsed)
             response = self.handler(parsed)
             if response.request_id != parsed.request_id:
                 raise ProtocolError("handler returned a different request_id")
-        except (ProtocolError, NativeMessagingError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (ProtocolError, SecurityError, NativeMessagingError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             request_id = "invalid-request"
             try:
                 if isinstance(request, dict) and isinstance(request.get("request_id"), str):

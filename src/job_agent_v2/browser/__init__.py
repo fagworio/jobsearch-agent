@@ -8,7 +8,7 @@ from .protocol import (
     Request,
     Response,
 )
-from .client import open_page_html
+from .client import NativeMessagingClient, open_page_html
 
 __all__ = [
     "COMMANDS",
@@ -17,5 +17,6 @@ __all__ = [
     "ProtocolError",
     "Request",
     "Response",
+    "NativeMessagingClient",
     "open_page_html",
 ]
