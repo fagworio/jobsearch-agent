@@ -52,10 +52,16 @@ def test_backend_socket_bridges_a_request_to_the_extension(tmp_path):
     try:
         for _ in range(100):
             if socket_path.exists():
-                break
+                try:
+                    backend = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    backend.connect(str(socket_path))
+                    break
+                except ConnectionRefusedError:
+                    if backend is not None:
+                        backend.close()
+                    backend = None
             threading.Event().wait(0.01)
-        backend = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        backend.connect(str(socket_path))
+        assert backend is not None
         backend_input = backend.makefile("rb", buffering=0)
         backend_output = backend.makefile("wb", buffering=0)
         write_frame(backend_output, Request.create("bridge-1", Command.PING).to_json())
