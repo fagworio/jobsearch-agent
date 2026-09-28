@@ -53,6 +53,7 @@ google-auth-oauthlib = ">=1.2,<2.0"
 [tool.poetry.scripts]
 jobsearch-agent = "jobsearch_agent.cli:main"
 job-agent-v2 = "job_agent_v2.cli:main"
+job-agent-v2-native-host = "job_agent_v2.browser.native_host:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

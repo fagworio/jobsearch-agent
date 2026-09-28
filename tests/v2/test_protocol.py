@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from job_agent_v2.browser.native_host import NativeHostServer, read_frame, write_frame
+from job_agent_v2.browser.native_host import NativeHostServer, ping_handler, read_frame, write_frame
 from job_agent_v2.browser.protocol import Command, ProtocolError, Request, Response
 
 
@@ -44,3 +44,12 @@ def test_native_host_dispatches_ping_without_domain_logic():
         "ok": True,
         "result": {"type": "PONG"},
     }
+
+
+def test_native_host_handler_exposes_only_handshake_commands():
+    assert ping_handler(Request.create("hello", Command.HELLO)).result == {
+        "name": "job-agent-v2",
+        "protocol_version": 1,
+    }
+    denied = ping_handler(Request.create("submit", Command.REQUEST_SUBMIT))
+    assert not denied.ok

@@ -1,0 +1,9 @@
+{
+  "name": "com.job_agent_v2",
+  "description": "Native Messaging host for job-agent-v2",
+  "path": "__HOST_EXECUTABLE__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}

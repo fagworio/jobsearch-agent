@@ -9,9 +9,10 @@ from __future__ import annotations
 from collections.abc import Callable
 import json
 import struct
+import sys
 from typing import BinaryIO
 
-from .protocol import ProtocolError, Request, Response
+from .protocol import Command, ProtocolError, Request, Response
 
 
 _HEADER = struct.Struct("<I")
@@ -86,6 +87,18 @@ class NativeHostServer:
 
 def ping_handler(request: Request) -> Response:
     """Handler mínimo útil para o smoke test do transporte."""
-    if request.command.value == "PING":
+    if request.command is Command.HELLO:
+        return Response.success(request.request_id, {"name": "job-agent-v2", "protocol_version": 1})
+    if request.command is Command.PING:
         return Response.success(request.request_id, {"type": "PONG"})
     return Response.failure(request.request_id, "command is not handled by the transport smoke handler")
+
+
+def main() -> int:
+    """Entry point do host Native Messaging instalado pelo usuário."""
+    NativeHostServer(sys.stdin.buffer, sys.stdout.buffer, ping_handler).serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

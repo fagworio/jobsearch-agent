@@ -1,4 +1,28 @@
-import { request, type Command, type Response } from "./protocol";
+import { request, type Command, type Request, type Response } from "./protocol";
+
+const NATIVE_HOST_NAME = "com.job_agent_v2";
+let nativePort: chrome.runtime.Port | undefined;
+
+function connectNative(): chrome.runtime.Port {
+  if (nativePort) return nativePort;
+  nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  nativePort.onDisconnect.addListener(() => {
+    nativePort = undefined;
+  });
+  return nativePort;
+}
+
+function nativeRequest(message: Request): Promise<Response> {
+  return new Promise((resolve) => {
+    const port = connectNative();
+    const listener = (reply: unknown): void => {
+      port.onMessage.removeListener(listener);
+      resolve(reply as Response);
+    };
+    port.onMessage.addListener(listener);
+    port.postMessage(message);
+  });
+}
 
 function response(requestId: string, result: Record<string, unknown>): Response {
   return { version: 1, request_id: requestId, ok: true, result };
@@ -11,7 +35,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   const type = input.type as Command;
 
   if (type === "PING") {
-    sendResponse(response(requestId, { type: "PONG" }));
+    void nativeRequest(request(requestId, "PING")).then(sendResponse);
     return true;
   }
   if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "GET_CHALLENGE_STATE") {
@@ -34,6 +58,5 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
 
-// Keep the protocol import exercised by the service worker build and make the
-// permitted command surface explicit at the extension boundary.
-void request("startup", "HELLO");
+// Establish the native host lazily on the first request. A missing host is
+// reported by the PING response; the read-only inspection path remains usable.
