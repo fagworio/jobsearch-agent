@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 
-from .answers import resolve
+from .answers import AnswerLibrary, resolve
 from .ats import find_apply_url, inspect_form
 from .browser import open_page_html
 from .models import ApplyResult, State
@@ -18,6 +18,7 @@ def apply(
     approved: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    library: AnswerLibrary | None = None,
     open_page: PageLoader | None = None,
 ) -> ApplyResult:
     """Le a vaga real e decide. Para antes de qualquer escrita.
@@ -44,7 +45,7 @@ def apply(
             apply_url=apply_url,
         )
 
-    resolution = resolve(form, approved=approved, profile=profile, rules=rules)
+    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
     if not resolution.complete:
         return ApplyResult(
             state=State.NEEDS_INPUT,

@@ -16,3 +16,10 @@ test("read-only extension has no arbitrary execution command", async () => {
   assert.doesNotMatch(source, /eval\s*\(|new Function|execute_command|shell/);
   assert.doesNotMatch(source, /\.click\s*\(|\.fill\s*\(|\.remove\s*\(/);
 });
+
+test("extension exposes typed fill/read commands but not submit", async () => {
+  const source = await readFile(new URL("../src/content/common.ts", import.meta.url), "utf8");
+  assert.match(source, /type === "FILL_FORM"/);
+  assert.match(source, /type === "READ_FORM"/);
+  assert.doesNotMatch(source, /REQUEST_SUBMIT/);
+});

@@ -28,6 +28,7 @@ import re
 import time
 from typing import Any
 
+from .answers import AnswerLibrary
 from .fill import prepare_page
 
 SUBMIT_BUTTON = "#btn-submit"
@@ -228,6 +229,7 @@ def submit(
     approved: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    library: AnswerLibrary | None = None,
     resume: str = "",
     store: str = "data/v2-submissions",
     settle_ms: int = POST_SUBMIT_SETTLE_MS,
@@ -268,6 +270,7 @@ def submit(
                 approved=approved,
                 profile=profile,
                 rules=rules,
+                library=library,
                 resume=resume,
                 timeout_ms=timeout_ms,
             )

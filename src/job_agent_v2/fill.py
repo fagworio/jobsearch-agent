@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .answers import resolve
+from .answers import AnswerLibrary, resolve
 from .ats import find_apply_url, inspect_form
 from .models import Field, Form, State
 
@@ -109,6 +109,7 @@ def prepare_page(
     approved: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    library: AnswerLibrary | None = None,
     resume: str = "",
     timeout_ms: float = 45_000,
 ) -> Prepared:
@@ -122,7 +123,7 @@ def prepare_page(
     if not form.fields:
         return Prepared(form=form, job_url=url, apply_url=apply_url, reason="form_not_found")
 
-    resolution = resolve(form, approved=approved, profile=profile, rules=rules)
+    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
     if not resolution.complete:
         # Falta fato da pessoa: nao se toca no formulario.
         return Prepared(
@@ -170,6 +171,7 @@ def fill(
     approved: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    library: AnswerLibrary | None = None,
     resume: str = "",
     timeout_ms: float = 45_000,
 ) -> FillReport:
@@ -186,6 +188,7 @@ def fill(
                 approved=approved,
                 profile=profile,
                 rules=rules,
+                library=library,
                 resume=resume,
                 timeout_ms=timeout_ms,
             )

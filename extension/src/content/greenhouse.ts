@@ -5,6 +5,7 @@ export type FieldSnapshot = {
   required: boolean;
   options: string[];
   value: string;
+  checked: boolean;
 };
 
 export type PageSnapshot = {
@@ -46,7 +47,12 @@ export function inspectGreenhouse(documentRef: Document = document): PageSnapsho
       label: labelFor(element),
       required: input.required,
       options: optionsFor(element),
-      value: input.value,
+      value: input instanceof HTMLInputElement && ["checkbox", "radio"].includes(input.type)
+        ? (input.checked ? input.value : "")
+        : input.value,
+      checked: input instanceof HTMLInputElement && ["checkbox", "radio"].includes(input.type)
+        ? input.checked
+        : false,
     };
   });
   const application = documentRef.querySelector("#application-form, #application_form") !== null
