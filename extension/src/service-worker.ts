@@ -10,6 +10,12 @@ function connectNative(): chrome.runtime.Port {
   nativePort.onDisconnect.addListener(() => {
     nativePort = undefined;
   });
+  nativePort.onMessage.addListener((message: unknown) => {
+    if (!message || typeof message !== "object" || !("type" in message)) return;
+    const port = nativePort;
+    if (!port) return;
+    void handleRequest(message as Request).then((reply) => port.postMessage(reply));
+  });
   return nativePort;
 }
 
@@ -63,17 +69,19 @@ function response(requestId: string, result: unknown): Response {
   return { version: 1, request_id: requestId, ok: false, error: "invalid content response" };
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  if (!message || typeof message !== "object") return false;
+async function handleRequest(message: unknown): Promise<Response> {
+  if (!message || typeof message !== "object") {
+    return { version: 1, request_id: crypto.randomUUID(), ok: false, error: "message must be an object" };
+  }
   const input = message as { request_id?: unknown; type?: unknown; payload?: unknown };
   const requestId = typeof input.request_id === "string" ? input.request_id : crypto.randomUUID();
   const type = input.type as Command;
 
+  if (type === "HELLO") {
+    return { version: 1, request_id: requestId, ok: true, result: { name: "job-agent-v2", protocol_version: 1 } };
+  }
   if (type === "PING") {
-    void nativeRequest(request(requestId, "PING"))
-      .then(sendResponse)
-      .catch((error: unknown) => sendResponse({ version: 1, request_id: requestId, ok: false, error: String(error) }));
-    return true;
+    return { version: 1, request_id: requestId, ok: true, result: { type: "PONG" } };
   }
   if (type === "REQUEST_SUBMIT") {
     const payload = input.payload;
@@ -82,29 +90,58 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       : undefined;
     const token = authorization && typeof authorization.token === "string" ? authorization.token : "";
     if (!token || usedSubmitTokens.has(token)) {
-      sendResponse({ version: 1, request_id: requestId, ok: false, error: "submit authorization was already used or is missing" });
-      return true;
+      return { version: 1, request_id: requestId, ok: false, error: "submit authorization was already used or is missing" };
     }
-    usedSubmitTokens.add(token);
   } else if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE" && type !== "GET_SUBMIT_RESULT") {
-    sendResponse({ version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" });
-    return true;
+    return { version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" };
   }
 
-  void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-    if (!tab?.id) {
-      sendResponse({ version: 1, request_id: requestId, ok: false, error: "no active tab" });
-      return;
-    }
-    void chrome.tabs.sendMessage(tab.id, { type, payload: input.payload ?? {} }).then(
-      (result: unknown) => sendResponse(response(requestId, result)),
-      (error: unknown) => sendResponse({ version: 1, request_id: requestId, ok: false, error: String(error) }),
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return { version: 1, request_id: requestId, ok: false, error: "no active tab" };
+  try {
+    const reply = response(
+      requestId,
+      await chrome.tabs.sendMessage(tab.id, { type, payload: input.payload ?? {} }),
     );
-  });
+    if (type === "REQUEST_SUBMIT" && reply.ok) {
+      const payload = input.payload;
+      const authorization = payload && typeof payload === "object"
+        ? (payload as { authorization?: { token?: unknown } }).authorization
+        : undefined;
+      if (authorization && typeof authorization.token === "string") usedSubmitTokens.add(authorization.token);
+    }
+    return reply;
+  } catch (error) {
+    return { version: 1, request_id: requestId, ok: false, error: String(error) };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  if (message && typeof message === "object" && (message as { type?: unknown }).type === "EXTENSION_READY") {
+    try {
+      connectNative();
+      sendResponse({ ok: true });
+    } catch (error) {
+      sendResponse({ ok: false, error: String(error) });
+    }
+    return true;
+  }
+  if (message && typeof message === "object" && (message as { type?: unknown }).type === "PING") {
+    void nativeRequest(request(crypto.randomUUID(), "PING"))
+      .then(sendResponse)
+      .catch((error: unknown) => sendResponse({ version: 1, request_id: crypto.randomUUID(), ok: false, error: String(error) }));
+    return true;
+  }
+  void handleRequest(message).then(sendResponse);
   return true;
 });
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
 
-// Establish the native host lazily on the first request. A missing host is
-// reported by the PING response; the read-only inspection path remains usable.
+// The backend reaches this already-running host through its private local
+// socket. The browser session remains owned by Chrome.
+try {
+  connectNative();
+} catch {
+  // A missing host is reported when the backend or side panel requests it.
+}

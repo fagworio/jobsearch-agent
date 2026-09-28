@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+runtime_root="${XDG_RUNTIME_DIR:-$HOME/.config}/job-agent-v2"
+mkdir -p "$runtime_root"
+export JOB_AGENT_V2_NATIVE_MODE=bridge
+export JOB_AGENT_V2_NATIVE_SOCKET="${JOB_AGENT_V2_NATIVE_SOCKET:-$runtime_root/native-messaging.sock}"
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python_bin="${JOB_AGENT_V2_PYTHON:-python3}"
 PYTHONPATH="$script_dir/src${PYTHONPATH:+:$PYTHONPATH}" exec "$python_bin" -m job_agent_v2.browser.native_host

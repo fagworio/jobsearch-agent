@@ -226,3 +226,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   sendResponse({ ok: false, error: "command is not enabled in read-only phase" });
   return true;
 });
+
+// Wakes the service worker on a real Greenhouse tab so it can open the
+// Native Messaging host before the Python backend connects.
+void chrome.runtime.sendMessage({ type: "EXTENSION_READY" }).catch(() => undefined);

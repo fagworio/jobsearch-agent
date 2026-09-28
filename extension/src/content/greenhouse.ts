@@ -128,9 +128,15 @@ export function inspectChallenge(documentRef: Document = document): ChallengeSna
     if (Array.from(documentRef.querySelectorAll(selector)).some(isVisible)) signals.push(signal);
   }
   const application = documentRef.querySelector("#application-form, #application_form") !== null;
+  const solved = Array.from(documentRef.querySelectorAll(
+    'textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"], [data-captcha-state="solved"]',
+  )).some((element) => {
+    if (element instanceof HTMLTextAreaElement) return element.value.trim().length > 0;
+    return isVisible(element);
+  });
   return {
-    state: signals.length ? "BLOCKING" : application ? "CLEAR" : "UNKNOWN",
-    signals,
+    state: solved || !signals.length && application ? "CLEAR" : signals.length ? "BLOCKING" : "UNKNOWN",
+    signals: solved ? signals.filter((signal) => !signal.includes("iframe")) : signals,
   };
 }
 

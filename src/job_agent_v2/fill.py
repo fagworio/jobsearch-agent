@@ -17,6 +17,9 @@ from typing import Any
 
 from .answers import AnswerLibrary, resolve
 from .ats import find_apply_url, inspect_form
+from .ats.greenhouse import GreenhouseAdapter
+from .artifacts import ResumeArtifact
+from .browser import NativeMessagingClient
 from .models import Field, Form, State
 
 
@@ -175,38 +178,100 @@ def fill(
     resume: str = "",
     timeout_ms: float = 45_000,
 ) -> FillReport:
-    """Abre a vaga real, sobe o curriculo, preenche e LE DE VOLTA. Nao submete."""
-    from playwright.sync_api import sync_playwright
+    """Preenche a aba ativa do Chrome através da extensão; nunca submete."""
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-        try:
-            page = browser.new_context().new_page()
-            prepared = prepare_page(
-                page,
-                url,
-                approved=approved,
-                profile=profile,
-                rules=rules,
-                library=library,
-                resume=resume,
-                timeout_ms=timeout_ms,
-            )
+    del timeout_ms  # o timeout da sessão é controlado pelo cliente Native Messaging
+    try:
+        with NativeMessagingClient() as browser:
+            snapshot = browser.inspect_form()
+            form = GreenhouseAdapter().to_form(snapshot)
+            resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+            apply_url = str(snapshot.get("url") or url)
+            if not resolution.complete:
+                return FillReport(
+                    state=State.NEEDS_INPUT,
+                    reason="missing_answer",
+                    job_url=url,
+                    apply_url=apply_url,
+                    fields=len(form.fields),
+                    missing=tuple(item.prompt for item in resolution.missing),
+                    resume=resume,
+                )
+
+            notes: list[str] = []
+            resume_attached = False
+            uploads = 0
+            if resume:
+                artifact = ResumeArtifact.from_path(resume)
+                resume_field = next((item for item in form.fields if item.kind == "file"), None)
+                if resume_field is None:
+                    return FillReport(
+                        state=State.NEEDS_INPUT,
+                        reason="resume_field_not_found",
+                        job_url=url,
+                        apply_url=apply_url,
+                        fields=len(form.fields),
+                        resume=resume,
+                    )
+                uploaded = browser.upload_artifact(artifact.to_payload(resume_field.key))
+                resume_attached = _snapshot_field_value(uploaded, resume_field.key) != ""
+                if not resume_attached:
+                    raise RuntimeError("resume upload read-back was empty")
+                uploads = 1
+                notes.append(f"resume upload read-back: {resume_field.key}")
+
+            filled: list[FilledField] = []
+            for field in form.fields:
+                if field.key not in resolution.answers:
+                    continue
+                value = resolution.answers[field.key]
+                action = _action_for(field, value)
+                observed_snapshot = browser.fill_form({"field_id": field.key, "action": action, "value": value})
+                observed = _snapshot_field_value(observed_snapshot, field.key)
+                filled.append(FilledField(field.key, field.prompt, field.kind, value, observed))
+
+            read_back = browser.read_form()
+            for item in filled:
+                actual = _snapshot_field_value(read_back, item.key)
+                if actual != item.intended:
+                    raise RuntimeError(
+                        f"FIELD_MISMATCH: expected {item.intended} but read {actual} for {item.key}"
+                    )
+            challenge = browser.challenge_state()
+            state = State.WAITING_HUMAN if challenge.get("state") == "BLOCKING" else State.FILLED
             return FillReport(
-                state=State.NEEDS_INPUT if prepared.reason else State.READY,
-                reason=prepared.reason,
-                job_url=prepared.job_url,
-                apply_url=prepared.apply_url,
-                fields=len(prepared.form.fields),
-                filled=prepared.filled,
-                missing=prepared.missing,
-                resume=prepared.resume,
-                resume_attached=prepared.resume_attached,
-                notes=prepared.notes,
-                uploads=1 if prepared.resume_attached else 0,
+                state=state,
+                job_url=url,
+                apply_url=apply_url,
+                fields=len(form.fields),
+                filled=tuple(filled),
+                resume=resume,
+                resume_attached=resume_attached,
+                notes=tuple(notes),
+                uploads=uploads,
             )
-        finally:
-            browser.close()
+    except Exception as exc:  # noqa: BLE001 - browser boundary becomes a report
+        return FillReport(state=State.NEEDS_INPUT, reason=str(exc), job_url=url, resume=resume)
+
+
+def _action_for(field: Field, value: str) -> str:
+    if field.kind in {"select", "combobox"} or field.options:
+        return "select"
+    if field.kind in {"checkbox", "radio"}:
+        return "check"
+    return "set"
+
+
+def _snapshot_field_value(snapshot: Mapping[str, Any], field_id: str) -> str:
+    fields = snapshot.get("fields", [])
+    if not isinstance(fields, list):
+        return ""
+    for item in fields:
+        if isinstance(item, Mapping) and item.get("id") == field_id:
+            if item.get("checked") is True:
+                return str(item.get("value") or "true")
+            return str(item.get("value") or "")
+    return ""
 
 
 def _read_hidden(page: Any, selector: str) -> str:

@@ -9,63 +9,137 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import json
+from pathlib import Path
+import socket
 import subprocess
 import sys
-from typing import BinaryIO
+from typing import Any, BinaryIO
+from uuid import uuid4
 
-from .native_host import read_frame, write_frame
+from .native_host import default_socket_path, read_frame, write_frame
 from .protocol import Command, Request, Response
 
 
 class NativeMessagingClient:
     """Cliente de transporte para um host Native Messaging local."""
 
-    def __init__(self, command: Sequence[str] | None = None) -> None:
-        argv = tuple(command or (sys.executable, "-m", "job_agent_v2.browser.native_host"))
-        self._process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+    def __init__(
+        self,
+        command: Sequence[str] | None = None,
+        *,
+        socket_path: str | Path | None = None,
+        connect_timeout: float = 10.0,
+        request_timeout: float = 60.0,
+    ) -> None:
+        self._process: subprocess.Popen[bytes] | None = None
+        self._socket: socket.socket | None = None
+        self._request_timeout = request_timeout
+        if command is not None:
+            self._process = subprocess.Popen(
+                tuple(command),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._socket.settimeout(connect_timeout)
+            self._socket.connect(str(socket_path or default_socket_path()))
+            self._socket.settimeout(request_timeout)
+
+    def __enter__(self) -> "NativeMessagingClient":
+        return self
+
+    def __exit__(self, _exc_type: object, _exc_value: object, _traceback: object) -> None:
+        self.close()
 
     @property
     def _stdin(self) -> BinaryIO:
-        if self._process.stdin is None:
+        if self._process is None or self._process.stdin is None:
             raise RuntimeError("native host stdin is unavailable")
         return self._process.stdin
 
     @property
     def _stdout(self) -> BinaryIO:
-        if self._process.stdout is None:
+        if self._process is None or self._process.stdout is None:
             raise RuntimeError("native host stdout is unavailable")
         return self._process.stdout
 
     def request(self, request: Request) -> Response:
+        if self._socket is not None:
+            payload = request.to_json()
+            self._socket.sendall(len(payload).to_bytes(4, "little") + payload)
+            header = self._read_socket_exact(4)
+            size = int.from_bytes(header, "little")
+            if size <= 0 or size > 4 * 1024 * 1024:
+                raise RuntimeError(f"invalid native socket frame size: {size}")
+            raw = self._read_socket_exact(size)
+            return Response.from_object(json.loads(raw.decode("utf-8")))
         write_frame(self._stdin, request.to_json())
         raw = read_frame(self._stdout)
         if raw is None:
             raise RuntimeError("native host closed before responding")
         return Response.from_object(json.loads(raw.decode("utf-8")))
 
+    def call(self, command: Command, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        reply = self.request(Request.create(uuid4().hex, command, payload))
+        if not reply.ok:
+            raise RuntimeError(reply.error)
+        return dict(reply.result or {})
+
     def ping(self) -> Response:
         return self.request(Request.create("client-ping", Command.PING))
 
+    def get_page(self) -> dict[str, Any]:
+        return self.call(Command.GET_PAGE)
+
+    def inspect_form(self) -> dict[str, Any]:
+        return self.call(Command.INSPECT_FORM)
+
+    def fill_form(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call(Command.FILL_FORM, payload)
+
+    def read_form(self) -> dict[str, Any]:
+        return self.call(Command.READ_FORM)
+
+    def upload_artifact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call(Command.UPLOAD_ARTIFACT, payload)
+
+    def challenge_state(self) -> dict[str, Any]:
+        return self.call(Command.GET_CHALLENGE_STATE)
+
+    def request_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call(Command.REQUEST_SUBMIT, payload)
+
+    def submit_result(self) -> dict[str, Any]:
+        return self.call(Command.GET_SUBMIT_RESULT)
+
+    def _read_socket_exact(self, size: int) -> bytes:
+        if self._socket is None:
+            raise RuntimeError("native socket is unavailable")
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            chunk = self._socket.recv(remaining)
+            if not chunk:
+                raise RuntimeError("native host closed the backend socket")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
     def close(self) -> None:
-        if self._process.stdin is not None:
-            self._process.stdin.close()
-        self._process.terminate()
-        self._process.wait(timeout=5)
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+        if self._process is not None:
+            if self._process.stdin is not None:
+                self._process.stdin.close()
+            self._process.terminate()
+            self._process.wait(timeout=5)
+            self._process = None
 
 
 def open_page_html(url: str, *, timeout_ms: float = 45_000) -> str:
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-        try:
-            page = browser.new_context().new_page()
-            page.goto(url, wait_until="load", timeout=timeout_ms)
-            return page.content()
-        finally:
-            browser.close()
+    raise RuntimeError(
+        "open_page_html is test-only; use NativeMessagingClient against the persistent Chrome profile"
+    )
