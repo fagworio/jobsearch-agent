@@ -52,6 +52,7 @@ def apply(
             reason="missing_answer",
             missing=resolution.missing,
             answers=resolution.answers,
+            resolved_from=resolution.resolved_from,
             fields=len(form.fields),
             job_url=url,
             apply_url=apply_url,
@@ -59,6 +60,7 @@ def apply(
     return ApplyResult(
         state=State.READY,
         answers=resolution.answers,
+        resolved_from=resolution.resolved_from,
         fields=len(form.fields),
         job_url=url,
         apply_url=apply_url,

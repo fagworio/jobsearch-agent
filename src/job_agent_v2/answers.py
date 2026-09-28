@@ -88,22 +88,27 @@ def resolve(
     rules_index = _index(rules)
 
     answers: dict[str, str] = {}
+    resolved_from: dict[str, str] = {}
     missing: list[Field] = []
     for field in form.fields:
         identity = field.identity
         if identity in approved_index:
             answers[field.key] = approved_index[identity]
+            resolved_from[field.key] = "approved_answer"
             continue
         saved = library.get(field.prompt) if library else None
         if saved is not None:
             answers[field.key] = saved
+            resolved_from[field.key] = "approved_answer_library"
             continue
         if field.kind in TRIVIAL_KINDS and identity in profile_index:
             answers[field.key] = profile_index[identity]
+            resolved_from[field.key] = "profile"
             continue
         if identity in rules_index:
             answers[field.key] = rules_index[identity]
+            resolved_from[field.key] = "rule"
             continue
         if field.required:
             missing.append(field)
-    return Resolution(answers=answers, missing=tuple(missing))
+    return Resolution(answers=answers, resolved_from=resolved_from, missing=tuple(missing))

@@ -14,6 +14,7 @@ def test_answer_library_is_explicit_and_reusable(tmp_path):
     form = Form((Field("q1", "Have you worked at Spotify?", options=("Yes", "No"), required=True, kind="radio"),))
     result = resolve(form, library=loaded)
     assert result.answers == {"q1": "No"}
+    assert result.resolved_from == {"q1": "approved_answer_library"}
     assert result.missing == ()
 
 

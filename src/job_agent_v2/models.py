@@ -51,6 +51,7 @@ class Form:
 @dataclass(frozen=True)
 class Resolution:
     answers: dict[str, str] = field(default_factory=dict)
+    resolved_from: dict[str, str] = field(default_factory=dict)
     missing: tuple[Field, ...] = ()
 
     @property
@@ -66,6 +67,7 @@ class ApplyResult:
     reason: str = ""
     missing: tuple[Field, ...] = ()
     answers: dict[str, str] = field(default_factory=dict)
+    resolved_from: dict[str, str] = field(default_factory=dict)
     fields: int = 0
     job_url: str = ""
     apply_url: str = ""
@@ -78,6 +80,7 @@ class ApplyResult:
             "apply_url": self.apply_url,
             "missing": [{"key": f.key, "prompt": f.prompt, "options": list(f.options)} for f in self.missing],
             "answers": dict(self.answers),
+            "resolved_from": dict(self.resolved_from),
             "fields": self.fields,
             "uploads": 0,
             "attempts": 0,
