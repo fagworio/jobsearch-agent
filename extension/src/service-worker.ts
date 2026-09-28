@@ -2,6 +2,7 @@ import { request, type Command, type Request, type Response } from "./protocol";
 
 const NATIVE_HOST_NAME = "com.job_agent_v2";
 let nativePort: chrome.runtime.Port | undefined;
+const usedSubmitTokens = new Set<string>();
 
 function connectNative(): chrome.runtime.Port {
   if (nativePort) return nativePort;
@@ -24,8 +25,20 @@ function nativeRequest(message: Request): Promise<Response> {
   });
 }
 
-function response(requestId: string, result: Record<string, unknown>): Response {
-  return { version: 1, request_id: requestId, ok: true, result };
+function response(requestId: string, result: unknown): Response {
+  if (result && typeof result === "object" && "ok" in result) {
+    const typed = result as { ok?: unknown; result?: unknown; error?: unknown };
+    if (typed.ok === false) {
+      return { version: 1, request_id: requestId, ok: false, error: String(typed.error ?? "content script rejected request") };
+    }
+    return {
+      version: 1,
+      request_id: requestId,
+      ok: true,
+      result: (typed.result && typeof typed.result === "object" ? typed.result : {}) as Record<string, unknown>,
+    };
+  }
+  return { version: 1, request_id: requestId, ok: false, error: "invalid content response" };
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
@@ -38,7 +51,18 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     void nativeRequest(request(requestId, "PING")).then(sendResponse);
     return true;
   }
-  if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE") {
+  if (type === "REQUEST_SUBMIT") {
+    const payload = input.payload;
+    const authorization = payload && typeof payload === "object"
+      ? (payload as { authorization?: { token?: unknown } }).authorization
+      : undefined;
+    const token = authorization && typeof authorization.token === "string" ? authorization.token : "";
+    if (!token || usedSubmitTokens.has(token)) {
+      sendResponse({ version: 1, request_id: requestId, ok: false, error: "submit authorization was already used or is missing" });
+      return true;
+    }
+    usedSubmitTokens.add(token);
+  } else if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE") {
     sendResponse({ version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" });
     return true;
   }
@@ -49,7 +73,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       return;
     }
     void chrome.tabs.sendMessage(tab.id, { type, payload: input.payload ?? {} }).then(
-      (result: unknown) => sendResponse(response(requestId, (result as { result?: Record<string, unknown> }).result ?? {})),
+      (result: unknown) => sendResponse(response(requestId, result)),
       (error: unknown) => sendResponse({ version: 1, request_id: requestId, ok: false, error: String(error) }),
     );
   });

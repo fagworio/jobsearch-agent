@@ -8,7 +8,9 @@ import hashlib
 from pathlib import Path
 
 
-MAX_RESUME_BYTES = 10 * 1024 * 1024
+# Native Messaging has a 4 MiB frame limit in the V2 transport. Leave room
+# for base64 expansion and the surrounding JSON envelope.
+MAX_RESUME_BYTES = 2_500_000
 
 
 class ArtifactError(ValueError):

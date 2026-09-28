@@ -22,3 +22,10 @@ def test_artifact_rejects_non_pdf(tmp_path):
     path.write_text("not a pdf", encoding="utf-8")
     with pytest.raises(ArtifactError, match="must be a PDF"):
         ResumeArtifact.from_path(path)
+
+
+def test_artifact_limit_fits_native_message_budget(tmp_path):
+    path = tmp_path / "large.pdf"
+    path.write_bytes(b"%PDF-" + b"x" * 2_500_000)
+    with pytest.raises(ArtifactError, match="maximum size"):
+        ResumeArtifact.from_path(path)

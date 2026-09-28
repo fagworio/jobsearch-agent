@@ -1,4 +1,8 @@
-"""Tipos do V2-001A. Tres estados, porque so existem tres decisoes agora."""
+"""Tipos de domínio da V2.
+
+Os estados pertencem à aplicação inteira, não a um ATS específico. A transição
+válida fica centralizada em :mod:`job_agent_v2.application`.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,17 @@ from enum import Enum
 
 
 class State(str, Enum):
-    NEW = "NEW"                  # nada lido ainda
-    NEEDS_INPUT = "NEEDS_INPUT"  # falta fato que so a pessoa tem
-    READY = "READY"              # tudo resolvido; proximo incremento escreve
+    NEW = "NEW"
+    NEEDS_INPUT = "NEEDS_INPUT"
+    READY = "READY"
+    FILLING = "FILLING"
+    FILLED = "FILLED"
+    WAITING_HUMAN = "WAITING_HUMAN"
+    READY_TO_SUBMIT = "READY_TO_SUBMIT"
+    SUBMITTING = "SUBMITTING"
+    SUBMIT_UNKNOWN = "SUBMIT_UNKNOWN"
+    FAILED = "FAILED"
+    SUBMITTED = "SUBMITTED"
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-import { inspectGreenhouse } from "./greenhouse";
+import { formFingerprintInput, inspectChallenge, inspectGreenhouse, isVisible } from "./greenhouse";
 
 type FillPayload = {
   field_id?: unknown;
@@ -12,6 +12,17 @@ type UploadPayload = {
   mime_type?: unknown;
   bytes_base64?: unknown;
 };
+
+type SubmitAuthorization = {
+  application_id?: unknown;
+  form_fingerprint?: unknown;
+  answers_fingerprint?: unknown;
+  resume_sha256?: unknown;
+  expires_at?: unknown;
+  token?: unknown;
+};
+
+const consumedSubmitTokens = new Set<string>();
 
 function controlsFor(fieldId: string): Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement> {
   return Array.from(document.querySelectorAll("input, textarea, select")).filter((element) => {
@@ -67,7 +78,7 @@ function uploadOne(payload: UploadPayload): void {
   if (typeof payload.field_id !== "string" || !payload.field_id.trim()) throw new Error("field_id is required");
   if (typeof payload.filename !== "string" || !payload.filename.trim()) throw new Error("filename is required");
   if (payload.mime_type !== "application/pdf") throw new Error("only PDF uploads are enabled");
-  if (typeof payload.bytes_base64 !== "string" || payload.bytes_base64.length > 14_000_000) throw new Error("invalid artifact bytes");
+  if (typeof payload.bytes_base64 !== "string" || payload.bytes_base64.length > 3_500_000) throw new Error("invalid artifact bytes");
   const target = controlsFor(payload.field_id).find((control) => control instanceof HTMLInputElement && control.type === "file");
   if (!(target instanceof HTMLInputElement)) throw new Error("file field not found");
   const raw = atob(payload.bytes_base64);
@@ -78,6 +89,54 @@ function uploadOne(payload: UploadPayload): void {
   transfer.items.add(file);
   target.files = transfer.files;
   dispatchInput(target);
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+
+async function sha256(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonical(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function requiredFieldsMissing(snapshot: ReturnType<typeof inspectGreenhouse>): string[] {
+  return snapshot.fields
+    .filter((field) => field.required && !field.value.trim())
+    .map((field) => field.id);
+}
+
+async function requestSubmit(payload: { authorization?: unknown }): Promise<Record<string, unknown>> {
+  if (!payload.authorization || typeof payload.authorization !== "object") throw new Error("authorization is required");
+  const authorization = payload.authorization as SubmitAuthorization;
+  const strings = ["application_id", "form_fingerprint", "answers_fingerprint", "resume_sha256", "expires_at", "token"] as const;
+  for (const key of strings) {
+    if (typeof authorization[key] !== "string" || !authorization[key]?.trim()) throw new Error(`${key} is required`);
+  }
+  const token = authorization.token as string;
+  if (consumedSubmitTokens.has(token)) throw new Error("submit authorization was already used");
+  const expiry = Date.parse(authorization.expires_at as string);
+  if (!Number.isFinite(expiry) || Date.now() >= expiry) throw new Error("submit authorization expired");
+
+  const challenge = inspectChallenge();
+  if (challenge.state !== "CLEAR") throw new Error(`human challenge state is ${challenge.state}`);
+  const snapshot = inspectGreenhouse();
+  if (snapshot.page_type !== "application" || !snapshot.ready) throw new Error("application form is not ready");
+  const missing = requiredFieldsMissing(snapshot);
+  if (missing.length) throw new Error(`required fields are missing: ${missing.join(", ")}`);
+  const actualFormFingerprint = await sha256(formFingerprintInput(snapshot));
+  if (actualFormFingerprint !== authorization.form_fingerprint) throw new Error("form fingerprint does not match");
+  const buttons = Array.from(document.querySelectorAll("#btn-submit, button[type=submit], input[type=submit]"))
+    .filter((element) => isVisible(element));
+  if (buttons.length !== 1) throw new Error("submit control is not uniquely identified");
+
+  consumedSubmitTokens.add(token);
+  (buttons[0] as HTMLElement).click();
+  return { submitted: true, token, application_id: authorization.application_id };
 }
 
 // Content script is read-only in this phase. It exposes inspection only through
@@ -112,7 +171,13 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     return true;
   }
   if (type === "GET_CHALLENGE_STATE") {
-    sendResponse({ ok: true, result: { state: "UNKNOWN" } });
+    sendResponse({ ok: true, result: inspectChallenge() });
+    return true;
+  }
+  if (type === "REQUEST_SUBMIT") {
+    void requestSubmit(((message as { payload?: unknown }).payload ?? {}) as { authorization?: unknown })
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
   sendResponse({ ok: false, error: "command is not enabled in read-only phase" });

@@ -17,6 +17,17 @@ export type PageSnapshot = {
   fields: FieldSnapshot[];
 };
 
+export type ChallengeSnapshot = {
+  state: "CLEAR" | "BLOCKING" | "UNKNOWN";
+  signals: string[];
+};
+
+export type FormFingerprintInput = {
+  provider: "greenhouse";
+  page_type: "application";
+  fields: Array<Pick<FieldSnapshot, "id" | "type" | "label" | "required" | "options">>;
+};
+
 function labelFor(element: Element): string {
   const id = element.getAttribute("id");
   if (id) {
@@ -64,5 +75,37 @@ export function inspectGreenhouse(documentRef: Document = document): PageSnapsho
     title: documentRef.title,
     ready: application && fields.length > 0,
     fields,
+  };
+}
+
+export function formFingerprintInput(snapshot: PageSnapshot): FormFingerprintInput {
+  return {
+    provider: "greenhouse",
+    page_type: "application",
+    fields: snapshot.fields.map(({ id, type, label, required, options }) => ({ id, type, label, required, options })),
+  };
+}
+
+export function isVisible(element: Element): boolean {
+  const style = window.getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+}
+
+export function inspectChallenge(documentRef: Document = document): ChallengeSnapshot {
+  const signals: string[] = [];
+  const selectors: Array<[string, string]> = [
+    ['iframe[src*="hcaptcha"]', "visible-hcaptcha-iframe"],
+    ['iframe[src*="recaptcha"]', "visible-recaptcha-iframe"],
+    [".h-captcha", "visible-hcaptcha-widget"],
+    [".g-recaptcha", "visible-recaptcha-widget"],
+    ["[data-sitekey]", "visible-challenge-widget"],
+  ];
+  for (const [selector, signal] of selectors) {
+    if (Array.from(documentRef.querySelectorAll(selector)).some(isVisible)) signals.push(signal);
+  }
+  const application = documentRef.querySelector("#application-form, #application_form") !== null;
+  return {
+    state: signals.length ? "BLOCKING" : application ? "CLEAR" : "UNKNOWN",
+    signals,
   };
 }
