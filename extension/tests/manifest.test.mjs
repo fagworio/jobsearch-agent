@@ -30,6 +30,7 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(source, /FIELD_MISMATCH/);
   const worker = await readFile(new URL("../src/service-worker.ts", import.meta.url), "utf8");
   assert.match(worker, /nativeRequest/);
+  assert.match(worker, /native host response timeout/);
   const greenhouse = await readFile(new URL("../src/content/greenhouse.ts", import.meta.url), "utf8");
   assert.match(greenhouse, /aria-labelledby/);
   assert.match(greenhouse, /aria-required/);

@@ -22,11 +22,27 @@ function nativeRequest(message: Request): Promise<Response> {
       reject(error);
       return;
     }
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
     const listener = (reply: unknown): void => {
       port.onMessage.removeListener(listener);
-      resolve(reply as Response);
+      finish(() => resolve(reply as Response));
     };
+    const timeout = setTimeout(() => {
+      port.onMessage.removeListener(listener);
+      finish(() => reject(new Error("native host response timeout")));
+    }, 5000);
     port.onMessage.addListener(listener);
+    port.onDisconnect.addListener(() => {
+      port.onMessage.removeListener(listener);
+      const message = chrome.runtime.lastError?.message ?? "native host disconnected";
+      finish(() => reject(new Error(message)));
+    });
     port.postMessage(message);
   });
 }
