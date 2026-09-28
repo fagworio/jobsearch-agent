@@ -74,12 +74,18 @@ class NativeMessagingClient:
             if size <= 0 or size > 4 * 1024 * 1024:
                 raise RuntimeError(f"invalid native socket frame size: {size}")
             raw = self._read_socket_exact(size)
-            return Response.from_object(json.loads(raw.decode("utf-8")))
+            reply = Response.from_object(json.loads(raw.decode("utf-8")))
+            if reply.request_id != request.request_id:
+                raise RuntimeError("native socket response request_id does not match")
+            return reply
         write_frame(self._stdin, request.to_json())
         raw = read_frame(self._stdout)
         if raw is None:
             raise RuntimeError("native host closed before responding")
-        return Response.from_object(json.loads(raw.decode("utf-8")))
+        reply = Response.from_object(json.loads(raw.decode("utf-8")))
+        if reply.request_id != request.request_id:
+            raise RuntimeError("native host response request_id does not match")
+        return reply
 
     def call(self, command: Command, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         reply = self.request(Request.create(uuid4().hex, command, payload))
