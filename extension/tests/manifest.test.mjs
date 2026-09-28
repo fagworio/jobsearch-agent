@@ -26,6 +26,8 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(source, /type === "REQUEST_SUBMIT"/);
   assert.match(source, /form fingerprint does not match/);
   assert.match(source, /human challenge state/);
+  assert.match(source, /type === "GET_SUBMIT_RESULT"/);
+  assert.match(source, /FIELD_MISMATCH/);
 });
 
 test("upload path is PDF-only and does not execute arbitrary code", async () => {

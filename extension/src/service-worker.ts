@@ -62,7 +62,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       return true;
     }
     usedSubmitTokens.add(token);
-  } else if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE") {
+  } else if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE" && type !== "GET_SUBMIT_RESULT") {
     sendResponse({ version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" });
     return true;
   }

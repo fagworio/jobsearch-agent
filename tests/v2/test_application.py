@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from job_agent_v2.application import Application, ApplicationStateError
+from job_agent_v2.challenges import ChallengeState
+from job_agent_v2.confirmation import ConfirmationState, classify_browser_result
 from job_agent_v2.models import State
 
 
@@ -45,3 +47,17 @@ def test_application_rejects_fingerprint_drift_and_invalid_transition():
         )
     with pytest.raises(ApplicationStateError, match="invalid transition"):
         Application("app-2").transition(State.SUBMITTED)
+
+
+def test_application_can_pause_for_human_and_resume_after_clear_challenge():
+    app = Application("app-1").transition(State.READY).transition(State.FILLING).transition(State.FILLED)
+    app = app.observe_challenge(ChallengeState.BLOCKING).transition(State.WAITING_HUMAN)
+    app = app.observe_challenge(ChallengeState.CLEAR).transition(State.READY_TO_SUBMIT)
+    assert app.state is State.READY_TO_SUBMIT
+
+
+def test_confirmation_requires_explicit_primary_evidence():
+    unknown = classify_browser_result({"primary": {"url": "https://example.test"}})
+    assert unknown.state is ConfirmationState.SUBMIT_UNKNOWN
+    submitted = classify_browser_result({"primary": {"url": "https://example.test/confirmation", "confirmation_component": True}})
+    assert submitted.state is ConfirmationState.SUBMITTED

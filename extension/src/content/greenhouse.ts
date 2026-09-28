@@ -22,6 +22,17 @@ export type ChallengeSnapshot = {
   signals: string[];
 };
 
+export type SubmitResultSnapshot = {
+  state: "SUBMITTED" | "SUBMIT_FAILED" | "SUBMIT_UNKNOWN";
+  primary: {
+    url: string;
+    confirmation_component: boolean;
+    error_component: boolean;
+    detail: string;
+  };
+  secondary: string[];
+};
+
 export type FormFingerprintInput = {
   provider: "greenhouse";
   page_type: "application";
@@ -107,5 +118,26 @@ export function inspectChallenge(documentRef: Document = document): ChallengeSna
   return {
     state: signals.length ? "BLOCKING" : application ? "CLEAR" : "UNKNOWN",
     signals,
+  };
+}
+
+export function inspectSubmitResult(documentRef: Document = document): SubmitResultSnapshot {
+  const bodyText = documentRef.body?.innerText ?? "";
+  const confirmationText = /thank you for applying|application (?:has been|was) (?:submitted|received)|we(?:'ve| have) received your application/i.test(bodyText);
+  const confirmationComponent = Array.from(documentRef.querySelectorAll(
+    '[data-application-status="submitted"], .application-submitted, #confirmation',
+  )).some(isVisible) || confirmationText;
+  const errorComponent = Array.from(documentRef.querySelectorAll(
+    ".errors, .error-message, [aria-invalid=\"true\"]",
+  )).some(isVisible);
+  return {
+    state: confirmationComponent ? "SUBMITTED" : errorComponent ? "SUBMIT_FAILED" : "SUBMIT_UNKNOWN",
+    primary: {
+      url: location.href,
+      confirmation_component: confirmationComponent,
+      error_component: errorComponent,
+      detail: confirmationComponent ? "visible confirmation evidence" : errorComponent ? "visible error evidence" : "no decisive page evidence",
+    },
+    secondary: [],
   };
 }

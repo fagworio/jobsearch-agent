@@ -1,4 +1,4 @@
-import { formFingerprintInput, inspectChallenge, inspectGreenhouse, isVisible } from "./greenhouse";
+import { formFingerprintInput, inspectChallenge, inspectGreenhouse, inspectSubmitResult, isVisible } from "./greenhouse";
 
 type FillPayload = {
   field_id?: unknown;
@@ -36,6 +36,15 @@ function dispatchInput(control: HTMLInputElement | HTMLTextAreaElement | HTMLSel
   control.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function ensureReadBack(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, expected: string, checked?: boolean): void {
+  const actual = control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)
+    ? control.checked
+    : control.value;
+  if (typeof checked === "boolean" ? actual !== checked : actual !== expected) {
+    throw new Error(`FIELD_MISMATCH: expected ${expected || String(checked)} but read ${String(actual)}`);
+  }
+}
+
 function fillOne(payload: FillPayload): void {
   if (typeof payload.field_id !== "string" || !payload.field_id.trim()) throw new Error("field_id is required");
   if (typeof payload.action !== "string") throw new Error("action is required");
@@ -50,6 +59,7 @@ function fillOne(payload: FillPayload): void {
     }
     target.checked = payload.action === "check";
     dispatchInput(target);
+    ensureReadBack(target, value, payload.action === "check");
     return;
   }
 
@@ -62,6 +72,7 @@ function fillOne(payload: FillPayload): void {
     const option = Array.from(control.options).find((item) => item.value === value || item.textContent?.trim() === value);
     control.value = option?.value ?? value;
     dispatchInput(control);
+    ensureReadBack(control, control.value);
     return;
   }
 
@@ -69,6 +80,7 @@ function fillOne(payload: FillPayload): void {
     if (control instanceof HTMLSelectElement) throw new Error("select requires action=select");
     control.value = value;
     dispatchInput(control);
+    ensureReadBack(control, value);
     return;
   }
   throw new Error("unsupported fill action");
@@ -178,6 +190,10 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     void requestSubmit(((message as { payload?: unknown }).payload ?? {}) as { authorization?: unknown })
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (type === "GET_SUBMIT_RESULT") {
+    sendResponse({ ok: true, result: inspectSubmitResult() });
     return true;
   }
   sendResponse({ ok: false, error: "command is not enabled in read-only phase" });
