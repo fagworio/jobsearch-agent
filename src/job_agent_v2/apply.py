@@ -87,8 +87,16 @@ def _apply_live(
 ) -> ApplyResult:
     """Inspeciona a aba do Chrome normal através da extensão carregada."""
 
-    with NativeMessagingClient() as browser:
-        snapshot = browser.inspect_form()
+    try:
+        with NativeMessagingClient() as browser:
+            snapshot = browser.inspect_form()
+    except (OSError, RuntimeError) as exc:
+        return ApplyResult(
+            state=State.NEEDS_INPUT,
+            reason=f"browser_unavailable: {exc}",
+            job_url=url,
+            apply_url=url,
+        )
     try:
         form = GreenhouseAdapter().to_form(snapshot)
     except Exception as exc:  # noqa: BLE001 - resposta do browser deve virar estado

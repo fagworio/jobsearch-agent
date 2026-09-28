@@ -74,14 +74,65 @@ function optionsFor(element: Element): string[] {
     .filter(Boolean);
 }
 
+function radioGroupLabel(radios: HTMLInputElement[], documentRef: Document): string {
+  const first = radios[0];
+  const fieldset = first.closest("fieldset");
+  const legend = fieldset?.querySelector("legend");
+  if (legend?.textContent?.trim()) return legend.textContent.replace(/\s+/g, " ").trim();
+
+  const labelledBy = first.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const text = labelledBy.split(/\s+/)
+      .map((id) => documentRef.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text;
+  }
+
+  const group = first.closest('[role="radiogroup"]');
+  const groupLabel = group?.getAttribute("aria-label")?.trim();
+  if (groupLabel) return groupLabel;
+  return labelFor(first, documentRef);
+}
+
+function radioGroupSnapshot(radios: HTMLInputElement[], index: number, documentRef: Document): FieldSnapshot {
+  const first = radios[0];
+  const selected = radios.find((radio) => radio.checked);
+  const options = Array.from(new Set(radios.map((radio) => radio.value).filter(Boolean)));
+  return {
+    id: first.name || first.id || `field-${index + 1}`,
+    type: "radio",
+    label: radioGroupLabel(radios, documentRef),
+    required: radios.some((radio) => radio.required || radio.getAttribute("aria-required") === "true"),
+    options,
+    value: selected?.value ?? "",
+    checked: Boolean(selected),
+  };
+}
+
 export function inspectGreenhouse(documentRef: Document = document): PageSnapshot {
   const controls = Array.from(documentRef.querySelectorAll("input, textarea, select"))
     .filter((element) => !["hidden", "submit", "button"].includes(element.getAttribute("type") ?? ""))
     .filter((element) => element.getAttribute("aria-hidden") !== "true");
-  const fields: FieldSnapshot[] = controls.map((element, index) => {
+  const fields: FieldSnapshot[] = [];
+  const seenRadioGroups = new Set<string>();
+  controls.forEach((element, index) => {
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    if (input instanceof HTMLInputElement && input.type === "radio") {
+      const groupKey = input.name || input.id || `field-${index + 1}`;
+      if (seenRadioGroups.has(groupKey)) return;
+      seenRadioGroups.add(groupKey);
+      const radios = controls.filter((candidate): candidate is HTMLInputElement => {
+        return candidate instanceof HTMLInputElement
+          && candidate.type === "radio"
+          && (candidate.name || candidate.id || `field-${index + 1}`) === groupKey;
+      });
+      fields.push(radioGroupSnapshot(radios, index, documentRef));
+      return;
+    }
     const role = element.getAttribute("role");
-    return {
+    fields.push({
       id: input.name || input.id || `field-${index + 1}`,
       type: role === "combobox" ? "combobox" : input.getAttribute("type") || element.tagName.toLowerCase(),
       label: labelFor(element, documentRef),
@@ -93,7 +144,7 @@ export function inspectGreenhouse(documentRef: Document = document): PageSnapsho
       checked: input instanceof HTMLInputElement && ["checkbox", "radio"].includes(input.type)
         ? input.checked
         : false,
-    };
+    });
   });
   const application = documentRef.querySelector("#application-form, #application_form") !== null
     || fields.some((field) => field.id.startsWith("job_application["));

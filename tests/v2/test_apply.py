@@ -68,6 +68,17 @@ def test_no_v1_import_is_needed_to_run_the_slice():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_live_apply_reports_missing_extension_without_traceback(monkeypatch):
+    def missing_browser():
+        raise FileNotFoundError("native-messaging.sock")
+
+    monkeypatch.setattr("job_agent_v2.apply.NativeMessagingClient", missing_browser)
+    result = apply("https://job-boards.greenhouse.io/example/jobs/1")
+
+    assert result.state is State.NEEDS_INPUT
+    assert result.reason == "browser_unavailable: native-messaging.sock"
+
+
 # Regressao do blocker real: a pagina da VAGA nao e o formulario (0 inputs) e o
 # link `apply for this job` aponta para a rota que tem o formulario de verdade.
 JOB_PAGE = (
