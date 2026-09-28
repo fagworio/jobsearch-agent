@@ -30,7 +30,12 @@ export type SubmitResultSnapshot = {
     error_component: boolean;
     detail: string;
   };
-  secondary: string[];
+  secondary: Array<{
+    source: "confirmation_email" | "mygreenhouse_status";
+    reference: string;
+    observed_at: string;
+    detail: string;
+  }>;
 };
 
 export type FormFingerprintInput = {

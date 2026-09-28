@@ -23,6 +23,7 @@ from .artifacts import ResumeArtifact
 from .ats.greenhouse import GreenhouseAdapter
 from .browser import NativeMessagingClient
 from .challenges import ChallengeState
+from .confirmation import ConfirmationState, classify_browser_result
 from .fill import _action_for, _snapshot_field_value
 from .models import State
 
@@ -299,21 +300,22 @@ def submit(
             while result.get("state") == "SUBMIT_UNKNOWN" and time.monotonic() < deadline:
                 time.sleep(0.5)
                 result = browser.submit_result()
-            final_state = str(result.get("state") or "SUBMIT_UNKNOWN")
-            if final_state == "SUBMITTED":
+            confirmation = classify_browser_result(result)
+            if confirmation.state is ConfirmationState.SUBMITTED:
                 state, reason, complete = SubmitState.SUBMITTED, "confirmation_observed", True
-            elif final_state == "SUBMIT_FAILED":
+            elif confirmation.state is ConfirmationState.SUBMIT_FAILED:
                 state, reason, complete = SubmitState.SUBMIT_FAILED, "failure_observed", True
             else:
                 state, reason, complete = SubmitState.SUBMIT_UNKNOWN, "no_decisive_page_evidence", False
-            primary = result.get("primary") if isinstance(result.get("primary"), dict) else {}
-            evidence = str(primary.get("detail") or "")
+            primary = confirmation.primary
+            evidence = primary.detail
             record.update(
                 outcome=state.value,
                 reason=reason,
                 observation_complete=complete,
-                final_url=str(primary.get("url") or apply_url),
+                final_url=primary.url or apply_url,
                 evidence=evidence,
+                confirmation=confirmation.to_dict(),
                 response=result,
                 extension_reply=reply,
             )
@@ -329,7 +331,7 @@ def submit(
                 resume_attached=True,
                 marker=str(path),
                 write_possible_at=write_possible_at,
-                final_url=str(primary.get("url") or apply_url),
+                final_url=primary.url or apply_url,
                 evidence=evidence,
                 notes=("submit action dispatched by Chrome Extension exactly once",),
                 attempts=1,
