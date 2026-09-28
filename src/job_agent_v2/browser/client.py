@@ -1,8 +1,8 @@
-"""Sessao de browser do V2-001A: abrir a pagina e obter o DOM. Nada mais.
+"""Cliente browser mínimo da V2.
 
-Sem upload, sem submit, sem write guard, sem relay: nao existe escrita neste
-incremento, entao nao se constroi infraestrutura de escrita. Playwright entra
-por import tardio para que o modulo offline nao dependa dele.
+Este módulo só abre uma página e devolve o DOM. Preenchimento, autorização e
+submissão ficam em contratos separados e serão substituídos pelo cliente de
+extensão Chrome nas fases seguintes.
 """
 
 from __future__ import annotations
