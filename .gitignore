@@ -29,6 +29,8 @@ profile/*.local.yaml
 tmp/pdfs/
 work/
 dist/
+extension/node_modules/
+extension/dist/
 *.egg-info/
 
 # Credenciais locais de integracao (JSA-CONF-006). O caminho padrao fica fora do
