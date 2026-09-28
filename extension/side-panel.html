@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Job Agent V2</title>
+    <style>
+      :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
+      body { margin: 0; padding: 16px; min-width: 280px; }
+      h1 { font-size: 18px; margin: 0 0 16px; }
+      dl { display: grid; grid-template-columns: 96px 1fr; gap: 8px; }
+      dt { color: #777; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      .status { margin: 16px 0; padding: 10px; border-radius: 6px; background: #eee; }
+      @media (prefers-color-scheme: dark) { .status { background: #292929; } }
+      button { width: 100%; margin-top: 8px; padding: 8px; }
+      #submit { opacity: .55; }
+      ul { padding-left: 20px; }
+    </style>
+  </head>
+  <body>
+    <h1>Job Agent</h1>
+    <dl>
+      <dt>Provider</dt><dd id="provider">—</dd>
+      <dt>Page</dt><dd id="page-type">—</dd>
+      <dt>Fields</dt><dd id="fields">—</dd>
+      <dt>Resolved</dt><dd id="resolved">—</dd>
+      <dt>Missing</dt><dd id="missing">—</dd>
+      <dt>Challenge</dt><dd id="challenge">unknown</dd>
+    </dl>
+    <div class="status" id="status">Ready to inspect the active tab.</div>
+    <ul id="field-list"></ul>
+    <button id="inspect" type="button">Inspect</button>
+    <button id="fill" type="button" disabled>Fill</button>
+    <button id="submit" type="button" disabled>Submit (disabled)</button>
+    <script src="dist/ui/side-panel.js"></script>
+  </body>
+</html>

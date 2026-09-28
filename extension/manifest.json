@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Job Agent V2",
+  "version": "0.1.0",
+  "description": "Read-only inspection of Greenhouse application pages for job-agent-v2.",
+  "permissions": ["sidePanel", "tabs", "nativeMessaging"],
+  "host_permissions": ["https://*.greenhouse.io/*"],
+  "background": {
+    "service_worker": "dist/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Job Agent V2"
+  },
+  "side_panel": {
+    "default_path": "side-panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.greenhouse.io/*"],
+      "js": ["dist/content/common.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

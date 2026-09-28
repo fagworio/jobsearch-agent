@@ -49,15 +49,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate extension when present
-        shell: bash
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - name: Validate and build extension
         run: |
-          if [ ! -f extension/package.json ]; then
-            echo "extension/ is not present yet; extension checks activate in the extension phase."
-            exit 0
-          fi
           test -f extension/manifest.json
-          node --version
           cd extension
           npm ci
-          npm run build
+          npm run check
