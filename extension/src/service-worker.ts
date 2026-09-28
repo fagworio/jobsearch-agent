@@ -38,7 +38,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     void nativeRequest(request(requestId, "PING")).then(sendResponse);
     return true;
   }
-  if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "GET_CHALLENGE_STATE") {
+  if (type !== "GET_PAGE" && type !== "INSPECT_FORM" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE") {
     sendResponse({ version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" });
     return true;
   }

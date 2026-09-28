@@ -23,3 +23,10 @@ test("extension exposes typed fill/read commands but not submit", async () => {
   assert.match(source, /type === "READ_FORM"/);
   assert.doesNotMatch(source, /REQUEST_SUBMIT/);
 });
+
+test("upload path is PDF-only and does not execute arbitrary code", async () => {
+  const source = await readFile(new URL("../src/content/common.ts", import.meta.url), "utf8");
+  assert.match(source, /type === "UPLOAD_ARTIFACT"/);
+  assert.match(source, /application\/pdf/);
+  assert.doesNotMatch(source, /eval\s*\(|new Function/);
+});
