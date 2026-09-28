@@ -28,6 +28,11 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(source, /human challenge state/);
   assert.match(source, /type === "GET_SUBMIT_RESULT"/);
   assert.match(source, /FIELD_MISMATCH/);
+  const worker = await readFile(new URL("../src/service-worker.ts", import.meta.url), "utf8");
+  assert.match(worker, /nativeRequest/);
+  const greenhouse = await readFile(new URL("../src/content/greenhouse.ts", import.meta.url), "utf8");
+  assert.match(greenhouse, /aria-labelledby/);
+  assert.match(greenhouse, /aria-required/);
 });
 
 test("upload path is PDF-only and does not execute arbitrary code", async () => {

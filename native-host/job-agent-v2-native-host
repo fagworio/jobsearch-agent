@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${JOB_AGENT_V2_PYTHON:-python3}"
+PYTHONPATH="$script_dir/src${PYTHONPATH:+:$PYTHONPATH}" exec "$python_bin" -m job_agent_v2.browser.native_host

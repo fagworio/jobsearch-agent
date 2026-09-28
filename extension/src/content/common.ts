@@ -151,8 +151,8 @@ async function requestSubmit(payload: { authorization?: unknown }): Promise<Reco
   return { submitted: true, token, application_id: authorization.application_id };
 }
 
-// Content script is read-only in this phase. It exposes inspection only through
-// message responses and never mutates the document.
+// Mutating commands remain typed and narrowly scoped; there is no arbitrary
+// script execution path. Submission is separately guarded by authorization.
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!message || typeof message !== "object" || !("type" in message)) return false;
   const type = (message as { type?: unknown }).type;

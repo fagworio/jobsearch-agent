@@ -18,7 +18,12 @@ if [[ ! -x "$host_executable" ]]; then
 fi
 
 config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
-host_dir="$config_root/google-chrome/NativeMessagingHosts"
+browser_config_dir="${JOB_AGENT_V2_BROWSER_DIR:-google-chrome}"
+case "$browser_config_dir" in
+  google-chrome|chromium) ;;
+  *) echo "JOB_AGENT_V2_BROWSER_DIR must be google-chrome or chromium" >&2; exit 2 ;;
+esac
+host_dir="$config_root/$browser_config_dir/NativeMessagingHosts"
 mkdir -p "$host_dir"
 sed \
   -e "s|__HOST_EXECUTABLE__|${host_executable//|/\\|}|g" \

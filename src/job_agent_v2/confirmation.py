@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Mapping
 
 
 class ConfirmationState(StrEnum):
     SUBMITTED = "SUBMITTED"
     SUBMIT_FAILED = "SUBMIT_FAILED"
     SUBMIT_UNKNOWN = "SUBMIT_UNKNOWN"
+
+
+class SecondarySource(StrEnum):
+    EMAIL = "confirmation_email"
+    MY_GREENHOUSE = "mygreenhouse_status"
 
 
 @dataclass(frozen=True)
@@ -22,10 +27,18 @@ class ConfirmationEvidence:
 
 
 @dataclass(frozen=True)
+class SecondaryEvidence:
+    source: SecondarySource
+    reference: str
+    observed_at: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class ConfirmationResult:
     state: ConfirmationState
     primary: ConfirmationEvidence
-    secondary: tuple[str, ...] = ()
+    secondary: tuple[SecondaryEvidence, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -36,11 +49,19 @@ class ConfirmationResult:
                 "error_component": self.primary.error_component,
                 "detail": self.primary.detail,
             },
-            "secondary": list(self.secondary),
+            "secondary": [
+                {
+                    "source": item.source.value,
+                    "reference": item.reference,
+                    "observed_at": item.observed_at,
+                    "detail": item.detail,
+                }
+                for item in self.secondary
+            ],
         }
 
 
-def classify_browser_result(payload: Mapping[str, Any]) -> ConfirmationResult:
+def classify_browser_result(payload: Mapping[str, object]) -> ConfirmationResult:
     raw_primary = payload.get("primary")
     if not isinstance(raw_primary, Mapping):
         evidence = ConfirmationEvidence(url="")
@@ -58,5 +79,18 @@ def classify_browser_result(payload: Mapping[str, Any]) -> ConfirmationResult:
     else:
         state = ConfirmationState.SUBMIT_UNKNOWN
     secondary_raw = payload.get("secondary", ())
-    secondary = tuple(item for item in secondary_raw if isinstance(item, str)) if isinstance(secondary_raw, (list, tuple)) else ()
+    secondary_items: list[SecondaryEvidence] = []
+    if isinstance(secondary_raw, (list, tuple)):
+        for item in secondary_raw:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                source = SecondarySource(item.get("source"))
+            except ValueError:
+                continue
+            reference = item.get("reference")
+            observed_at = item.get("observed_at")
+            if isinstance(reference, str) and reference.strip() and isinstance(observed_at, str) and observed_at.strip():
+                secondary_items.append(SecondaryEvidence(source, reference, observed_at, str(item.get("detail") or "")))
+    secondary = tuple(secondary_items)
     return ConfirmationResult(state, evidence, secondary)

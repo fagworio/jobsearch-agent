@@ -14,8 +14,14 @@ function connectNative(): chrome.runtime.Port {
 }
 
 function nativeRequest(message: Request): Promise<Response> {
-  return new Promise((resolve) => {
-    const port = connectNative();
+  return new Promise((resolve, reject) => {
+    let port: chrome.runtime.Port;
+    try {
+      port = connectNative();
+    } catch (error) {
+      reject(error);
+      return;
+    }
     const listener = (reply: unknown): void => {
       port.onMessage.removeListener(listener);
       resolve(reply as Response);
@@ -48,7 +54,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   const type = input.type as Command;
 
   if (type === "PING") {
-    void nativeRequest(request(requestId, "PING")).then(sendResponse);
+    void nativeRequest(request(requestId, "PING"))
+      .then(sendResponse)
+      .catch((error: unknown) => sendResponse({ version: 1, request_id: requestId, ok: false, error: String(error) }));
     return true;
   }
   if (type === "REQUEST_SUBMIT") {

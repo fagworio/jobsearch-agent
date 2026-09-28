@@ -39,10 +39,21 @@ export type FormFingerprintInput = {
   fields: Array<Pick<FieldSnapshot, "id" | "type" | "label" | "required" | "options">>;
 };
 
-function labelFor(element: Element): string {
+function labelFor(element: Element, documentRef: Document): string {
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const text = labelledBy.split(/\s+/)
+      .map((id) => documentRef.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text;
+  }
+  const ariaLabel = element.getAttribute("aria-label")?.trim();
+  if (ariaLabel) return ariaLabel;
   const id = element.getAttribute("id");
   if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    const label = documentRef.querySelector(`label[for="${CSS.escape(id)}"]`);
     if (label?.textContent) return label.textContent.replace(/\s+/g, " ").trim();
   }
   const parent = element.closest("label");
@@ -60,14 +71,16 @@ function optionsFor(element: Element): string[] {
 
 export function inspectGreenhouse(documentRef: Document = document): PageSnapshot {
   const controls = Array.from(documentRef.querySelectorAll("input, textarea, select"))
-    .filter((element) => !["hidden", "submit", "button"].includes(element.getAttribute("type") ?? ""));
+    .filter((element) => !["hidden", "submit", "button"].includes(element.getAttribute("type") ?? ""))
+    .filter((element) => element.getAttribute("aria-hidden") !== "true");
   const fields: FieldSnapshot[] = controls.map((element, index) => {
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    const role = element.getAttribute("role");
     return {
       id: input.name || input.id || `field-${index + 1}`,
-      type: input.getAttribute("type") || element.tagName.toLowerCase(),
-      label: labelFor(element),
-      required: input.required,
+      type: role === "combobox" ? "combobox" : input.getAttribute("type") || element.tagName.toLowerCase(),
+      label: labelFor(element, documentRef),
+      required: input.required || input.getAttribute("aria-required") === "true",
       options: optionsFor(element),
       value: input instanceof HTMLInputElement && ["checkbox", "radio"].includes(input.type)
         ? (input.checked ? input.value : "")

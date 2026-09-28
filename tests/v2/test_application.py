@@ -6,7 +6,7 @@ import pytest
 
 from job_agent_v2.application import Application, ApplicationStateError, greenhouse_form_fingerprint
 from job_agent_v2.challenges import ChallengeState
-from job_agent_v2.confirmation import ConfirmationState, classify_browser_result
+from job_agent_v2.confirmation import ConfirmationState, SecondarySource, classify_browser_result
 from job_agent_v2.models import State
 
 
@@ -61,6 +61,15 @@ def test_confirmation_requires_explicit_primary_evidence():
     assert unknown.state is ConfirmationState.SUBMIT_UNKNOWN
     submitted = classify_browser_result({"primary": {"url": "https://example.test/confirmation", "confirmation_component": True}})
     assert submitted.state is ConfirmationState.SUBMITTED
+
+
+def test_confirmation_keeps_secondary_evidence_separate_from_primary_decision():
+    result = classify_browser_result({
+        "primary": {"url": "https://example.test", "confirmation_component": False},
+        "secondary": [{"source": "confirmation_email", "reference": "msg-1", "observed_at": "2026-09-28T00:00:00Z"}],
+    })
+    assert result.state is ConfirmationState.SUBMIT_UNKNOWN
+    assert result.secondary[0].source is SecondarySource.EMAIL
 
 
 def test_begin_submit_consumes_authorization_only_with_clear_challenge():
