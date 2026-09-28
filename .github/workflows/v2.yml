@@ -1,0 +1,63 @@
+name: V2
+
+on:
+  push:
+    branches: [v2-minimal-core]
+    paths:
+      - "src/job_agent_v2/**"
+      - "tests/v2/**"
+      - "pyproject.toml"
+      - ".github/workflows/v2.yml"
+      - "extension/**"
+  pull_request:
+    paths:
+      - "src/job_agent_v2/**"
+      - "tests/v2/**"
+      - "pyproject.toml"
+      - ".github/workflows/v2.yml"
+      - "extension/**"
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: V2 backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install V2 runtime and checks
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . "pytest>=8,<9" "mypy>=1.11,<2.0" "ruff>=0.6,<1.0"
+      - name: Run V2 tests
+        run: pytest -q tests/v2
+      - name: Compile V2 sources
+        run: python -m compileall -q src/job_agent_v2
+      - name: Type-check the deterministic V2 core
+        run: >-
+          mypy --ignore-missing-imports --follow-imports=skip
+          src/job_agent_v2/models.py src/job_agent_v2/answers.py src/job_agent_v2/apply.py
+      - name: Lint V2 source and tests
+        run: ruff check src/job_agent_v2 tests/v2
+
+  extension:
+    name: Extension contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate extension when present
+        shell: bash
+        run: |
+          if [ ! -f extension/package.json ]; then
+            echo "extension/ is not present yet; extension checks activate in the extension phase."
+            exit 0
+          fi
+          test -f extension/manifest.json
+          node --version
+          cd extension
+          npm ci
+          npm run build

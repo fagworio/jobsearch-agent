@@ -5,6 +5,7 @@ description = "Agente local para análise e preparação segura de candidaturas.
 authors = ["jobsearch-agent contributors"]
 readme = "README.md"
 packages = [
+    { include = "job_agent_v2", from = "src" },
     { include = "jobsearch_agent", from = "src" },
     # Fase 0 do challenge_resolution: pacote proprio, com a fronteira verificada
     # por import-linter. Dependencia de mao unica: o agente pode importa-lo; ele
@@ -51,6 +52,7 @@ google-auth-oauthlib = ">=1.2,<2.0"
 
 [tool.poetry.scripts]
 jobsearch-agent = "jobsearch_agent.cli:main"
+job-agent-v2 = "job_agent_v2.cli:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

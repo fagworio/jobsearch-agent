@@ -42,9 +42,30 @@ def test_a_trivial_profile_field_is_used_only_for_trivial_kinds():
 
 
 def test_no_v1_import_is_needed_to_run_the_slice():
+    # O teste precisa ser independente da ordem de coleta: a suíte legacy pode
+    # já ter importado jobsearch_agent no mesmo processo do pytest.
+    import os
+    import subprocess
     import sys
 
-    assert not any(name.startswith("jobsearch_agent") for name in sys.modules)
+    source_root = str(Path(__file__).resolve().parents[2] / "src")
+    env = dict(os.environ, PYTHONPATH=source_root)
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import job_agent_v2.apply, job_agent_v2.fill, job_agent_v2.submit; "
+                "assert not any(name.startswith(('jobsearch_agent', 'challenge_resolution', 'challenge_guard')) "
+                "for name in sys.modules)"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
 
 
 # Regressao do blocker real: a pagina da VAGA nao e o formulario (0 inputs) e o
