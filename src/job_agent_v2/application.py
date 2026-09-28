@@ -22,6 +22,26 @@ def fingerprint(value: Mapping[str, Any] | list[Any] | tuple[Any, ...]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def greenhouse_form_fingerprint(snapshot: Mapping[str, Any]) -> str:
+    """Calcula o fingerprint estrutural compartilhado com a extensão."""
+
+    raw_fields = snapshot.get("fields", ())
+    if not isinstance(raw_fields, (list, tuple)):
+        raise ApplicationStateError("Greenhouse snapshot fields must be a list")
+    fields: list[dict[str, Any]] = []
+    for raw in raw_fields:
+        if not isinstance(raw, Mapping):
+            raise ApplicationStateError("Greenhouse snapshot field must be an object")
+        fields.append({
+            "id": raw.get("id", ""),
+            "type": raw.get("type", ""),
+            "label": raw.get("label", ""),
+            "required": raw.get("required", False),
+            "options": list(raw.get("options", ())),
+        })
+    return fingerprint({"provider": "greenhouse", "page_type": "application", "fields": fields})
+
+
 _TRANSITIONS: dict[State, frozenset[State]] = {
     State.NEW: frozenset({State.NEEDS_INPUT, State.READY}),
     State.NEEDS_INPUT: frozenset({State.READY}),
@@ -148,3 +168,21 @@ class Application:
         """Registra somente o estado observado; não executa nenhuma ação."""
 
         return replace(self, challenge_state=state)
+
+    def begin_submit(self, *, now: datetime | None = None) -> "Application":
+        """Consome a autorização e abre a única janela de submit."""
+
+        if self.state is not State.READY_TO_SUBMIT:
+            raise ApplicationStateError("application is not ready to submit")
+        if self.challenge_state is not ChallengeState.CLEAR:
+            raise ApplicationStateError("challenge is not CLEAR")
+        if self.authorization is None:
+            raise ApplicationStateError("submit authorization is missing")
+        consumed = self.authorization.consume(
+            application_id=self.id,
+            form_fingerprint=self.form_fingerprint,
+            answers_fingerprint=self.answers_fingerprint,
+            resume_sha256=self.resume_sha256,
+            now=now,
+        )
+        return replace(self, state=State.SUBMITTING, authorization=consumed)
