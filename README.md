@@ -73,6 +73,20 @@ PYTHONPATH=src python3 -m jobsearch_agent.cli application submit <application-id
 jobsearch-agent linkedin inspect <job-id> --html-file tests/fixtures/linkedin/easy-apply-single.html
 ```
 
+### Login no perfil persistente do Chrome V2
+
+A extensão não coleta credenciais. Abra o perfil dedicado na tela oficial de
+login, faça o login manualmente e deixe o Chrome salvar a sessão:
+
+```bash
+./native-host/run-chrome-v2.sh https://my.greenhouse.io/users/sign_in
+PYTHONPATH=src python3 -m job_agent_v2.cli login-status
+```
+
+Depois, na mesma janela, abra a candidatura Greenhouse. Se a sessão tiver
+expirado, `apply`, `fill` e `submit` param com `login_required` ou
+`login_pending`, sem enviar currículo ou candidatura.
+
 Para uma vaga pública:
 
 ```bash

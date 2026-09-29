@@ -6,10 +6,27 @@ autonomy:
   fill_forms: review
   submit: manual
 
+# Identidade operacional do projeto. O executor é um agente autônomo que
+# raciocina, resolve respostas aprovadas e opera um navegador real; não é uma
+# pessoa humana. Essa identidade não autoriza contornar verificações
+# anti-automação nem responder de forma enganosa a desafios do provedor.
+agent:
+  identity: autonomous_agent
+  human_operator: false
+  browser_execution: real_browser_session
+  anti_bot_challenge: human_handoff
+
 providers:
   greenhouse:
     fill_forms: review
     submit: manual
+    batch:
+      max_jobs: 5
+      max_submits: 3
+      max_failures: 2
+      parallelism: 1
+      stop_on:
+        - SUBMIT_UNKNOWN
   linkedin:
     fill_forms: review
     advance_steps: review

@@ -39,6 +39,34 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(source, /getAttribute\("role"\) === "combobox"/);
   assert.match(source, /\[role="option"\]/);
   assert.match(source, /single-value/);
+  assert.match(source, /type === "GET_AUTH_STATE"/);
+  assert.match(source, /type === "GET_DISCOVERY_RESULTS"/);
+  assert.match(source, /type === "GET_DISCOVERY_FILTERS"/);
+  assert.match(worker, /type === "DISCOVER_QUERY"/);
+  assert.match(worker, /type === "OPEN_JOB"/);
+  assert.match(worker, /type === "GET_TAB_CONTEXT"/);
+  assert.match(worker, /type === "WAIT_FOR_APPLICATION"/);
+  assert.match(worker, /REMOVE_REPEATABLE_ENTRY/);
+  assert.match(worker, /tabContexts/);
+  assert.match(source, /type === "WAIT_FOR_APPLICATION"/);
+  assert.match(source, /only an indexed education entry can be removed/);
+  assert.match(source, /FORM_NOT_FOUND/);
+  assert.match(worker, /work_type must contain only remote, hybrid or in_person/);
+  assert.match(greenhouse, /LOGIN_REQUIRED/);
+  assert.match(greenhouse, /AUTHENTICATED_MANUAL/);
+  assert.match(greenhouse, /private MyGreenhouse dashboard observed/);
+  assert.match(greenhouse, /role="dialog"/);
+  assert.match(greenhouse, /easy_apply_dialog/);
+  assert.match(greenhouse, /fieldIdFor/);
+  assert.match(source, /activeFormRoot/);
+  assert.match(greenhouse, /const slug = label/);
+  const myGreenhouse = await readFile(new URL("../src/content/mygreenhouse.ts", import.meta.url), "utf8");
+  assert.match(myGreenhouse, /inspectMyGreenhouseResults/);
+  assert.match(myGreenhouse, /inspectMyGreenhouseFilters/);
+  assert.match(myGreenhouse, /date_posted/);
+  assert.match(myGreenhouse, /employment_type\[\]/);
+  assert.match(myGreenhouse, /Applied/);
+  assert.match(myGreenhouse, /Viewed/);
 });
 
 test("upload path is PDF-only and does not execute arbitrary code", async () => {

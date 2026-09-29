@@ -8,8 +8,29 @@ from pathlib import Path
 import sys
 
 from .apply import apply
+from .auto_apply import run_auto_apply
 from .answers import AnswerLibrary
+from .browser import NativeMessagingClient
 from .fill import fill
+from .discovery import (
+    DiscoveryMatrix,
+    DiscoverySearchRun,
+    GreenhouseDiscoveryAdapter,
+    build_pipeline,
+    build_query_matrix,
+    load_match_profile,
+    load_matrix,
+    load_pipeline,
+    load_policy,
+    load_shortlist,
+    match_matrix,
+    plan_batch,
+    rank_shortlist,
+    save_batch,
+    save_matrix,
+    save_pipeline,
+    save_shortlist,
+)
 from .submit import submit
 
 
@@ -33,9 +54,68 @@ def _library(path: str) -> AnswerLibrary | None:
     return AnswerLibrary.load(path) if path else None
 
 
+def _batch_limits(path: str, overrides: dict[str, int | None]) -> dict[str, int]:
+    policy = load_policy(path)
+    greenhouse = ((policy.get("providers") or {}).get("greenhouse") or {})
+    configured = greenhouse.get("batch") or {}
+    defaults = {"max_jobs": 5, "max_submits": 3, "max_failures": 2, "parallelism": 1}
+    limits: dict[str, int] = {}
+    for name, default in defaults.items():
+        value = overrides.get(name)
+        if value is None:
+            value = configured.get(name, default)
+        if not isinstance(value, int):
+            raise ValueError(f"greenhouse batch policy {name} must be an integer")
+        limits[name] = value
+    return limits
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="job-agent-v2")
     sub = parser.add_subparsers(dest="command", required=True)
+    login_status = sub.add_parser("login-status", help="verifica o login manual no MyGreenhouse na aba ativa")
+    discover = sub.add_parser("discover", help="extrai os cards da busca MyGreenhouse ativa (somente leitura)")
+    discover_filters = sub.add_parser("discover-filters", help="mapeia filtros e parâmetros da busca MyGreenhouse ativa (somente leitura)")
+    discover_matrix = sub.add_parser("discover-matrix", help="executa a matriz de consultas remotas do perfil (somente leitura)")
+    discover_matrix.add_argument("--store", default="data/v2-discovery/matrix.json", help="arquivo JSON do lote observado")
+    deduplicate_matrix = sub.add_parser("deduplicate-matrix", help="deduplica um lote salvo por job ID")
+    deduplicate_matrix.add_argument("--source", default="data/v2-discovery/matrix.json", help="lote JSON de origem")
+    deduplicate_matrix.add_argument("--store", default="", help="destino JSON; por padrão sobrescreve a origem atomicamente")
+    classify_geo = sub.add_parser("classify-geo", help="classifica Brasil/LATAM/Worldwide em um lote salvo")
+    classify_geo.add_argument("--source", default="data/v2-discovery/matrix.json", help="lote JSON de origem")
+    classify_geo.add_argument("--store", default="", help="destino JSON; por padrão sobrescreve a origem atomicamente")
+    match_matrix_parser = sub.add_parser("match-matrix", help="faz matching do lote contra o Career Profile local")
+    match_matrix_parser.add_argument("--source", default="data/v2-discovery/matrix.json", help="lote JSON de origem")
+    match_matrix_parser.add_argument("--profile", default="profile/career_profile.local.yaml", help="Career Profile YAML")
+    match_matrix_parser.add_argument("--store", default="", help="destino JSON; por padrão sobrescreve a origem atomicamente")
+    shortlist_parser = sub.add_parser("shortlist", help="ranqueia e justifica as vagas descobertas")
+    shortlist_parser.add_argument("--source", default="data/v2-discovery/matrix.json", help="matriz JSON com matching")
+    shortlist_parser.add_argument("--store", default="data/v2-discovery/shortlist.json", help="relatório JSON da shortlist")
+    shortlist_parser.add_argument("--min-match-score", type=float, default=30.0)
+    shortlist_parser.add_argument("--auto-approve-score", type=float, default=40.0)
+    pipeline_parser = sub.add_parser("pipeline", help="entrega vagas aprovadas aos fluxos apply/fill/submit")
+    pipeline_parser.add_argument("--source", default="data/v2-discovery/shortlist.json", help="shortlist JSON")
+    pipeline_parser.add_argument("--store", default="data/v2-discovery/pipeline.json", help="manifest JSON do pipeline")
+    batch_parser = sub.add_parser("batch", help="planeja o processamento autônomo seguro do pipeline")
+    batch_parser.add_argument("--source", default="data/v2-discovery/pipeline.json", help="manifest JSON do pipeline")
+    batch_parser.add_argument("--store", default="data/v2-discovery/batch.json", help="relatório JSON do lote")
+    batch_parser.add_argument("--mode", choices=("plan", "apply", "fill", "submit"), default="plan")
+    batch_parser.add_argument("--policy", default="profile/application_policy.yaml", help="política de autonomia")
+    auto_parser = sub.add_parser("auto-apply", help="processa a shortlist aprovada sequencialmente com budgets explícitos")
+    auto_parser.add_argument("--source", default="data/v2-discovery/pipeline.json", help="manifest do pipeline aprovado")
+    auto_parser.add_argument("--resume", required=True, help="caminho do PDF a anexar")
+    auto_parser.add_argument("--approved", default="", help="JSON {prompt: resposta aprovada}")
+    auto_parser.add_argument("--profile", default="", help="JSON {campo trivial: valor}")
+    auto_parser.add_argument("--rules", default="", help="JSON {prompt: resposta regida}")
+    auto_parser.add_argument("--answers", default="", help="biblioteca JSON de respostas aprovadas")
+    auto_parser.add_argument("--store", default="data/v2-submissions", help="diretório de marcadores de submit")
+    auto_parser.add_argument("--report", default="data/v2-auto/auto-apply.json", help="relatório operacional")
+    auto_parser.add_argument("--policy", default="profile/application_policy.yaml", help="política e budgets do lote")
+    auto_parser.add_argument("--max-jobs", type=int, default=None)
+    auto_parser.add_argument("--max-submits", type=int, default=None)
+    auto_parser.add_argument("--max-failures", type=int, default=None)
+    auto_parser.add_argument("--parallelism", type=int, default=None)
+    auto_parser.add_argument("--human-wait", type=int, default=10 * 60 * 1000, help="ms para resolver desafio humano")
     decide = sub.add_parser("apply", help="le a vaga real e decide (nao escreve)")
     _common(decide)
     write = sub.add_parser("fill", help="preenche a vaga real e sobe o curriculo (nao submete)")
@@ -54,6 +134,170 @@ def main(argv: list[str] | None = None) -> int:
     answer_set.add_argument("--prompt", required=True)
     answer_set.add_argument("--answer", required=True)
     args = parser.parse_args(argv)
+
+    if args.command == "login-status":
+        try:
+            with NativeMessagingClient() as browser:
+                result = browser.auth_state()
+        except (OSError, RuntimeError) as exc:
+            result = {"state": "UNAVAILABLE", "detail": str(exc)}
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("state") == "AUTHENTICATED_MANUAL" else 2
+
+    if args.command == "discover":
+        with NativeMessagingClient() as browser:
+            result = GreenhouseDiscoveryAdapter().inspect(browser.inspect_discovery_results())
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "discover-filters":
+        with NativeMessagingClient() as browser:
+            result = GreenhouseDiscoveryAdapter().inspect_filters(browser.inspect_discovery_filters())
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "discover-matrix":
+        adapter = GreenhouseDiscoveryAdapter()
+        runs: list[DiscoverySearchRun] = []
+        with NativeMessagingClient() as browser:
+            initial = adapter.inspect(browser.inspect_discovery_results())
+            work_type = initial.work_type or ("remote",)
+            try:
+                for item in build_query_matrix():
+                    snapshot = browser.discover_query(item.query, list(work_type))
+                    runs.append(DiscoverySearchRun(item.family, item.query, adapter.inspect(snapshot)))
+            finally:
+                # Return the dedicated browser to the query the user had open.
+                browser.discover_query(initial.query or "frontend", list(work_type))
+        result = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
+        destination = save_matrix(result, args.store)
+        print(json.dumps({
+            "provider": result.provider,
+            "work_type": list(result.work_type),
+            "query_count": len(result.runs),
+            "job_count": result.raw_job_count,
+            "unique_job_count": len(result.unique_jobs),
+            "duplicate_job_count": result.raw_job_count - len(result.unique_jobs),
+            "geography": result.to_dict()["geography"],
+            "job_count_by_query": {run.query: len(run.results.jobs) for run in result.runs},
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "deduplicate-matrix":
+        source = Path(args.source)
+        result = load_matrix(source)
+        destination = save_matrix(result, args.store or source)
+        print(json.dumps({
+            "provider": result.provider,
+            "query_count": len(result.runs),
+            "job_count": result.raw_job_count,
+            "unique_job_count": len(result.unique_jobs),
+            "duplicate_job_count": result.raw_job_count - len(result.unique_jobs),
+            "geography": result.to_dict()["geography"],
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "classify-geo":
+        source = Path(args.source)
+        result = load_matrix(source)
+        destination = save_matrix(result, args.store or source)
+        print(json.dumps({
+            "provider": result.provider,
+            "query_count": len(result.runs),
+            "unique_job_count": len(result.unique_jobs),
+            "geography": result.to_dict()["geography"],
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "match-matrix":
+        source = Path(args.source)
+        result = load_matrix(source)
+        matched = match_matrix(result, load_match_profile(args.profile))
+        destination = save_matrix(matched, args.store or source)
+        matching = matched.to_dict()["matching"]
+        print(json.dumps({
+            "provider": matched.provider,
+            "query_count": len(matched.runs),
+            "unique_job_count": len(matched.unique_jobs),
+            "matching": {
+                "profile": matching["profile"],
+                "counts_by_band": matching["counts_by_band"],
+            },
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "shortlist":
+        source = Path(args.source)
+        report = rank_shortlist(
+            load_matrix(source),
+            source=str(source),
+            min_match_score=args.min_match_score,
+            auto_approve_score=args.auto_approve_score,
+        )
+        destination = save_shortlist(report, args.store)
+        payload = report.to_dict()
+        print(json.dumps({
+            "provider": report.provider,
+            "counts": payload["counts"],
+            "top": payload["entries"][:10],
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "pipeline":
+        source = Path(args.source)
+        manifest = build_pipeline(load_shortlist(source))
+        destination = save_pipeline(manifest, args.store)
+        print(json.dumps({
+            "provider": "greenhouse",
+            "source": str(source),
+            "approved_count": len(manifest.items),
+            "actions": ["apply", "fill", "submit"],
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "batch":
+        source = Path(args.source)
+        manifest = load_pipeline(source)
+        report = plan_batch(manifest, mode=args.mode, policy=load_policy(args.policy))
+        destination = save_batch(report, args.store)
+        print(json.dumps({
+            "source": str(source),
+            "mode": report.mode,
+            "counts": report.to_dict()["counts"],
+            "store": str(destination),
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "auto-apply":
+        limits = _batch_limits(args.policy, {
+            "max_jobs": args.max_jobs,
+            "max_submits": args.max_submits,
+            "max_failures": args.max_failures,
+            "parallelism": args.parallelism,
+        })
+        report = run_auto_apply(
+            load_pipeline(args.source),
+            resume=args.resume,
+            approved=_pairs(args.approved),
+            profile=_pairs(args.profile),
+            rules=_pairs(args.rules),
+            library=_library(args.answers),
+            marker_store=args.store,
+            report_store=args.report,
+            max_jobs=limits["max_jobs"],
+            max_submits=limits["max_submits"],
+            max_failures=limits["max_failures"],
+            parallelism=limits["parallelism"],
+            human_wait_ms=args.human_wait,
+        )
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if report.to_dict()["counts"].get("SUBMITTED", 0) else 2
 
     if args.command == "answers":
         library = AnswerLibrary.load(args.store)

@@ -16,6 +16,32 @@ def test_request_contract_round_trips_without_open_command_surface():
         Request.from_object({"version": 1, "request_id": "req-2", "type": "eval_js", "payload": {}})
 
 
+def test_auth_state_is_a_declared_browser_command():
+    request = Request.create("auth-1", Command.GET_AUTH_STATE)
+    assert Request.from_object(json.loads(request.to_json())) == request
+
+
+def test_discovery_results_is_a_declared_read_only_command():
+    request = Request.create("discovery-1", Command.GET_DISCOVERY_RESULTS)
+    assert Request.from_object(json.loads(request.to_json())) == request
+
+
+def test_discovery_filters_is_a_declared_read_only_command():
+    request = Request.create("discovery-filters-1", Command.GET_DISCOVERY_FILTERS)
+    assert Request.from_object(json.loads(request.to_json())) == request
+
+
+def test_discovery_query_is_a_declared_read_only_command():
+    request = Request.create("discovery-query-1", Command.DISCOVER_QUERY, {"query": "frontend", "work_type": ["remote"]})
+    assert Request.from_object(json.loads(request.to_json())) == request
+
+
+def test_auto_apply_navigation_commands_are_declared():
+    for command in (Command.OPEN_JOB, Command.GET_TAB_CONTEXT, Command.WAIT_FOR_APPLICATION, Command.REMOVE_REPEATABLE_ENTRY):
+        request = Request.create(f"{command.value.lower()}-1", command, {"tab_id": 7})
+        assert Request.from_object(json.loads(request.to_json())) == request
+
+
 def test_response_contract_requires_error_for_failure():
     response = Response.success("req-1", {"type": "PONG"})
     assert Response.from_object(json.loads(response.to_json())) == response

@@ -29,5 +29,8 @@ sed \
   -e "s|__HOST_EXECUTABLE__|${host_executable//|/\\|}|g" \
   -e "s|__EXTENSION_ID__|$extension_id|g" \
   native-host/com.job_agent_v2.json.template > "$host_dir/com.job_agent_v2.json"
-chmod 600 "$host_dir/com.job_agent_v2.json"
+# Chrome reads the manifest before it starts the host. Keep the manifest
+# readable by the browser process while the host executable remains separately
+# protected by the filesystem.
+chmod 644 "$host_dir/com.job_agent_v2.json"
 echo "Installed com.job_agent_v2 at $host_dir/com.job_agent_v2.json"

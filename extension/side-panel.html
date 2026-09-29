@@ -23,14 +23,19 @@
     <dl>
       <dt>Provider</dt><dd id="provider">—</dd>
       <dt>Page</dt><dd id="page-type">—</dd>
+      <dt>Surface</dt><dd id="surface">—</dd>
       <dt>Fields</dt><dd id="fields">—</dd>
       <dt>Resolved</dt><dd id="resolved">—</dd>
       <dt>Missing</dt><dd id="missing">—</dd>
       <dt>Challenge</dt><dd id="challenge">unknown</dd>
+      <dt>Login</dt><dd id="auth-status">unknown</dd>
     </dl>
+    <div class="status" id="auth-detail">Login is checked only from the active tab.</div>
     <div class="status" id="status">Ready to inspect the active tab.</div>
     <ul id="field-list"></ul>
     <button id="inspect" type="button">Inspect</button>
+    <button id="check-login" type="button">Check login</button>
+    <button id="open-login" type="button">Open MyGreenhouse login</button>
     <button id="fill" type="button" disabled>Fill</button>
     <button id="submit" type="button" disabled>Submit (disabled)</button>
     <script src="dist/ui/side-panel.js"></script>

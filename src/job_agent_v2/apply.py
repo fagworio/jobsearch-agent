@@ -89,6 +89,14 @@ def _apply_live(
 
     try:
         with NativeMessagingClient() as browser:
+            auth = browser.auth_state()
+            if auth.get("state") in {"LOGIN_REQUIRED", "LOGIN_PENDING"}:
+                return ApplyResult(
+                    state=State.NEEDS_INPUT,
+                    reason="login_required" if auth.get("state") == "LOGIN_REQUIRED" else "login_pending",
+                    job_url=url,
+                    apply_url=url,
+                )
             snapshot = browser.inspect_form()
     except (OSError, RuntimeError) as exc:
         return ApplyResult(

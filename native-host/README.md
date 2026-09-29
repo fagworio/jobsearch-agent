@@ -30,10 +30,27 @@ sem compactação” e selecione a pasta extension/ do projeto. Isso ocorre porq
 as versões atuais do Chrome bloqueiam o carregamento silencioso de extensões
 por linha de comando. Depois dessa instalação, ela permanece no perfil.
 
-Faça também o login manualmente nesse Chrome. Os cookies e a sessão ficam
-salvos nesse perfil e serão reutilizados nas próximas execuções; se o
-Greenhouse expirar a sessão, o Chrome pedirá login novamente. A extensão não
-lê nem armazena sua senha.
+Abra também a tela de login do MyGreenhouse e faça o login manualmente nesse
+Chrome:
+
+    ./native-host/run-chrome-v2.sh https://my.greenhouse.io/users/sign_in
+
+Os cookies e a sessão ficam salvos nesse perfil e serão reutilizados nas
+próximas execuções; se o Greenhouse expirar a sessão, o Chrome pedirá login
+novamente. A extensão apenas observa o estado visível da página e não lê nem
+armazena sua senha, código de segurança ou cookies.
+
+Com a aba de login ativa, a situação pode ser conferida pelo painel da
+extensão ou pelo backend:
+
+    PYTHONPATH=src python3 -m job_agent_v2.cli login-status
+
+Depois do login, navegue nessa mesma janela para a página de candidatura e
+abra o formulário “Easy Apply”. O inspector usa o diálogo visível
+(`role="dialog"`, incluindo o formulário React com scroll interno) como root,
+então `fill` usa a sessão já guardada para anexar o PDF e preencher os campos
+e comboboxes dessa tela. `submit` continua sendo uma ação separada e
+explicitamente autorizada.
 
 O parâmetro JOB_AGENT_V2_USE_COMMAND_LINE_EXTENSION=1 fica disponível para
 Chromium ou builds de Chrome que ainda aceitem esse mecanismo, mas não é

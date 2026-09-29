@@ -40,8 +40,9 @@ def _snapshot() -> dict[str, Any]:
 
 
 class FakeBrowser:
-    def __init__(self) -> None:
+    def __init__(self, auth_state: str = "NOT_MY_GREENHOUSE") -> None:
         self.snapshot = _snapshot()
+        self.auth_state_value = auth_state
         self.fill_calls: list[dict[str, Any]] = []
         self.upload_calls: list[dict[str, Any]] = []
         self.submit_calls: list[dict[str, Any]] = []
@@ -54,6 +55,9 @@ class FakeBrowser:
 
     def inspect_form(self) -> dict[str, Any]:
         return self.snapshot
+
+    def auth_state(self) -> dict[str, Any]:
+        return {"state": self.auth_state_value, "detail": "fixture auth state"}
 
     def upload_artifact(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.upload_calls.append(payload)
@@ -120,6 +124,23 @@ def test_fill_live_path_uploads_and_reads_back(monkeypatch, tmp_path: Path):
     assert result.resume_attached is True
     assert len(browser.upload_calls) == 1
     assert browser.fill_calls == [{"field_id": "first_name", "action": "set", "value": "João"}]
+
+
+def test_fill_stops_before_upload_when_login_is_required(monkeypatch, tmp_path: Path):
+    browser = FakeBrowser("LOGIN_REQUIRED")
+    monkeypatch.setattr("job_agent_v2.fill.NativeMessagingClient", lambda: browser)
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"%PDF-1.7\nfake")
+
+    result = fill(
+        "https://job-boards.greenhouse.io/example/jobs/1",
+        profile={"First Name": "João"},
+        resume=str(resume),
+    )
+
+    assert result.state is State.NEEDS_INPUT
+    assert result.reason == "login_required"
+    assert browser.upload_calls == []
 
 
 def test_submit_live_path_dispatches_one_authorized_action(monkeypatch, tmp_path: Path):

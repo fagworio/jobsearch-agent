@@ -96,29 +96,68 @@ class NativeMessagingClient:
     def ping(self) -> Response:
         return self.request(Request.create("client-ping", Command.PING))
 
+    def auth_state(self, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.GET_AUTH_STATE, self._tab_payload(tab_id=tab_id))
+
     def get_page(self) -> dict[str, Any]:
         return self.call(Command.GET_PAGE)
 
-    def inspect_form(self) -> dict[str, Any]:
-        return self.call(Command.INSPECT_FORM)
+    def inspect_discovery_results(self) -> dict[str, Any]:
+        return self.call(Command.GET_DISCOVERY_RESULTS)
 
-    def fill_form(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.call(Command.FILL_FORM, payload)
+    def inspect_discovery_filters(self) -> dict[str, Any]:
+        return self.call(Command.GET_DISCOVERY_FILTERS)
 
-    def read_form(self) -> dict[str, Any]:
-        return self.call(Command.READ_FORM)
+    def discover_query(self, query: str, work_type: list[str] | None = None) -> dict[str, Any]:
+        return self.call(Command.DISCOVER_QUERY, {"query": query, "work_type": list(work_type or ["remote"])})
 
-    def upload_artifact(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.call(Command.UPLOAD_ARTIFACT, payload)
+    def open_job(self, job_id: str, url: str, provider: str = "greenhouse") -> dict[str, Any]:
+        return self.call(Command.OPEN_JOB, {"job_id": job_id, "url": url, "provider": provider})
 
-    def challenge_state(self) -> dict[str, Any]:
-        return self.call(Command.GET_CHALLENGE_STATE)
+    def get_tab_context(self, tab_id: int) -> dict[str, Any]:
+        return self.call(Command.GET_TAB_CONTEXT, {"tab_id": tab_id})
 
-    def request_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.call(Command.REQUEST_SUBMIT, payload)
+    def wait_for_application(self, tab_id: int, job_id: str, provider: str = "greenhouse") -> dict[str, Any]:
+        return self.call(Command.WAIT_FOR_APPLICATION, {
+            "tab_id": tab_id,
+            "job_id": job_id,
+            "provider": provider,
+        })
 
-    def submit_result(self) -> dict[str, Any]:
-        return self.call(Command.GET_SUBMIT_RESULT)
+    def remove_repeatable_entry(self, entry_type: str, index: int, *, tab_id: int) -> dict[str, Any]:
+        return self.call(Command.REMOVE_REPEATABLE_ENTRY, {
+            "entry_type": entry_type,
+            "index": index,
+            "tab_id": tab_id,
+        })
+
+    @staticmethod
+    def _tab_payload(payload: dict[str, Any] | None = None, tab_id: int | None = None) -> dict[str, Any]:
+        value = dict(payload or {})
+        if tab_id is not None:
+            value["tab_id"] = tab_id
+        return value
+
+    def inspect_form(self, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.INSPECT_FORM, self._tab_payload(tab_id=tab_id))
+
+    def fill_form(self, payload: dict[str, Any], *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.FILL_FORM, self._tab_payload(payload, tab_id))
+
+    def read_form(self, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.READ_FORM, self._tab_payload(tab_id=tab_id))
+
+    def upload_artifact(self, payload: dict[str, Any], *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.UPLOAD_ARTIFACT, self._tab_payload(payload, tab_id))
+
+    def challenge_state(self, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.GET_CHALLENGE_STATE, self._tab_payload(tab_id=tab_id))
+
+    def request_submit(self, payload: dict[str, Any], *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.REQUEST_SUBMIT, self._tab_payload(payload, tab_id))
+
+    def submit_result(self, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.GET_SUBMIT_RESULT, self._tab_payload(tab_id=tab_id))
 
     def _read_socket_exact(self, size: int) -> bytes:
         if self._socket is None:

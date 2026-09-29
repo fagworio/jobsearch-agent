@@ -66,6 +66,9 @@ class SubmitAuthorization:
     expires_at: str
     token: str
     used: bool = False
+    tab_id: int | None = None
+    provider: str = ""
+    canonical_job_id: str = ""
 
     @classmethod
     def issue(
@@ -76,6 +79,9 @@ class SubmitAuthorization:
         resume_sha256: str,
         *,
         expires_at: str,
+        tab_id: int | None = None,
+        provider: str = "",
+        canonical_job_id: str = "",
     ) -> "SubmitAuthorization":
         for name, value in {
             "application_id": application_id,
@@ -86,7 +92,18 @@ class SubmitAuthorization:
         }.items():
             if not value:
                 raise ApplicationStateError(f"{name} is required")
-        return cls(application_id, form_fingerprint, answers_fingerprint, resume_sha256, expires_at, uuid4().hex)
+        return cls(
+            application_id,
+            form_fingerprint,
+            answers_fingerprint,
+            resume_sha256,
+            expires_at,
+            uuid4().hex,
+            False,
+            tab_id,
+            provider,
+            canonical_job_id,
+        )
 
     def consume(
         self,
@@ -109,8 +126,8 @@ class SubmitAuthorization:
             raise ApplicationStateError("submit authorization fingerprints do not match")
         return replace(self, used=True)
 
-    def to_payload(self) -> dict[str, str | bool]:
-        return {
+    def to_payload(self) -> dict[str, str | bool | int | None]:
+        payload: dict[str, str | bool | int | None] = {
             "application_id": self.application_id,
             "form_fingerprint": self.form_fingerprint,
             "answers_fingerprint": self.answers_fingerprint,
@@ -119,6 +136,13 @@ class SubmitAuthorization:
             "token": self.token,
             "used": self.used,
         }
+        if self.tab_id is not None:
+            payload["tab_id"] = self.tab_id
+        if self.provider:
+            payload["provider"] = self.provider
+        if self.canonical_job_id:
+            payload["canonical_job_id"] = self.canonical_job_id
+        return payload
 
 
 @dataclass(frozen=True)

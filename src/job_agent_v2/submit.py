@@ -25,7 +25,7 @@ from .browser import NativeMessagingClient
 from .challenges import ChallengeState
 from .confirmation import ConfirmationState, classify_browser_result
 from .fill import _action_for, _snapshot_field_value
-from .models import State
+from .models import Form, State
 
 POST_SUBMIT_SETTLE_MS = 20_000
 
@@ -112,10 +112,13 @@ def _persist(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-def _may_retry(existing: dict[str, Any]) -> bool:
+def _may_retry(existing: dict[str, Any], *, retry_failed: bool = False) -> bool:
     if not existing:
         return True
-    return False
+    # An explicit operator retry is safe only after the page itself exposed a
+    # validation failure. Confirmed and indeterminate outcomes remain a hard
+    # stop because retrying them could create a duplicate application.
+    return retry_failed and existing.get("outcome") == SubmitState.SUBMIT_FAILED.value
 
 
 def _refusal(existing: dict[str, Any], path: Path) -> SubmitReport:
@@ -127,15 +130,17 @@ def _refusal(existing: dict[str, Any], path: Path) -> SubmitReport:
         marker=str(path),
         write_possible_at=str(existing.get("write_possible_at") or ""),
         evidence=str(existing.get("evidence") or ""),
-        submission_writes=1,
+        # A refusal is reconciliation only: no new submit authorization or
+        # browser click happened in this invocation.
+        submission_writes=0,
     )
 
 
-def _wait_for_human(browser: NativeMessagingClient, budget_ms: int) -> dict[str, Any]:
+def _wait_for_human(browser: NativeMessagingClient, budget_ms: int, *, tab_id: int | None = None) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, budget_ms) / 1000
     latest: dict[str, Any] = {}
     while True:
-        latest = browser.challenge_state()
+        latest = browser.challenge_state(tab_id=tab_id) if tab_id is not None else browser.challenge_state()
         if latest.get("state") == "CLEAR" or time.monotonic() >= deadline:
             return latest
         time.sleep(0.5)
@@ -154,13 +159,17 @@ def submit(
     human_wait_ms: int = 0,
     headless: bool = False,
     timeout_ms: float = 45_000,
+    tab_id: int | None = None,
+    provider: str = "greenhouse",
+    canonical_job_id: str = "",
+    retry_failed: bool = False,
 ) -> SubmitReport:
     """Preenche, autoriza e aciona o submit exatamente uma vez no Chrome."""
 
     del headless, timeout_ms
     path = marker_path(store, url)
     existing = read_marker(path)
-    if not _may_retry(existing):
+    if not _may_retry(existing, retry_failed=retry_failed):
         return _refusal(existing, path)
     if not resume:
         return SubmitReport(state=SubmitState.NO_WRITE, reason="resume_required", job_url=url, marker=str(path))
@@ -168,10 +177,24 @@ def submit(
     try:
         artifact = ResumeArtifact.from_path(resume)
         with NativeMessagingClient() as browser:
-            snapshot = browser.inspect_form()
+            auth = browser.auth_state(tab_id=tab_id) if tab_id is not None else browser.auth_state()
+            if auth.get("state") in {"LOGIN_REQUIRED", "LOGIN_PENDING"}:
+                return SubmitReport(
+                    state=SubmitState.NO_WRITE,
+                    reason="login_required" if auth.get("state") == "LOGIN_REQUIRED" else "login_pending",
+                    job_url=url,
+                    resume=resume,
+                    marker=str(path),
+                )
+            snapshot = browser.inspect_form(tab_id=tab_id) if tab_id is not None else browser.inspect_form()
             form = GreenhouseAdapter().to_form(snapshot)
             apply_url = str(snapshot.get("url") or url)
-            resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+            # A resume is an artifact, not an answer. Easy Apply can expose
+            # the already-attached resume as a synthetic required file field;
+            # resolve only actual questions so the submit path never tries to
+            # write a filename back into a file control.
+            answer_form = Form(tuple(field for field in form.fields if field.kind != "file"))
+            resolution = resolve(answer_form, approved=approved, profile=profile, rules=rules, library=library)
             if not resolution.complete:
                 return SubmitReport(
                     state=SubmitState.NO_WRITE,
@@ -182,7 +205,10 @@ def submit(
                     marker=str(path),
                 )
 
-            resume_field = next((item for item in form.fields if item.kind == "file"), None)
+            resume_field = next(
+                (item for item in form.fields if item.kind == "file" and item.required),
+                None,
+            ) or next((item for item in form.fields if item.kind == "file"), None)
             if resume_field is None:
                 return SubmitReport(
                     state=SubmitState.NO_WRITE,
@@ -192,28 +218,45 @@ def submit(
                     fields=len(form.fields),
                     marker=str(path),
                 )
-            uploaded = browser.upload_artifact(artifact.to_payload(resume_field.key))
-            if not _snapshot_field_value(uploaded, resume_field.key):
-                return SubmitReport(
-                    state=SubmitState.NO_WRITE,
-                    reason="resume_upload_readback_failed",
-                    job_url=url,
-                    apply_url=apply_url,
-                    fields=len(form.fields),
-                    resume=resume,
-                    marker=str(path),
-                )
+            # Greenhouse Easy Apply removes the file input after an upload and
+            # leaves a visible filename plus a "Remove file" control. In that
+            # state the attachment is already present and must not be replaced
+            # merely because the DOM no longer exposes an input.
+            existing_resume = _snapshot_field_value(snapshot, resume_field.key).strip()
+            if existing_resume:
+                uploaded = snapshot
+            else:
+                upload_payload = artifact.to_payload(resume_field.key)
+                uploaded = browser.upload_artifact(upload_payload, tab_id=tab_id) if tab_id is not None else browser.upload_artifact(upload_payload)
+                if not _snapshot_field_value(uploaded, resume_field.key):
+                    return SubmitReport(
+                        state=SubmitState.NO_WRITE,
+                        reason="resume_upload_readback_failed",
+                        job_url=url,
+                        apply_url=apply_url,
+                        fields=len(form.fields),
+                        resume=resume,
+                        marker=str(path),
+                    )
 
             verified = 0
-            for field in form.fields:
+            for field in answer_form.fields:
                 if field.key not in resolution.answers:
                     continue
                 value = resolution.answers[field.key]
-                observed = browser.fill_form({
+                # Preserve values already confirmed in the live form. This is
+                # important for provider widgets such as React Select: the
+                # browser-native interaction may be complete even when the
+                # content-script mutation path cannot reproduce it.
+                if _snapshot_field_value(uploaded, field.key) == value:
+                    verified += 1
+                    continue
+                fill_payload = {
                     "field_id": field.key,
                     "action": _action_for(field, value),
                     "value": value,
-                })
+                }
+                observed = browser.fill_form(fill_payload, tab_id=tab_id) if tab_id is not None else browser.fill_form(fill_payload)
                 if _snapshot_field_value(observed, field.key) != value:
                     return SubmitReport(
                         state=SubmitState.NO_WRITE,
@@ -228,8 +271,8 @@ def submit(
                     )
                 verified += 1
 
-            read_back = browser.read_form()
-            for field in form.fields:
+            read_back = browser.read_form(tab_id=tab_id) if tab_id is not None else browser.read_form()
+            for field in answer_form.fields:
                 if field.key in resolution.answers and _snapshot_field_value(read_back, field.key) != resolution.answers[field.key]:
                     return SubmitReport(
                         state=SubmitState.NO_WRITE,
@@ -243,9 +286,9 @@ def submit(
                         marker=str(path),
                     )
 
-            challenge = browser.challenge_state()
+            challenge = browser.challenge_state(tab_id=tab_id) if tab_id is not None else browser.challenge_state()
             if challenge.get("state") != "CLEAR" and human_wait_ms:
-                challenge = _wait_for_human(browser, human_wait_ms)
+                challenge = _wait_for_human(browser, human_wait_ms, tab_id=tab_id)
             if challenge.get("state") != "CLEAR":
                 return SubmitReport(
                     state=SubmitState.HUMAN_REQUIRED,
@@ -269,6 +312,9 @@ def submit(
                 answers_fp,
                 artifact.sha256,
                 expires_at=expires_at,
+                tab_id=tab_id,
+                provider=provider if tab_id is not None else "",
+                canonical_job_id=canonical_job_id if tab_id is not None else "",
             )
             application = Application(
                 id=authorization.application_id,
@@ -293,13 +339,14 @@ def submit(
             }
             _persist(path, record)
 
-            reply = browser.request_submit({"authorization": submitting.authorization.to_payload()})
+            request_payload = {"authorization": submitting.authorization.to_payload()}
+            reply = browser.request_submit(request_payload, tab_id=tab_id) if tab_id is not None else browser.request_submit(request_payload)
             record["click_count"] = 1
             deadline = time.monotonic() + max(0, min(settle_ms, 60_000)) / 1000
-            result = browser.submit_result()
+            result = browser.submit_result(tab_id=tab_id) if tab_id is not None else browser.submit_result()
             while result.get("state") == "SUBMIT_UNKNOWN" and time.monotonic() < deadline:
                 time.sleep(0.5)
-                result = browser.submit_result()
+                result = browser.submit_result(tab_id=tab_id) if tab_id is not None else browser.submit_result()
             confirmation = classify_browser_result(result)
             if confirmation.state is ConfirmationState.SUBMITTED:
                 state, reason, complete = SubmitState.SUBMITTED, "confirmation_observed", True

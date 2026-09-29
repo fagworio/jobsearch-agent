@@ -1,4 +1,5 @@
-import { formFingerprintInput, inspectChallenge, inspectGreenhouse, inspectSubmitResult, isVisible } from "./greenhouse";
+import { activeFormRoot, fieldIdFor, formFingerprintInput, inspectAuth, inspectChallenge, inspectGreenhouse, inspectSubmitResult, isVisible, labelFor } from "./greenhouse";
+import { inspectMyGreenhouseFilters, inspectMyGreenhouseResults } from "./mygreenhouse";
 
 type FillPayload = {
   field_id?: unknown;
@@ -24,11 +25,30 @@ type SubmitAuthorization = {
 
 const consumedSubmitTokens = new Set<string>();
 
-function controlsFor(fieldId: string): Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement> {
-  return Array.from(document.querySelectorAll("input, textarea, select")).filter((element) => {
+type FormControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement;
+
+function controlsFor(fieldId: string): FormControl[] {
+  const root = activeFormRoot();
+  const controls = Array.from(root.querySelectorAll("input, textarea, select, [role=combobox]")).filter((element) => {
     const control = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    return control.name === fieldId || control.id === fieldId;
-  }) as Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>;
+    return (isVisible(element) || element instanceof HTMLInputElement && element.type === "file")
+      && !(element instanceof HTMLButtonElement && element.getAttribute("aria-label") === "Selected country")
+      && (control.getAttribute("aria-hidden") !== "true")
+      && !["hidden", "submit", "button"].includes(element.getAttribute("type") ?? "");
+  }) as FormControl[];
+  const occurrences = new Map<string, number>();
+  return controls.filter((element, index) => {
+    const control = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    const label = labelFor(element, document);
+    const baseId = fieldIdFor(element, label, index);
+    const occurrence = (occurrences.get(baseId) ?? 0) + 1;
+    occurrences.set(baseId, occurrence);
+    const stableId = occurrence === 1 ? baseId : `${baseId}--${occurrence}`;
+    return control.name === fieldId
+      || control.id === fieldId
+      || element.getAttribute("data-field-id") === fieldId
+      || stableId === fieldId;
+  });
 }
 
 function dispatchInput(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): void {
@@ -36,17 +56,20 @@ function dispatchInput(control: HTMLInputElement | HTMLTextAreaElement | HTMLSel
   control.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function readBackValue(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {
+function readBackValue(control: FormControl): string | boolean {
   if (control instanceof HTMLInputElement && control.getAttribute("role") === "combobox") {
-    const selected = control.closest("[class*='select__control']")?.querySelector("[class*='single-value']");
+    const selected = control.closest("[class*='select__control']")?.querySelector("[class*='single-value'], [class*='placeholder']");
     return selected?.textContent?.replace(/\s+/g, " ").trim() || control.value;
+  }
+  if (control instanceof HTMLButtonElement && control.getAttribute("role") === "combobox") {
+    return control.textContent?.replace(/\s+/g, " ").trim() ?? "";
   }
   return control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)
     ? control.checked
     : control.value;
 }
 
-function ensureReadBack(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, expected: string, checked?: boolean): void {
+function ensureReadBack(control: FormControl, expected: string, checked?: boolean): void {
   const actual = readBackValue(control);
   if (typeof checked === "boolean" ? actual !== checked : actual !== expected) {
     throw new Error(`FIELD_MISMATCH: expected ${expected || String(checked)} but read ${String(actual)}`);
@@ -54,18 +77,55 @@ function ensureReadBack(control: HTMLInputElement | HTMLTextAreaElement | HTMLSe
 }
 
 async function selectCombobox(control: HTMLInputElement, value: string): Promise<void> {
-  control.focus();
-  control.click();
+  // React Select handles opening on its control wrapper. Calling click() on
+  // the transparent input alone only focuses it and leaves the menu closed.
+  // It also relies on the complete pointer sequence; a click on the internal
+  // indicator button alone does not transition the controlled component.
+  const selectControl = control.closest('[class*="select__control"]');
+  if (selectControl instanceof HTMLElement) {
+    selectControl.scrollIntoView({ block: "center", inline: "nearest" });
+    control.focus();
+    for (const type of ["mousedown", "mouseup", "click"] as const) {
+      selectControl.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: 1,
+        detail: 1,
+        view: window,
+      }));
+    }
+  } else control.click();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   setter?.call(control, value);
   control.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
   await new Promise((resolve) => window.setTimeout(resolve, 100));
+  // React Select renders its menu in a document-level portal by default.
+  // The control remains inside the Easy Apply dialog, but the options do not.
+  // Search the document for the active visible option while keeping the
+  // control lookup scoped to the active form root.
+  const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
   const option = Array.from(document.querySelectorAll('[role="option"]'))
     .filter((element) => isVisible(element))
-    .find((element) => element.textContent?.replace(/\s+/g, " ").trim() === value);
-  if (!(option instanceof HTMLElement)) throw new Error("combobox option not found");
+    .find((element) => normalize(element.textContent ?? "") === normalize(value));
+  if (!(option instanceof HTMLElement)) {
+    const diagnostics = {
+      field_id: control.id || control.name || "",
+      input_value: control.value,
+      expanded: control.getAttribute("aria-expanded") === "true",
+      aria_controls: control.getAttribute("aria-controls") || "",
+      visible_options: Array.from(document.querySelectorAll('[role="option"]'))
+        .filter((element) => isVisible(element))
+        .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
+        .filter(Boolean),
+    };
+    throw new Error(`structured combobox option not found: ${JSON.stringify(diagnostics)}`);
+  }
   option.click();
-  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+  // The dedicated Chrome tab may be backgrounded. A requestAnimationFrame
+  // callback can then be throttled indefinitely, leaving the native request
+  // without a response even though React Select already committed the choice.
+  await new Promise((resolve) => window.setTimeout(resolve, 50));
   ensureReadBack(control, value);
 }
 
@@ -88,6 +148,30 @@ async function fillOne(payload: FillPayload): Promise<void> {
   }
 
   const control = controls[0];
+  if (payload.action === "select" && control instanceof HTMLButtonElement && control.getAttribute("role") === "combobox") {
+    control.scrollIntoView({ block: "center", inline: "nearest" });
+    for (const type of ["mousedown", "mouseup", "click"] as const) {
+      control.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
+    }
+    const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+    const option = Array.from(document.querySelectorAll('[role="option"]'))
+      .filter((element) => isVisible(element))
+      .find((element) => normalize(element.textContent ?? "") === normalize(value));
+    if (!(option instanceof HTMLElement)) {
+      throw new Error(`structured combobox option not found: ${JSON.stringify({
+        field_id: control.id || "",
+        expanded: control.getAttribute("aria-expanded") === "true",
+        aria_controls: control.getAttribute("aria-controls") || "",
+        visible_options: Array.from(document.querySelectorAll('[role="option"]'))
+          .filter((element) => isVisible(element))
+          .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
+          .filter(Boolean),
+      })}`);
+    }
+    option.click();
+    ensureReadBack(control, value);
+    return;
+  }
   if (payload.action === "select") {
     if (control instanceof HTMLInputElement && control.getAttribute("role") === "combobox") {
       await selectCombobox(control, value);
@@ -105,7 +189,9 @@ async function fillOne(payload: FillPayload): Promise<void> {
   }
 
   if (payload.action === "set") {
-    if (control instanceof HTMLSelectElement) throw new Error("select requires action=select");
+    if (control instanceof HTMLSelectElement || control instanceof HTMLButtonElement) {
+      throw new Error("select controls require action=select");
+    }
     control.value = value;
     dispatchInput(control);
     ensureReadBack(control, value);
@@ -146,8 +232,42 @@ async function sha256(value: unknown): Promise<string> {
 
 function requiredFieldsMissing(snapshot: ReturnType<typeof inspectGreenhouse>): string[] {
   return snapshot.fields
-    .filter((field) => field.required && !field.value.trim())
+    .filter((field) => field.required && (!field.value.trim() || /^select(?:\.\.\.)?$/i.test(field.value.trim())))
     .map((field) => field.id);
+}
+
+async function waitForApplication(): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const snapshot = inspectGreenhouse();
+    if (snapshot.page_type === "application" && snapshot.ready) return snapshot;
+    if (snapshot.page_type !== "application") {
+      const apply = Array.from(document.querySelectorAll("button, a, [role=button]"))
+        .filter(isVisible)
+        .find((element) => {
+          const text = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+          if (/\b(?:already\s+)?applied\b|view application/i.test(text)) return false;
+          return /easy apply|apply now|apply for this job|apply/i.test(text)
+            && !/submit application/i.test(text);
+        });
+      if (apply instanceof HTMLElement) apply.click();
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  }
+  throw new Error("FORM_NOT_FOUND");
+}
+
+function removeRepeatableEntry(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") throw new Error("payload must be an object");
+  const input = payload as { entry_type?: unknown; index?: unknown };
+  if (input.entry_type !== "education" || !Number.isInteger(input.index) || (input.index as number) < 0) {
+    throw new Error("only an indexed education entry can be removed");
+  }
+  const entries = Array.from(document.querySelectorAll('[role="dialog"] button[aria-label="Remove"]'))
+    .filter(isVisible);
+  const target = entries[input.index as number];
+  if (!(target instanceof HTMLButtonElement)) throw new Error("repeatable education entry not found");
+  target.click();
+  return inspectGreenhouse();
 }
 
 async function requestSubmit(payload: { authorization?: unknown }): Promise<Record<string, unknown>> {
@@ -184,8 +304,37 @@ async function requestSubmit(payload: { authorization?: unknown }): Promise<Reco
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!message || typeof message !== "object" || !("type" in message)) return false;
   const type = (message as { type?: unknown }).type;
+  if (type === "GET_AUTH_STATE") {
+    sendResponse({ ok: true, result: inspectAuth() });
+    return true;
+  }
   if (type === "INSPECT_FORM" || type === "GET_PAGE" || type === "READ_FORM") {
     sendResponse({ ok: true, result: inspectGreenhouse() });
+    return true;
+  }
+  if (type === "WAIT_FOR_APPLICATION") {
+    void waitForApplication()
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (type === "REMOVE_REPEATABLE_ENTRY") {
+    try {
+      const payload = (message as { payload?: unknown }).payload;
+      sendResponse({ ok: true, result: removeRepeatableEntry(payload) });
+    } catch (error) {
+      sendResponse({ ok: false, error: String(error) });
+    }
+    return true;
+  }
+  if (type === "GET_DISCOVERY_RESULTS") {
+    sendResponse({ ok: true, result: inspectMyGreenhouseResults() });
+    return true;
+  }
+  if (type === "GET_DISCOVERY_FILTERS") {
+    void inspectMyGreenhouseFilters()
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
   if (type === "FILL_FORM") {

@@ -183,6 +183,14 @@ def fill(
     del timeout_ms  # o timeout da sessão é controlado pelo cliente Native Messaging
     try:
         with NativeMessagingClient() as browser:
+            auth = browser.auth_state()
+            if auth.get("state") in {"LOGIN_REQUIRED", "LOGIN_PENDING"}:
+                return FillReport(
+                    state=State.NEEDS_INPUT,
+                    reason="login_required" if auth.get("state") == "LOGIN_REQUIRED" else "login_pending",
+                    job_url=url,
+                    resume=resume,
+                )
             snapshot = browser.inspect_form()
             form = GreenhouseAdapter().to_form(snapshot)
             resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
