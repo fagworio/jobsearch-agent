@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from .facts import FactStore
-from .models import Field, Form, Resolution
+from .models import Field, Form, MissingQuestion, Resolution
 from .questions import canonical_fact_for
 
 #: Tipos em que um valor do profile pode ser usado sem julgamento.
@@ -109,6 +109,7 @@ def resolve(
     resolved_fact_ids: dict[str, str] = {}
     missing_fact_ids: dict[str, str] = {}
     missing: list[Field] = []
+    missing_questions: list[MissingQuestion] = []
     for field in form.fields:
         identity = field.identity
         if identity in approved_index:
@@ -137,11 +138,22 @@ def resolve(
             continue
         if field.required:
             missing.append(field)
-            missing_fact_ids[field.key] = missing_fact_key(field)
+            fact_id = missing_fact_key(field)
+            missing_fact_ids[field.key] = fact_id
+            missing_questions.append(
+                MissingQuestion(
+                    fact_id=fact_id,
+                    field_id=field.key,
+                    question=field.prompt,
+                    options=field.options,
+                    required=field.required,
+                )
+            )
     return Resolution(
         answers=answers,
         resolved_from=resolved_from,
         resolved_fact_ids=resolved_fact_ids,
         missing_fact_ids=missing_fact_ids,
         missing=tuple(missing),
+        missing_questions=tuple(missing_questions),
     )

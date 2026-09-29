@@ -26,7 +26,7 @@ from .challenges import ChallengeState
 from .confirmation import ConfirmationState, classify_browser_result
 from .facts import FactStore
 from .fill import _action_for, _snapshot_field_value
-from .models import Form, State
+from .models import Form, MissingQuestion, State
 
 POST_SUBMIT_SETTLE_MS = 20_000
 
@@ -50,6 +50,7 @@ class SubmitReport:
     verified: int = 0
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
     missing_facts: tuple[str, ...] = ()
+    missing_questions: tuple[MissingQuestion, ...] = ()
     resume: str = ""
     resume_attached: bool = False
     marker: str = ""
@@ -75,6 +76,7 @@ class SubmitReport:
             "verified": self.verified,
             "resolved_fact_ids": dict(self.resolved_fact_ids or {}),
             "missing_facts": list(self.missing_facts),
+            "missing_questions": [item.to_dict() for item in self.missing_questions],
             "resume": self.resume,
             "resume_attached": self.resume_attached,
             "marker": self.marker,
@@ -215,6 +217,7 @@ def submit(
                     fields=len(form.fields),
                     resolved_fact_ids=resolution.resolved_fact_ids,
                     missing_facts=tuple(resolution.missing_fact_ids.values()),
+                    missing_questions=resolution.missing_questions,
                     marker=str(path),
                 )
 

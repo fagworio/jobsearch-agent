@@ -58,6 +58,7 @@ class AutonomousRunReport:
     submitted: int
     target_reached: bool
     counts: dict[str, int]
+    pending_questions_count: int = 0
     search_errors: tuple[str, ...] = ()
     auto_apply: AutoApplyReport | None = None
     reason: str = ""
@@ -83,6 +84,7 @@ class AutonomousRunReport:
             "submitted": self.submitted,
             "target_reached": self.target_reached,
             "counts": dict(self.counts),
+            "pending_questions_count": self.pending_questions_count,
             "search_errors": list(self.search_errors),
         }
         if self.auto_apply is not None:
@@ -326,6 +328,7 @@ def run_autonomous(
         submitted=submitted,
         target_reached=submitted >= target_submissions,
         counts=counts,
+        pending_questions_count=(len(auto_report.to_dict().get("pending_questions", [])) if auto_report else 0),
         search_errors=tuple(errors),
         auto_apply=auto_report,
         reason=reason,

@@ -15,6 +15,7 @@ from .browser import NativeMessagingClient
 from .fill import fill
 from .facts import FactStore
 from .facts_migration import load_approved_answers, migrate_answers
+from .interaction import collect_pending_questions
 from .resume import prepare_resume
 from .discovery import (
     DiscoveryMatrix,
@@ -151,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--resume-store", default="data/v2-resumes")
     run_parser.add_argument("--answers", default="")
     run_parser.add_argument("--facts", default="profile/v2-facts.local.json")
+    run_parser.add_argument("--interactive", action="store_true", help="pergunta blockers únicos e retoma a execução")
     run_parser.add_argument("--store", default="data/v2-submissions")
     run_parser.add_argument("--report", default="data/v2-auto/auto-apply.json")
     run_parser.add_argument("--max-jobs", type=int, default=5)
@@ -394,6 +396,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.to_dict()["counts"].get("SUBMITTED", 0) else 2
 
     if args.command == "run":
+        if args.interactive and not args.answers:
+            print(json.dumps({"state": "CONFIGURATION_ERROR", "reason": "--answers is required with --interactive"}, ensure_ascii=False))
+            return 2
         run_answers = AnswerLibrary.load_required(args.answers) if args.answers else None
         run_facts = FactStore.load_required(args.facts) if args.facts else None
         report = run_autonomous(
@@ -420,8 +425,44 @@ def main(argv: list[str] | None = None) -> int:
             max_failures=args.max_failures,
             human_wait_ms=args.human_wait,
         )
-        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
-        return 0 if report.state in {"PLANNED", "COMPLETED"} else 2
+        payload: dict[str, object] = {"initial": report.to_dict()}
+        final_state = report.state
+        if args.interactive and report.auto_apply is not None:
+            pending = report.auto_apply.to_dict().get("pending_questions", [])
+            if pending:
+                collected = collect_pending_questions(pending, library=run_answers, facts=run_facts)
+                run_answers.save(args.answers)
+                run_facts.save(args.facts)
+                resumed = run_autonomous(
+                    mode="plan" if args.plan else args.mode,
+                    profile_path=args.profile,
+                    matrix_path=args.matrix,
+                    shortlist_path=args.shortlist,
+                    pipeline_path=args.pipeline,
+                    state_path=args.state,
+                    policy_path=args.policy,
+                    target_submissions=args.target_submissions,
+                    max_queries=args.max_queries,
+                    max_jobs_inspected=args.max_jobs_inspected,
+                    max_pages=args.max_pages,
+                    answers=run_answers,
+                    facts=run_facts,
+                    resume=args.resume,
+                    resume_profile=args.resume_profile,
+                    resume_store=args.resume_store,
+                    marker_store=args.store,
+                    report_store=args.report,
+                    max_jobs=args.max_jobs,
+                    max_submits=args.max_submits,
+                    max_failures=args.max_failures,
+                    human_wait_ms=args.human_wait,
+                )
+                payload["interactive"] = {"collected": collected, "resumed": resumed.to_dict()}
+                final_state = resumed.state
+            else:
+                payload["interactive"] = {"collected": 0, "resumed": False}
+        print(json.dumps(payload if args.interactive else report.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if final_state in {"PLANNED", "COMPLETED"} else 2
 
     if args.command == "prepare-resume":
         result = prepare_resume(

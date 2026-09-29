@@ -33,6 +33,7 @@ class AutoApplyItem:
     missing_facts: tuple[str, ...] = ()
     resume_path: str = ""
     resume_identity: str = ""
+    missing_questions: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +44,7 @@ class AutoApplyItem:
             "state": self.state,
             "reason": self.reason,
             "missing_facts": list(self.missing_facts),
+            "missing_questions": [dict(item) for item in self.missing_questions],
             "resume_path": self.resume_path,
             "resume_identity": self.resume_identity,
             "tab_id": self.tab_id,
@@ -63,10 +65,36 @@ class AutoApplyReport:
     def to_dict(self) -> dict[str, Any]:
         counts: dict[str, int] = {}
         pending_facts: set[str] = set()
+        pending_questions: dict[str, dict[str, Any]] = {}
         for item in self.items:
             counts[item.state] = counts.get(item.state, 0) + 1
             if item.state == "NEEDS_INPUT":
                 pending_facts.update(item.missing_facts)
+                for question in item.missing_questions:
+                    fact_id = str(question.get("fact_id") or "")
+                    prompt = str(question.get("question") or "")
+                    key = fact_id if not fact_id.startswith("question:") else f"question:{' '.join(prompt.casefold().split())}"
+                    entry = pending_questions.setdefault(
+                        key,
+                        {
+                            "fact_id": fact_id,
+                            "field_id": str(question.get("field_id") or ""),
+                            "question": prompt,
+                            "options": list(question.get("options") or []),
+                            "required": bool(question.get("required", True)),
+                            "used_by": [],
+                        },
+                    )
+                    used_by = entry["used_by"]
+                    if not any(record.get("job_id") == item.job_id for record in used_by):
+                        used_by.append(
+                            {
+                                "job_id": item.job_id,
+                                "title": item.title,
+                                "company": item.company,
+                                "job_url": item.url,
+                            }
+                        )
         return {
             "provider": "greenhouse",
             "source": self.source,
@@ -79,6 +107,8 @@ class AutoApplyReport:
             },
             "counts": counts,
             "pending_facts": sorted(pending_facts),
+            "pending_questions_count": len(pending_questions),
+            "pending_questions": list(pending_questions.values()),
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -236,6 +266,7 @@ def run_auto_apply(
                 report.missing_facts,
                 resume_path,
                 str(resume_build.get("identity") or ""),
+                tuple(item.to_dict() for item in report.missing_questions),
             ))
             if state == "SUBMIT_UNKNOWN":
                 halted = True

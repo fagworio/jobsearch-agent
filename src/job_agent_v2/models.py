@@ -49,12 +49,33 @@ class Form:
 
 
 @dataclass(frozen=True)
+class MissingQuestion:
+    """Detalhes suficientes para obter uma resposta sem inspecionar o browser novamente."""
+
+    fact_id: str
+    field_id: str
+    question: str
+    options: tuple[str, ...] = ()
+    required: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fact_id": self.fact_id,
+            "field_id": self.field_id,
+            "question": self.question,
+            "options": list(self.options),
+            "required": self.required,
+        }
+
+
+@dataclass(frozen=True)
 class Resolution:
     answers: dict[str, str] = field(default_factory=dict)
     resolved_from: dict[str, str] = field(default_factory=dict)
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
     missing_fact_ids: dict[str, str] = field(default_factory=dict)
     missing: tuple[Field, ...] = ()
+    missing_questions: tuple[MissingQuestion, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -72,6 +93,7 @@ class ApplyResult:
     resolved_from: dict[str, str] = field(default_factory=dict)
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
     missing_fact_ids: dict[str, str] = field(default_factory=dict)
+    missing_questions: tuple[MissingQuestion, ...] = ()
     fields: int = 0
     job_url: str = ""
     apply_url: str = ""
@@ -87,6 +109,7 @@ class ApplyResult:
             "resolved_from": dict(self.resolved_from),
             "resolved_fact_ids": dict(self.resolved_fact_ids),
             "missing_fact_ids": dict(self.missing_fact_ids),
+            "missing_questions": [item.to_dict() for item in self.missing_questions],
             "fields": self.fields,
             "uploads": 0,
             "attempts": 0,

@@ -44,3 +44,15 @@ def test_unknown_semantic_question_stays_missing():
     form = Form((Field("q1", "Tell us something not in the registry", required=True),))
     result = resolve(form, facts=facts)
     assert result.missing == form.fields
+
+
+def test_missing_question_preserves_field_and_options():
+    form = Form((Field("q1", "How many years?", options=("0-2", "3+"), required=True, kind="radio"),))
+    result = resolve(form)
+    assert result.missing_questions[0].to_dict() == {
+        "fact_id": "question:how many years?",
+        "field_id": "q1",
+        "question": "How many years?",
+        "options": ["0-2", "3+"],
+        "required": True,
+    }
