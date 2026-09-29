@@ -177,8 +177,6 @@ def _hydrate_choice_options(
         deterministic_combobox = (
             "region where you currently live" in prompt
             or "current region" in prompt
-            or "how did you hear about" in prompt
-            or "how did you find out" in prompt
         )
         # React Select menus are lazy, virtualized and rendered in a portal.
         # Opening them during a full-form pass can leave a stale provider
