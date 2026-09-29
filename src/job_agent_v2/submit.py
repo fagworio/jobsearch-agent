@@ -173,12 +173,23 @@ def _hydrate_choice_options(
             continue
         field = dict(raw)
         field_type = str(field.get("type") or "")
+        prompt = str(field.get("label") or field.get("prompt") or "").casefold()
+        deterministic_combobox = (
+            "region where you currently live" in prompt
+            or "current region" in prompt
+            or "how did you hear about" in prompt
+            or "how did you find out" in prompt
+        )
         # React Select menus are lazy, virtualized and rendered in a portal.
         # Opening them during a full-form pass can leave a stale provider
         # dropdown active and invalidate subsequent field identities. Known
-        # answers can still be selected by the typed fill path; unknown
-        # comboboxes remain NEEDS_INPUT until a real option is observed.
-        if field_type in {"select", "radio", "checkbox_group"} and not field.get("options"):
+        # answers can still be selected by the typed fill path. Only
+        # deterministic comboboxes are opened; unknown comboboxes remain
+        # NEEDS_INPUT until a real option is observed.
+        if (
+            field_type in {"select", "radio", "checkbox_group"}
+            or (field_type == "combobox" and deterministic_combobox)
+        ) and not field.get("options"):
             try:
                 result = browser.inspect_field_options(str(field.get("id") or ""), tab_id=tab_id)
                 options = result.get("options")
