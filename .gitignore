@@ -16,6 +16,7 @@ data/v2-submissions/
 data/v2-auto/
 data/v2-discovery/
 data/v2-resumes/
+data/v2-agent/
 data/v2-answers.json
 # Politica fail-closed para dados do candidato: qualquer arquivo novo em
 # profile/ fica IGNORADO por padrao e so entra no repositorio se for
