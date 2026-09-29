@@ -74,6 +74,25 @@ def test_canonical_fact_with_no_deterministic_option_stays_missing():
     assert result.missing_questions[0].fact_id == "employment.notice_period"
 
 
+def test_long_provider_labels_map_only_when_unambiguous():
+    facts = FactStore({
+        "employment.notice_period": {"value": "immediate", "approved": True, "source": "user"},
+        "employment.sponsorship": {"value": "No", "approved": True, "source": "user"},
+    })
+    form = Form((
+        Field("notice", "When can you start?", options=("Available immediately", "2 weeks"), required=True, kind="combobox"),
+        Field("sponsor", "Will you require sponsorship?", options=(
+            "No - I am authorized to work in the U.S.",
+            "Yes - I currently require employer sponsorship.",
+        ), required=True, kind="combobox"),
+    ))
+    result = resolve(form, facts=facts)
+    assert result.answers == {
+        "notice": "Available immediately",
+        "sponsor": "No - I am authorized to work in the U.S.",
+    }
+
+
 def test_year_fact_maps_to_one_numeric_range_option():
     facts = FactStore({"experience.wordpress_years": {"value": "12+", "approved": True, "source": "user"}})
     form = Form((Field("q1", "How many years of experience with WordPress?", options=("0-5 years", "10+ years"), required=True, kind="select"),))

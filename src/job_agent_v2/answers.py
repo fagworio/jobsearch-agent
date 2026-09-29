@@ -65,6 +65,19 @@ def _option_value(field: Field, value: str) -> str | None:
     if len(matches) == 1:
         return matches[0]
 
+    # Greenhouse often expands safe boolean/time answers into descriptive
+    # labels. Accept them only when the provider exposes one unambiguous
+    # matching option; never choose among multiple sponsorship variants.
+    if normalized in {"yes", "true", "no", "false"}:
+        prefix = "yes" if normalized in {"yes", "true"} else "no"
+        prefixed = [option for option in field.options if normalize_question(option).startswith(prefix + " ")]
+        if len(prefixed) == 1:
+            return prefixed[0]
+    if normalized in {"immediate", "immediately", "as soon as possible"}:
+        immediate = [option for option in field.options if "immediate" in normalize_question(option)]
+        if len(immediate) == 1:
+            return immediate[0]
+
     # Faixas de experiência: ``12+`` pode ser representado por ``10+ years``
     # ou por uma faixa que contenha 12. Só aceitamos uma opção inequívoca.
     number_match = re.match(r"^(\d+)", normalized)
