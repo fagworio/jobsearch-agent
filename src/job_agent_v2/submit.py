@@ -170,6 +170,7 @@ def submit(
     tab_id: int | None = None,
     provider: str = "greenhouse",
     canonical_job_id: str = "",
+    resume_identity: str = "",
     retry_failed: bool = False,
 ) -> SubmitReport:
     """Preenche, autoriza e aciona o submit exatamente uma vez no Chrome."""
@@ -349,9 +350,12 @@ def submit(
                 "job_url": url,
                 "apply_url": apply_url,
                 "resume_path": resume,
+                "resume_identity": resume_identity,
                 "resume_sha256": artifact.sha256,
                 "fields": len(form.fields),
                 "verified": verified,
+                "answers_fingerprint": answers_fp,
+                "job_id": canonical_job_id,
                 "write_possible_at": write_possible_at,
                 "outcome": "",
                 "observation_complete": False,

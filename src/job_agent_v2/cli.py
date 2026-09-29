@@ -148,9 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--max-jobs-inspected", type=int, default=250)
     run_parser.add_argument("--max-pages", type=int, default=40)
     run_parser.add_argument("--resume", default="")
-    run_parser.add_argument("--resume-profile", default="profile/career_profile.local.yaml")
+    run_parser.add_argument("--resume-profile", default="", help="perfil do currículo; por padrão usa --profile")
     run_parser.add_argument("--resume-store", default="data/v2-resumes")
-    run_parser.add_argument("--answers", default="")
+    run_parser.add_argument("--answers", default="data/v2-answers.json")
     run_parser.add_argument("--facts", default="profile/v2-facts.local.json")
     run_parser.add_argument("--interactive", action="store_true", help="pergunta blockers únicos e retoma a execução")
     run_parser.add_argument("--store", default="data/v2-submissions")
@@ -399,8 +399,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.interactive and not args.answers:
             print(json.dumps({"state": "CONFIGURATION_ERROR", "reason": "--answers is required with --interactive"}, ensure_ascii=False))
             return 2
-        run_answers = AnswerLibrary.load_required(args.answers) if args.answers else None
-        run_facts = FactStore.load_required(args.facts) if args.facts else None
+        try:
+            run_answers = AnswerLibrary.load(args.answers) if args.answers else None
+            run_facts = FactStore.load_required(args.facts) if args.facts else None
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(json.dumps({"state": "CONFIGURATION_ERROR", "reason": str(exc)}, ensure_ascii=False))
+            return 2
         report = run_autonomous(
             mode="plan" if args.plan else args.mode,
             profile_path=args.profile,

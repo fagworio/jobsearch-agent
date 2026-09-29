@@ -243,6 +243,7 @@ def run_auto_apply(
                 tab_id=tab_id,
                 provider="greenhouse",
                 canonical_job_id=item.job_id,
+                resume_identity=str(resume_build.get("identity") or ""),
             )
             if report.submission_writes:
                 submits += 1

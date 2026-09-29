@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Iterable, Mapping
 
 from .facts import FactStore
 from .models import Field, Form, MissingQuestion, Resolution
 from .questions import canonical_fact_for
+from .questions.normalize import normalize_question
 
 #: Tipos em que um valor do profile pode ser usado sem julgamento.
 TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea", "combobox"})
@@ -39,6 +41,48 @@ def _index(items: Mapping[str, str] | Iterable[tuple[str, str]] | None) -> dict[
 def missing_fact_key(field: Field) -> str:
     """Stable blocker key; unknown questions remain grouped by normalized prompt."""
     return canonical_fact_for(field.prompt) or f"question:{field.identity}"
+
+
+def _option_value(field: Field, value: str) -> str | None:
+    """Converte um fato para uma opção real somente por regra determinística."""
+
+    if not field.options:
+        return value
+    normalized = normalize_question(value)
+    for option in field.options:
+        if normalize_question(option) == normalized:
+            return option
+
+    # Valores canônicos curtos usados pelo perfil. A regra só aceita uma
+    # opção única; se houver ambiguidade, o campo volta a NEEDS_INPUT.
+    aliases = {
+        "immediate": {"immediately", "as soon as possible", "0 15 days", "within 1 week"},
+        "yes": {"yes", "true"},
+        "no": {"no", "false"},
+    }
+    candidates = aliases.get(normalized, set())
+    matches = [option for option in field.options if normalize_question(option) in candidates]
+    if len(matches) == 1:
+        return matches[0]
+
+    # Faixas de experiência: ``12+`` pode ser representado por ``10+ years``
+    # ou por uma faixa que contenha 12. Só aceitamos uma opção inequívoca.
+    number_match = re.match(r"^(\d+)", normalized)
+    if number_match:
+        years = int(number_match.group(1))
+        numeric_matches: list[str] = []
+        for option in field.options:
+            option_norm = normalize_question(option)
+            numbers = [int(value) for value in re.findall(r"\d+", option_norm)]
+            if len(numbers) == 1 and ("more" in option_norm or "+" in option or "over" in option_norm):
+                if years >= numbers[0]:
+                    numeric_matches.append(option)
+            elif len(numbers) >= 2 and ("-" in option or "to" in option_norm):
+                if numbers[0] <= years <= numbers[1]:
+                    numeric_matches.append(option)
+        if len(numeric_matches) == 1:
+            return numeric_matches[0]
+    return None
 
 
 class AnswerLibrary:
@@ -110,45 +154,69 @@ def resolve(
     missing_fact_ids: dict[str, str] = {}
     missing: list[Field] = []
     missing_questions: list[MissingQuestion] = []
+
+    def add_missing(field: Field, fact_id: str | None = None) -> None:
+        missing.append(field)
+        key = fact_id or missing_fact_key(field)
+        missing_fact_ids[field.key] = key
+        missing_questions.append(
+            MissingQuestion(
+                fact_id=key,
+                field_id=field.key,
+                question=field.prompt,
+                options=field.options,
+                required=field.required,
+            )
+        )
+
     for field in form.fields:
         identity = field.identity
         if identity in approved_index:
-            answers[field.key] = approved_index[identity]
+            value = _option_value(field, approved_index[identity])
+            if value is None and field.required:
+                add_missing(field)
+                continue
+            answers[field.key] = value if value is not None else approved_index[identity]
             resolved_from[field.key] = "approved_answer"
             continue
         fact_id = canonical_fact_for(field.prompt)
         fact = facts.get(fact_id) if facts is not None and fact_id else None
         if fact is not None:
-            answers[field.key] = fact.value
+            value = _option_value(field, fact.value)
+            if value is None and field.required:
+                add_missing(field, fact.fact_id)
+                continue
+            answers[field.key] = value if value is not None else fact.value
             resolved_from[field.key] = "canonical_fact"
             resolved_fact_ids[field.key] = fact.fact_id
             continue
         saved = library.get(field.prompt) if library else None
         if saved is not None:
-            answers[field.key] = saved
+            value = _option_value(field, saved)
+            if value is None and field.required:
+                add_missing(field)
+                continue
+            answers[field.key] = value if value is not None else saved
             resolved_from[field.key] = "approved_answer_library"
             continue
         if field.kind in TRIVIAL_KINDS and identity in profile_index:
-            answers[field.key] = profile_index[identity]
+            value = _option_value(field, profile_index[identity])
+            if value is None and field.required:
+                add_missing(field)
+                continue
+            answers[field.key] = value if value is not None else profile_index[identity]
             resolved_from[field.key] = "profile"
             continue
         if identity in rules_index:
-            answers[field.key] = rules_index[identity]
+            value = _option_value(field, rules_index[identity])
+            if value is None and field.required:
+                add_missing(field)
+                continue
+            answers[field.key] = value if value is not None else rules_index[identity]
             resolved_from[field.key] = "rule"
             continue
         if field.required:
-            missing.append(field)
-            fact_id = missing_fact_key(field)
-            missing_fact_ids[field.key] = fact_id
-            missing_questions.append(
-                MissingQuestion(
-                    fact_id=fact_id,
-                    field_id=field.key,
-                    question=field.prompt,
-                    options=field.options,
-                    required=field.required,
-                )
-            )
+            add_missing(field)
     return Resolution(
         answers=answers,
         resolved_from=resolved_from,

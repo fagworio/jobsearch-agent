@@ -131,6 +131,55 @@ def _load_form_profile(path: str | Path) -> dict[str, str]:
     return values
 
 
+def _facts_from_profile(path: str | Path, facts: FactStore | None) -> FactStore | None:
+    """Acrescenta somente valores literais do Career Profile ao FactStore."""
+
+    if facts is None or not isinstance(facts, FactStore):
+        return None
+    source = Path(path)
+    payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        return facts
+    preferences_path = source.with_name("preferences.local.yaml")
+    preferences = yaml.safe_load(preferences_path.read_text(encoding="utf-8")) if preferences_path.exists() else {}
+    if not isinstance(preferences, dict):
+        preferences = {}
+    result = FactStore(facts.as_dict())
+    identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+    skills = payload.get("skills") if isinstance(payload.get("skills"), dict) else {}
+    explicit: dict[str, str] = {}
+    for key, fact_id in (
+        ("country", "identity.country"),
+        ("current_location", "identity.location"),
+        ("location", "identity.location"),
+        ("linkedin", "identity.linkedin"),
+    ):
+        value = identity.get(key) if isinstance(identity, dict) else None
+        if isinstance(value, str) and value.strip():
+            explicit[fact_id] = value
+    notice_period = payload.get("notice_period", preferences.get("notice_period"))
+    if isinstance(notice_period, str) and notice_period.strip():
+        explicit["employment.notice_period"] = notice_period
+    sponsorship = payload.get("requires_sponsorship", preferences.get("requires_sponsorship"))
+    if isinstance(sponsorship, (bool, str)):
+        value = str(sponsorship).casefold()
+        if value in {"true", "yes", "sim"}:
+            explicit["employment.sponsorship"] = "Yes"
+        elif value in {"false", "no", "nao", "não"}:
+            explicit["employment.sponsorship"] = "No"
+    for skill, fact_id in (
+        ("wordpress", "experience.wordpress_years"),
+        ("shopify", "experience.shopify_years"),
+    ):
+        data = skills.get(skill) if isinstance(skills, dict) else None
+        if isinstance(data, dict) and isinstance(data.get("years"), (str, int, float)):
+            explicit[fact_id] = str(data["years"])
+    for fact_id, value in explicit.items():
+        if result.get(fact_id) is None:
+            result.remember(fact_id, value, source="career_profile")
+    return result
+
+
 def run_autonomous(
     *,
     mode: str = "policy",
@@ -148,7 +197,7 @@ def run_autonomous(
     answers: AnswerLibrary | None = None,
     facts: FactStore | None = None,
     resume: str = "",
-    resume_profile: str = "profile/career_profile.local.yaml",
+    resume_profile: str = "",
     resume_store: str = "data/v2-resumes",
     marker_store: str = "data/v2-submissions",
     report_store: str | Path = "data/v2-auto/auto-apply.json",
@@ -163,6 +212,7 @@ def run_autonomous(
         target_submissions = target_ready_jobs
     if target_submissions < 0:
         raise ValueError("target_submissions must be non-negative")
+    effective_profile = resume_profile or profile_path
     policy = load_policy(policy_path)
     greenhouse_policy = ((policy.get("providers") or {}).get("greenhouse") or {})
     autonomy_policy = policy.get("autonomy") or {}
@@ -196,7 +246,8 @@ def run_autonomous(
     errors: list[str] = []
     cursor = SearchCursor()
     processed_ids: set[str] = set()
-    form_profile = _load_form_profile(resume_profile)
+    form_profile = _load_form_profile(effective_profile)
+    effective_facts = _facts_from_profile(effective_profile, facts)
     applied_items: list[AutoApplyItem] = []
     jobs_processed = 0
     submit_attempts = 0
@@ -242,10 +293,10 @@ def run_autonomous(
                     batch_report = run_auto_apply(
                         batch_manifest,
                         resume=resume,
-                        resume_profile=resume_profile,
+                        resume_profile=effective_profile,
                         resume_store=resume_store,
                         library=answers,
-                        facts=facts,
+                        facts=effective_facts,
                         profile=form_profile,
                         marker_store=marker_store,
                         report_store=report_store,

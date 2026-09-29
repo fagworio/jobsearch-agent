@@ -56,3 +56,26 @@ def test_missing_question_preserves_field_and_options():
         "options": ["0-2", "3+"],
         "required": True,
     }
+
+
+def test_canonical_fact_maps_to_one_matching_provider_option():
+    facts = FactStore({"employment.notice_period": {"value": "immediate", "approved": True, "source": "user"}})
+    form = Form((Field("q1", "When can you start?", options=("Immediately", "30 days"), required=True, kind="select"),))
+    result = resolve(form, facts=facts)
+    assert result.answers == {"q1": "Immediately"}
+    assert result.complete
+
+
+def test_canonical_fact_with_no_deterministic_option_stays_missing():
+    facts = FactStore({"employment.notice_period": {"value": "immediate", "approved": True, "source": "user"}})
+    form = Form((Field("q1", "When can you start?", options=("30 days", "More than 30 days"), required=True, kind="select"),))
+    result = resolve(form, facts=facts)
+    assert not result.complete
+    assert result.missing_questions[0].fact_id == "employment.notice_period"
+
+
+def test_year_fact_maps_to_one_numeric_range_option():
+    facts = FactStore({"experience.wordpress_years": {"value": "12+", "approved": True, "source": "user"}})
+    form = Form((Field("q1", "How many years of experience with WordPress?", options=("0-5 years", "10+ years"), required=True, kind="select"),))
+    result = resolve(form, facts=facts)
+    assert result.answers == {"q1": "10+ years"}

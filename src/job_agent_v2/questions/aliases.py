@@ -40,6 +40,36 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "country of residence",
         "current country",
     ),
+    "identity.location": (
+        "current location",
+        "where do you currently live",
+        "where are you currently located",
+    ),
+    "identity.linkedin": (
+        "linkedin profile",
+        "linkedin profile url",
+        "link to your linkedin profile",
+    ),
+    "employment.work_authorization": (
+        "legally authorized to work",
+        "authorized to work",
+        "right to work",
+    ),
+    "experience.wordpress_years": (
+        "years of experience with wordpress",
+        "how many years of wordpress experience",
+        "experience with wordpress",
+    ),
+    "experience.shopify_years": (
+        "years of experience with shopify",
+        "how many years of shopify experience",
+        "experience with shopify",
+    ),
+    "preferences.remote": (
+        "comfortable working remotely",
+        "comfortable with remote work",
+        "work remotely",
+    ),
     "identity.nationality": (
         "nationality",
         "citizenship",
