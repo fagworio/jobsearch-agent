@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping
 from .answers import AnswerLibrary
 from .browser import NativeMessagingClient
 from .discovery.pipeline import PipelineManifest, PipelineItem
+from .facts import FactStore
 from .submit import SubmitReport, submit
 
 
@@ -110,6 +111,7 @@ def run_auto_apply(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
     marker_store: str = "data/v2-submissions",
     report_store: str | Path = "data/v2-auto/auto-apply.json",
     max_jobs: int = 5,
@@ -161,6 +163,7 @@ def run_auto_apply(
                 profile=profile,
                 rules=rules,
                 library=library,
+                facts=facts,
                 resume=resume,
                 store=marker_store,
                 settle_ms=settle_ms,

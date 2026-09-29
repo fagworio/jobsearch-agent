@@ -88,7 +88,7 @@ def build_pipeline(
     for index, entry in enumerate(raw_entries):
         if not isinstance(entry, dict):
             raise ValueError(f"shortlist entries[{index}] must be an object")
-        if entry.get("selection") != "APPROVED":
+        if entry.get("selection") != "APPROVED" and entry.get("fit_decision") != "APPROVED":
             continue
         if entry.get("applied") is True:
             continue

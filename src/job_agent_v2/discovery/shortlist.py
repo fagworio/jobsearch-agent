@@ -24,6 +24,9 @@ class ShortlistEntry:
     geography_status: str
     geography_scope: str
     selection: str
+    fit_decision: str
+    application_readiness: str
+    missing_facts: tuple[str, ...]
     applied: bool
     matched_skills: tuple[str, ...]
     matched_roles: tuple[str, ...]
@@ -43,6 +46,9 @@ class ShortlistEntry:
             "geography_status": self.geography_status,
             "geography_scope": self.geography_scope,
             "selection": self.selection,
+            "fit_decision": self.fit_decision,
+            "application_readiness": self.application_readiness,
+            "missing_facts": list(self.missing_facts),
             "applied": self.applied,
             "matched_skills": list(self.matched_skills),
             "matched_roles": list(self.matched_roles),
@@ -71,7 +77,7 @@ class ShortlistReport:
                 "auto_approve_score": self.auto_approve_score,
                 "auto_approve_bands": ["STRONG", "GOOD"],
                 "ineligible_or_applied": "REJECTED",
-                "unknown_geography": "REVIEW",
+                "unknown_geography": "UNKNOWN",
             },
             "counts": counts,
             "entries": [entry.to_dict() for entry in self.entries],
@@ -109,21 +115,31 @@ def rank_shortlist(
         reasons.append(geography.evidence)
         if job.applied:
             selection = "REJECTED"
+            fit_decision = "REJECTED"
+            application_readiness = "ALREADY_APPLIED"
             reasons.append("application status on card indicates the candidate already applied")
         elif geography.status.value == "INELIGIBLE":
             selection = "REJECTED"
+            fit_decision = "REJECTED"
+            application_readiness = "UNSUPPORTED"
         elif match.score < min_match_score:
             selection = "REJECTED"
+            fit_decision = "REJECTED"
+            application_readiness = "UNSUPPORTED"
             reasons.append(f"match score {match.score:.1f} is below the minimum {min_match_score:.1f}")
         elif (
             geography.status.value in {"ELIGIBLE", "LIKELY_ELIGIBLE"}
             and match.score >= auto_approve_score
-            and match.band in {"STRONG", "GOOD"}
+            and match.band in {"STRONG", "GOOD", "PARTIAL"}
         ):
             selection = "APPROVED"
+            fit_decision = "APPROVED"
+            application_readiness = "PENDING_INSPECTION"
             reasons.append("meets the automatic shortlist threshold")
         else:
             selection = "REVIEW"
+            fit_decision = "UNKNOWN"
+            application_readiness = "UNSUPPORTED"
             reasons.append("requires review because geography or confidence is not conclusive")
         pending.append(ShortlistEntry(
             rank=0,
@@ -137,6 +153,9 @@ def rank_shortlist(
             geography_status=geography.status.value,
             geography_scope=geography.scope,
             selection=selection,
+            fit_decision=fit_decision,
+            application_readiness=application_readiness,
+            missing_facts=(),
             applied=job.applied,
             matched_skills=match.matched_skills,
             matched_roles=match.matched_roles,
@@ -158,6 +177,9 @@ def rank_shortlist(
             geography_status=entry.geography_status,
             geography_scope=entry.geography_scope,
             selection=entry.selection,
+            fit_decision=entry.fit_decision,
+            application_readiness=entry.application_readiness,
+            missing_facts=entry.missing_facts,
             applied=entry.applied,
             matched_skills=entry.matched_skills,
             matched_roles=entry.matched_roles,

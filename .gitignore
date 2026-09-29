@@ -25,6 +25,8 @@ profile/*
 !profile/job_targets.yaml
 !profile/locked_facts.yaml
 !profile/preferences.yaml
+!profile/v2-facts.template.json
+!profile/v2-answers.template.json
 profile/*.local.yaml
 tmp/pdfs/
 work/

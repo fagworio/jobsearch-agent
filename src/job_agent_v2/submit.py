@@ -8,7 +8,7 @@ autorização antes do clique e classifica somente a evidência final da página
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
@@ -24,6 +24,7 @@ from .ats.greenhouse import GreenhouseAdapter
 from .browser import NativeMessagingClient
 from .challenges import ChallengeState
 from .confirmation import ConfirmationState, classify_browser_result
+from .facts import FactStore
 from .fill import _action_for, _snapshot_field_value
 from .models import Form, State
 
@@ -47,6 +48,7 @@ class SubmitReport:
     apply_url: str = ""
     fields: int = 0
     verified: int = 0
+    resolved_fact_ids: dict[str, str] = field(default_factory=dict)
     resume: str = ""
     resume_attached: bool = False
     marker: str = ""
@@ -70,6 +72,7 @@ class SubmitReport:
             "apply_url": self.apply_url,
             "fields": self.fields,
             "verified": self.verified,
+            "resolved_fact_ids": dict(self.resolved_fact_ids or {}),
             "resume": self.resume,
             "resume_attached": self.resume_attached,
             "marker": self.marker,
@@ -153,6 +156,7 @@ def submit(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
     resume: str = "",
     store: str = "data/v2-submissions",
     settle_ms: int = POST_SUBMIT_SETTLE_MS,
@@ -194,7 +198,7 @@ def submit(
             # resolve only actual questions so the submit path never tries to
             # write a filename back into a file control.
             answer_form = Form(tuple(field for field in form.fields if field.kind != "file"))
-            resolution = resolve(answer_form, approved=approved, profile=profile, rules=rules, library=library)
+            resolution = resolve(answer_form, approved=approved, profile=profile, rules=rules, library=library, facts=facts)
             if not resolution.complete:
                 return SubmitReport(
                     state=SubmitState.NO_WRITE,
@@ -202,6 +206,7 @@ def submit(
                     job_url=url,
                     apply_url=apply_url,
                     fields=len(form.fields),
+                    resolved_fact_ids=resolution.resolved_fact_ids,
                     marker=str(path),
                 )
 
@@ -265,6 +270,7 @@ def submit(
                         apply_url=apply_url,
                         fields=len(form.fields),
                         verified=verified,
+                        resolved_fact_ids=resolution.resolved_fact_ids,
                         resume=resume,
                         resume_attached=True,
                         marker=str(path),
@@ -281,6 +287,7 @@ def submit(
                         apply_url=apply_url,
                         fields=len(form.fields),
                         verified=verified,
+                        resolved_fact_ids=resolution.resolved_fact_ids,
                         resume=resume,
                         resume_attached=True,
                         marker=str(path),
@@ -297,6 +304,7 @@ def submit(
                     apply_url=apply_url,
                     fields=len(form.fields),
                     verified=verified,
+                    resolved_fact_ids=resolution.resolved_fact_ids,
                     resume=resume,
                     resume_attached=True,
                     marker=str(path),
@@ -374,6 +382,7 @@ def submit(
                 apply_url=apply_url,
                 fields=len(form.fields),
                 verified=verified,
+                resolved_fact_ids=resolution.resolved_fact_ids,
                 resume=resume,
                 resume_attached=True,
                 marker=str(path),

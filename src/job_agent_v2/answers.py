@@ -1,9 +1,11 @@
 """Resolucao de respostas por PRECEDENCIA EXPLICITA. Nada de inferencia.
 
 1. resposta explicitamente aprovada (chave = prompt normalizado)
-2. campo trivial do profile (so para tipos texto/email/tel)
-3. regra explicita
-4. NEEDS_INPUT
+2. fato canônico aprovado
+3. AnswerLibrary exata
+4. campo trivial do profile
+5. regra explícita
+6. NEEDS_INPUT
 
 Nao existe fuzzy matching, LLM, reuso semantico nem inferencia de vinculo
 empregaticio: ausencia de evidencia NAO vira resposta.
@@ -15,7 +17,9 @@ import json
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from .facts import FactStore
 from .models import Field, Form, Resolution
+from .questions import canonical_fact_for
 
 #: Tipos em que um valor do profile pode ser usado sem julgamento.
 TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea", "combobox"})
@@ -53,6 +57,13 @@ class AnswerLibrary:
             raise ValueError("answer library must contain a JSON object")
         return cls({str(key): str(value) for key, value in payload.items()})
 
+    @classmethod
+    def load_required(cls, path: str | Path) -> "AnswerLibrary":
+        target = Path(path)
+        if not target.exists():
+            raise ValueError(f"answer library is required: {target}")
+        return cls.load(target)
+
     def remember(self, prompt: str, answer: str) -> None:
         key = _norm(prompt)
         if not key:
@@ -82,6 +93,7 @@ def resolve(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
 ) -> Resolution:
     approved_index = _index(approved)
     profile_index = _index(profile)
@@ -89,12 +101,20 @@ def resolve(
 
     answers: dict[str, str] = {}
     resolved_from: dict[str, str] = {}
+    resolved_fact_ids: dict[str, str] = {}
     missing: list[Field] = []
     for field in form.fields:
         identity = field.identity
         if identity in approved_index:
             answers[field.key] = approved_index[identity]
             resolved_from[field.key] = "approved_answer"
+            continue
+        fact_id = canonical_fact_for(field.prompt)
+        fact = facts.get(fact_id) if facts is not None and fact_id else None
+        if fact is not None:
+            answers[field.key] = fact.value
+            resolved_from[field.key] = "canonical_fact"
+            resolved_fact_ids[field.key] = fact.fact_id
             continue
         saved = library.get(field.prompt) if library else None
         if saved is not None:
@@ -111,4 +131,9 @@ def resolve(
             continue
         if field.required:
             missing.append(field)
-    return Resolution(answers=answers, resolved_from=resolved_from, missing=tuple(missing))
+    return Resolution(
+        answers=answers,
+        resolved_from=resolved_from,
+        resolved_fact_ids=resolved_fact_ids,
+        missing=tuple(missing),
+    )

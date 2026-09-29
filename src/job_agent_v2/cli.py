@@ -12,6 +12,7 @@ from .auto_apply import run_auto_apply
 from .answers import AnswerLibrary
 from .browser import NativeMessagingClient
 from .fill import fill
+from .facts import FactStore
 from .discovery import (
     DiscoveryMatrix,
     DiscoverySearchRun,
@@ -109,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     auto_parser.add_argument("--profile", default="", help="JSON {campo trivial: valor}")
     auto_parser.add_argument("--rules", default="", help="JSON {prompt: resposta regida}")
     auto_parser.add_argument("--answers", default="", help="biblioteca JSON de respostas aprovadas")
+    auto_parser.add_argument("--facts", default="profile/v2-facts.local.json", help="FactStore JSON de fatos aprovados")
     auto_parser.add_argument("--store", default="data/v2-submissions", help="diretório de marcadores de submit")
     auto_parser.add_argument("--report", default="data/v2-auto/auto-apply.json", help="relatório operacional")
     auto_parser.add_argument("--policy", default="profile/application_policy.yaml", help="política e budgets do lote")
@@ -276,6 +278,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "auto-apply":
+        if not args.answers:
+            print(json.dumps({"state": "CONFIGURATION_ERROR", "reason": "--answers is required for auto-apply"}, ensure_ascii=False))
+            return 2
+        try:
+            batch_library = AnswerLibrary.load_required(args.answers)
+            batch_facts = FactStore.load_required(args.facts)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(json.dumps({"state": "CONFIGURATION_ERROR", "reason": str(exc)}, ensure_ascii=False))
+            return 2
         limits = _batch_limits(args.policy, {
             "max_jobs": args.max_jobs,
             "max_submits": args.max_submits,
@@ -288,7 +299,8 @@ def main(argv: list[str] | None = None) -> int:
             approved=_pairs(args.approved),
             profile=_pairs(args.profile),
             rules=_pairs(args.rules),
-            library=_library(args.answers),
+            library=batch_library,
+            facts=batch_facts,
             marker_store=args.store,
             report_store=args.report,
             max_jobs=limits["max_jobs"],

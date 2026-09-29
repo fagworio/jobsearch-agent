@@ -90,3 +90,19 @@ def test_pipeline_excludes_jobs_with_submission_markers(tmp_path):
     marker.write_text(json.dumps({"outcome": "SUBMIT_FAILED"}), encoding="utf-8")
     manifest = build_pipeline(report.to_dict(), submission_store=tmp_path)
     assert manifest.items == ()
+
+
+def test_partial_fit_in_eligible_latam_is_approved_for_readiness_evaluation():
+    job = _job("latam:partial", "Full Stack Web Engineer", "Bogota, CO")
+    results = DiscoveryResults("greenhouse", "search", "document", "https://my.greenhouse.io/jobs/search", "MyGreenhouse", True, "web engineer", ("remote",), (job,))
+    matrix = DiscoveryMatrix(
+        "greenhouse",
+        ("remote",),
+        (DiscoverySearchRun("web", "web engineer", results),),
+        (DiscoveryMatch("latam:partial", 42.0, "PARTIAL", ("Php",), ("web",), ("web engineer",), ("title role match",), "test"),),
+        "test",
+    )
+    entry = rank_shortlist(matrix).entries[0]
+    assert entry.fit_decision == "APPROVED"
+    assert entry.selection == "APPROVED"
+    assert entry.application_readiness == "PENDING_INSPECTION"
