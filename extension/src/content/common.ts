@@ -81,14 +81,19 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function visibleChoiceOptions(): Array<{ label: string; value: string }> {
-  return Array.from(document.querySelectorAll('[role="option"]'))
+function visibleChoiceOptions(root: Document | Element = document): Array<{ label: string; value: string }> {
+  return Array.from(root.querySelectorAll('[role="option"]'))
     .filter((element) => isVisible(element))
     .map((element) => ({
       label: element.textContent?.replace(/\s+/g, " ").trim() ?? "",
       value: element.getAttribute("data-value") || element.getAttribute("value") || element.textContent?.replace(/\s+/g, " ").trim() || "",
     }))
     .filter((option) => option.label);
+}
+
+function choiceOptionRoot(control: Element): Document | Element {
+  const listboxId = control.getAttribute("aria-controls")?.trim();
+  return listboxId ? document.getElementById(listboxId) ?? document : document;
 }
 
 async function inspectFieldOptions(payload: FillPayload): Promise<Record<string, unknown>> {
@@ -118,7 +123,7 @@ async function inspectFieldOptions(payload: FillPayload): Promise<Record<string,
     trigger.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
   }
   await new Promise((resolve) => window.setTimeout(resolve, 100));
-  const options = visibleChoiceOptions();
+  const options = visibleChoiceOptions(choiceOptionRoot(first));
   trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   trigger.dispatchEvent(new Event("blur", { bubbles: true }));
   document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
@@ -167,7 +172,7 @@ async function selectCombobox(control: HTMLInputElement, value: string): Promise
   const normalizeOption = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
   let option: HTMLElement | undefined;
   for (let attempt = 0; attempt < 20 && !option; attempt += 1) {
-    option = Array.from(document.querySelectorAll('[role="option"]'))
+    option = Array.from(choiceOptionRoot(control).querySelectorAll('[role="option"]'))
       .filter(isVisible)
       .find((element) => normalizeOption(element.textContent ?? "") === normalizeOption(value)) as HTMLElement | undefined;
     if (!option) await new Promise((resolve) => window.setTimeout(resolve, 100));
@@ -178,7 +183,7 @@ async function selectCombobox(control: HTMLInputElement, value: string): Promise
       input_value: control.value,
       expanded: control.getAttribute("aria-expanded") === "true",
       aria_controls: control.getAttribute("aria-controls") || "",
-      visible_options: Array.from(document.querySelectorAll('[role="option"]'))
+      visible_options: Array.from(choiceOptionRoot(control).querySelectorAll('[role="option"]'))
         .filter((element) => isVisible(element))
         .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
         .filter(Boolean),
@@ -220,7 +225,7 @@ async function fillOne(payload: FillPayload): Promise<void> {
       control.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
     }
     const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
-    const option = Array.from(document.querySelectorAll('[role="option"]'))
+    const option = Array.from(choiceOptionRoot(control).querySelectorAll('[role="option"]'))
       .filter((element) => isVisible(element))
       .find((element) => normalize(element.textContent ?? "") === normalize(value));
     if (!(option instanceof HTMLElement)) {
@@ -228,7 +233,7 @@ async function fillOne(payload: FillPayload): Promise<void> {
         field_id: control.id || "",
         expanded: control.getAttribute("aria-expanded") === "true",
         aria_controls: control.getAttribute("aria-controls") || "",
-        visible_options: Array.from(document.querySelectorAll('[role="option"]'))
+        visible_options: Array.from(choiceOptionRoot(control).querySelectorAll('[role="option"]'))
           .filter((element) => isVisible(element))
           .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
           .filter(Boolean),
