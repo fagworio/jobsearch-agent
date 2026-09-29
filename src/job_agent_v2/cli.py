@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     pipeline_parser = sub.add_parser("pipeline", help="entrega vagas aprovadas aos fluxos apply/fill/submit")
     pipeline_parser.add_argument("--source", default="data/v2-discovery/shortlist.json", help="shortlist JSON")
     pipeline_parser.add_argument("--store", default="data/v2-discovery/pipeline.json", help="manifest JSON do pipeline")
+    pipeline_parser.add_argument("--submission-store", default="data/v2-submissions", help="marcadores que devem ser reconciliados antes de reencaminhar")
     batch_parser = sub.add_parser("batch", help="planeja o processamento autônomo seguro do pipeline")
     batch_parser.add_argument("--source", default="data/v2-discovery/pipeline.json", help="manifest JSON do pipeline")
     batch_parser.add_argument("--store", default="data/v2-discovery/batch.json", help="relatório JSON do lote")
@@ -250,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "pipeline":
         source = Path(args.source)
-        manifest = build_pipeline(load_shortlist(source))
+        manifest = build_pipeline(load_shortlist(source), submission_store=args.submission_store)
         destination = save_pipeline(manifest, args.store)
         print(json.dumps({
             "provider": "greenhouse",

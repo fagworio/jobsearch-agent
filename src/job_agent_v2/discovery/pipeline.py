@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,29 @@ class PipelineManifest:
         }
 
 
-def build_pipeline(shortlist_payload: dict[str, Any]) -> PipelineManifest:
+def _submission_was_processed(url: str, store: str | Path) -> bool:
+    """Retorna true para qualquer tentativa que exige reconciliação explícita."""
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    marker = Path(store) / f"{key}.json"
+    if not marker.exists():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # Um marcador ilegível é fail-closed: não reencaminhar a vaga.
+        return True
+    return isinstance(payload, dict) and payload.get("outcome") in {
+        "SUBMITTED",
+        "SUBMIT_FAILED",
+        "SUBMIT_UNKNOWN",
+    }
+
+
+def build_pipeline(
+    shortlist_payload: dict[str, Any],
+    *,
+    submission_store: str | Path | None = None,
+) -> PipelineManifest:
     if shortlist_payload.get("provider") != "greenhouse":
         raise ValueError("shortlist provider must be greenhouse")
     raw_entries = shortlist_payload.get("entries")
@@ -76,6 +99,8 @@ def build_pipeline(shortlist_payload: dict[str, Any]) -> PipelineManifest:
             raise ValueError(f"shortlist entries[{index}] has invalid ranking fields")
         if not all(isinstance(entry.get(key), str) for key in ("title", "company")):
             raise ValueError(f"shortlist entries[{index}] has invalid display fields")
+        if submission_store is not None and _submission_was_processed(entry["url"], submission_store):
+            continue
         items.append(PipelineItem(
             rank=entry["rank"],
             job_id=entry["job_id"],

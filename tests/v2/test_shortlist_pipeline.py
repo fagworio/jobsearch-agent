@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from job_agent_v2.discovery import (
     BatchReport,
     DiscoveryJob,
@@ -78,3 +81,12 @@ def test_batch_keeps_fill_and_submit_manual_under_current_policy():
     assert isinstance(fill_report, BatchReport)
     assert fill_report.items[0].state == "MANUAL_REVIEW_REQUIRED"
     assert submit_report.items[0].state == "MANUAL_CONFIRMATION_REQUIRED"
+
+
+def test_pipeline_excludes_jobs_with_submission_markers(tmp_path):
+    report = rank_shortlist(_matrix())
+    url = next(entry.url for entry in report.entries if entry.job_id == "br:1")
+    marker = tmp_path / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.json"
+    marker.write_text(json.dumps({"outcome": "SUBMIT_FAILED"}), encoding="utf-8")
+    manifest = build_pipeline(report.to_dict(), submission_store=tmp_path)
+    assert manifest.items == ()
