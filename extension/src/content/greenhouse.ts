@@ -413,17 +413,23 @@ export function inspectSubmitResult(documentRef: Document = document): SubmitRes
   const confirmationComponent = Array.from(documentRef.querySelectorAll(
     '[data-application-status="submitted"], .application-submitted, #confirmation',
   )).some(isVisible) || confirmationText;
-  const errorComponent = Array.from(documentRef.querySelectorAll(
+  const errorNodes = Array.from(documentRef.querySelectorAll(
     ".errors, .error-message, [aria-invalid=\"true\"]",
-  )).some(isVisible);
-  const errorDetail = Array.from(documentRef.querySelectorAll(
-    ".errors, .error-message, [aria-invalid=\"true\"]",
-  ))
-    .filter(isVisible)
-    .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
+  )).filter(isVisible);
+  const errorComponent = errorNodes.length > 0;
+  const errorDetail = errorNodes
+    .map((element) => {
+      const text = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+      if (text) return text;
+      const control = element.matches("input, textarea, select, [role=combobox]") ? element : element.querySelector("input, textarea, select, [role=combobox]");
+      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement) {
+        return `${labelFor(control, documentRef) || control.name || control.id}: invalid value`;
+      }
+      return element.outerHTML.replace(/\s+/g, " ").slice(0, 300);
+    })
     .filter(Boolean)
     .join(" | ")
-    .slice(0, 500);
+    .slice(0, 1000);
   return {
     state: confirmationComponent ? "SUBMITTED" : errorComponent ? "SUBMIT_FAILED" : "SUBMIT_UNKNOWN",
     primary: {
