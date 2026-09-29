@@ -215,8 +215,12 @@ async function fillOne(payload: FillPayload): Promise<void> {
     if (!(target instanceof HTMLInputElement) || !["checkbox", "radio"].includes(target.type)) {
       throw new Error("field is not a checkable control");
     }
-    target.checked = payload.action !== "uncheck";
-    dispatchInput(target);
+    const desired = payload.action !== "uncheck";
+    // React-controlled checkbox groups must receive a real click so their
+    // internal state updates; assigning `.checked` plus synthetic input events
+    // can look correct in read-back while the provider still rejects the
+    // group on submit.
+    if (target.checked !== desired) target.click();
     ensureReadBack(target, value, payload.action === "check" || payload.action === "check_group");
     return;
   }
