@@ -148,7 +148,19 @@ class NativeMessagingClient:
         return self.call(Command.INSPECT_FORM, self._tab_payload(tab_id=tab_id))
 
     def inspect_field_options(self, field_id: str, *, tab_id: int | None = None) -> dict[str, Any]:
-        return self.call(Command.GET_FIELD_OPTIONS, self._tab_payload({"field_id": field_id}, tab_id))
+        # A provider widget can fail to answer while its lazy menu is being
+        # mounted. Do not let that block the whole campaign: this read is
+        # optional and the submit boundary has not been crossed yet.
+        if self._socket is None:
+            return self.call(Command.GET_FIELD_OPTIONS, self._tab_payload({"field_id": field_id}, tab_id))
+        previous_timeout = self._socket.gettimeout()
+        self._socket.settimeout(min(previous_timeout or 60.0, 15.0))
+        try:
+            return self.call(Command.GET_FIELD_OPTIONS, self._tab_payload({"field_id": field_id}, tab_id))
+        except socket.timeout as exc:
+            raise TimeoutError(f"field option inspection timed out: {field_id}") from exc
+        finally:
+            self._socket.settimeout(previous_timeout)
 
     def fill_form(self, payload: dict[str, Any], *, tab_id: int | None = None) -> dict[str, Any]:
         return self.call(Command.FILL_FORM, self._tab_payload(payload, tab_id))

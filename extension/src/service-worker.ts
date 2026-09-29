@@ -278,7 +278,7 @@ async function handleRequest(message: unknown): Promise<Response> {
       return { version: 1, request_id: requestId, ok: false, error: "submit authorization was already used or is missing" };
     }
   } else if (type !== "GET_AUTH_STATE" && type !== "GET_PAGE" && type !== "GET_DISCOVERY_RESULTS" && type !== "GET_DISCOVERY_FILTERS" && type !== "DISCOVER_QUERY" && type !== "OPEN_JOB" && type !== "GET_JOB_DETAILS" && type !== "GET_TAB_CONTEXT" && type !== "WAIT_FOR_APPLICATION" && type !== "REMOVE_REPEATABLE_ENTRY" && type !== "INSPECT_FORM" && type !== "GET_FIELD_OPTIONS" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE" && type !== "GET_SUBMIT_RESULT") {
-    return { version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" };
+    return { version: 1, request_id: requestId, ok: false, error: `service-worker command disabled in read-only phase: ${String(type)}` };
   }
 
   try {

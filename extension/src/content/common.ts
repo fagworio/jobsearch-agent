@@ -460,7 +460,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     sendResponse({ ok: true, result: inspectSubmitResult() });
     return true;
   }
-  sendResponse({ ok: false, error: "command is not enabled in read-only phase" });
+  sendResponse({ ok: false, error: `content command is not enabled in read-only phase: ${String(type)}` });
   return true;
 });
 
