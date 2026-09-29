@@ -237,7 +237,13 @@ def run_autonomous(
                         ready_jobs=cursor.ready_jobs,
                     )
         finally:
-            browser.discover_query(initial.query or "frontend", list(work_type))
+            try:
+                browser.discover_query(initial.query or "frontend", list(work_type))
+            except (OSError, RuntimeError) as exc:
+                # Restoring the operator's original search is best effort. A
+                # Chrome/native-host disconnect here must not erase the
+                # ledger or hide results already persisted by auto-apply.
+                errors.append(f"restore initial query: {exc}")
 
     matrix = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
     matched = match_matrix(matrix, load_match_profile(profile_path))
