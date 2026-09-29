@@ -1,4 +1,5 @@
-from job_agent_v2.submit import _hydrate_choice_options
+from job_agent_v2.models import Field
+from job_agent_v2.submit import _accept_prefilled_profile_value, _hydrate_choice_options
 
 
 class Browser:
@@ -39,3 +40,10 @@ def test_hydrates_only_deterministic_comboboxes():
     ]
     assert result["fields"][1]["options"] == []
     assert browser.calls == [("region", 7)]
+
+
+def test_accepts_non_placeholder_provider_formatted_profile_combobox():
+    field = Field("location", "Location*", kind="combobox", required=True)
+    assert _accept_prefilled_profile_value(field, "Av. Arthur Trindade, Betim MG", {"location": "profile"})
+    assert not _accept_prefilled_profile_value(field, "Select...", {"location": "profile"})
+    assert not _accept_prefilled_profile_value(field, "Av. Arthur Trindade, Betim MG", {"location": "rule"})

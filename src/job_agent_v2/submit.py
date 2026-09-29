@@ -42,6 +42,15 @@ def _values_match(actual: str, expected: str) -> bool:
     return compact(actual) == compact(expected)
 
 
+def _accept_prefilled_profile_value(field: Any, actual: str, resolved_from: Mapping[str, str]) -> bool:
+    """Keep a provider-formatted profile combobox value when it is populated."""
+
+    if field.kind != "combobox" or resolved_from.get(field.key) != "profile":
+        return False
+    normalized = re.sub(r"\s+", " ", str(actual or "")).strip().casefold()
+    return bool(normalized) and normalized not in {"select...", "select", "choose...", "choose"}
+
+
 class SubmitState(str, Enum):
     SUBMITTED = "SUBMITTED"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
@@ -325,7 +334,10 @@ def submit(
                 # important for provider widgets such as React Select: the
                 # browser-native interaction may be complete even when the
                 # content-script mutation path cannot reproduce it.
-                if _values_match(_snapshot_field_value(uploaded, field.key), value):
+                current_value = _snapshot_field_value(uploaded, field.key)
+                if _values_match(current_value, value) or _accept_prefilled_profile_value(
+                    field, current_value, resolution.resolved_from
+                ):
                     verified += 1
                     continue
                 fill_payload = {
@@ -351,10 +363,12 @@ def submit(
 
             read_back = browser.read_form(tab_id=tab_id) if tab_id is not None else browser.read_form()
             for field in answer_form.fields:
-                if field.key in resolution.answers and not _values_match(
-                    _snapshot_field_value(read_back, field.key),
-                    resolution.answers[field.key],
-                ):
+                if field.key in resolution.answers:
+                    actual_value = _snapshot_field_value(read_back, field.key)
+                    if _values_match(actual_value, resolution.answers[field.key]) or _accept_prefilled_profile_value(
+                        field, actual_value, resolution.resolved_from
+                    ):
+                        continue
                     return SubmitReport(
                         state=SubmitState.NO_WRITE,
                         reason=f"FIELD_MISMATCH: {field.key}",
