@@ -93,6 +93,22 @@ def test_long_provider_labels_map_only_when_unambiguous():
     }
 
 
+def test_explicit_provider_answer_can_translate_canonical_narrative():
+    facts = FactStore({
+        "experience.agency": {
+            "value": "Five years working in digital agencies.",
+            "approved": True,
+            "source": "user",
+        },
+    })
+    prompt = "Which of the following best describes your experience working in a digital agency or consulting firm?*"
+    answer = "I have 3+ years of recent (within the last 5 years) full-time agency or consulting experience."
+    form = Form((Field("agency", prompt, options=(answer, "Other"), required=True, kind="combobox"),))
+    result = resolve(form, facts=facts, library=AnswerLibrary({prompt: answer}))
+    assert result.answers == {"agency": answer}
+    assert result.resolved_from == {"agency": "approved_answer_library"}
+
+
 def test_year_fact_maps_to_one_numeric_range_option():
     facts = FactStore({"experience.wordpress_years": {"value": "12+", "approved": True, "source": "user"}})
     form = Form((Field("q1", "How many years of experience with WordPress?", options=("0-5 years", "10+ years"), required=True, kind="select"),))

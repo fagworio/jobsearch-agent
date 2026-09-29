@@ -282,6 +282,19 @@ def resolve(
             value = _option_value(field, fact.value)
             if value is not None:
                 value = _provider_value(field, value)
+            # A canonical fact may be a narrative evidence record while the
+            # provider asks for a closed choice.  If the user has also
+            # approved an exact provider answer for this prompt, use that
+            # answer rather than attempting to type the narrative into the
+            # combobox.  The explicit library entry remains the authority for
+            # the provider's wording.
+            if value is None and library is not None and field.options:
+                saved = library.get(field.prompt)
+                mapped_saved = _option_value(field, saved) if saved is not None else None
+                if mapped_saved is not None:
+                    answers[field.key] = mapped_saved
+                    resolved_from[field.key] = "approved_answer_library"
+                    continue
             if value is None and field.required:
                 add_missing(field, fact.fact_id)
                 continue
