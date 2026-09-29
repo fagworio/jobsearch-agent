@@ -162,7 +162,8 @@ def test_known_form_can_be_ready_to_apply_without_authorizing_submit():
 
 def test_application_policy_fixture_is_loaded():
     policy = load_application_policy(ROOT / "profile/application_policy.yaml")
-    assert policy.autonomy["fill_forms"] == "review"
+    assert policy.autonomy["fill_forms"] == "auto"
+    assert policy.autonomy["submit"] == "auto"
     assert policy.autonomy["submit"] == "manual"
     assert policy.providers["linkedin"]["advance_steps"] == "review"
     assert policy.providers["greenhouse"]["submit"] == "manual"
