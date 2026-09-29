@@ -416,13 +416,25 @@ export function inspectSubmitResult(documentRef: Document = document): SubmitRes
   const errorComponent = Array.from(documentRef.querySelectorAll(
     ".errors, .error-message, [aria-invalid=\"true\"]",
   )).some(isVisible);
+  const errorDetail = Array.from(documentRef.querySelectorAll(
+    ".errors, .error-message, [aria-invalid=\"true\"]",
+  ))
+    .filter(isVisible)
+    .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
+    .filter(Boolean)
+    .join(" | ")
+    .slice(0, 500);
   return {
     state: confirmationComponent ? "SUBMITTED" : errorComponent ? "SUBMIT_FAILED" : "SUBMIT_UNKNOWN",
     primary: {
       url: location.href,
       confirmation_component: confirmationComponent,
       error_component: errorComponent,
-      detail: confirmationComponent ? "visible confirmation evidence" : errorComponent ? "visible error evidence" : "no decisive page evidence",
+      detail: confirmationComponent
+        ? "visible confirmation evidence"
+        : errorComponent
+          ? errorDetail || "visible error evidence"
+          : "no decisive page evidence",
     },
     secondary: [],
   };
