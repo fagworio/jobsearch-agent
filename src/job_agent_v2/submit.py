@@ -340,6 +340,7 @@ def submit(
             record: dict[str, Any] = {
                 "job_url": url,
                 "apply_url": apply_url,
+                "resume_path": resume,
                 "resume_sha256": artifact.sha256,
                 "fields": len(form.fields),
                 "verified": verified,

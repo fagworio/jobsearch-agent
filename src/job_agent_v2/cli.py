@@ -14,6 +14,7 @@ from .browser import NativeMessagingClient
 from .fill import fill
 from .facts import FactStore
 from .facts_migration import load_approved_answers, migrate_answers
+from .resume import prepare_resume
 from .discovery import (
     DiscoveryMatrix,
     DiscoverySearchRun,
@@ -114,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     batch_parser.add_argument("--policy", default="profile/application_policy.yaml", help="política de autonomia")
     auto_parser = sub.add_parser("auto-apply", help="processa a shortlist aprovada sequencialmente com budgets explícitos")
     auto_parser.add_argument("--source", default="data/v2-discovery/pipeline.json", help="manifest do pipeline aprovado")
-    auto_parser.add_argument("--resume", required=True, help="caminho do PDF a anexar")
+    auto_parser.add_argument("--resume", default="", help="PDF estático; omitido para gerar um currículo por vaga")
+    auto_parser.add_argument("--resume-profile", default="profile/career_profile.local.yaml", help="Career Profile YAML usado pelo motor de currículo")
+    auto_parser.add_argument("--resume-store", default="data/v2-resumes", help="diretório de artefatos de currículo por vaga")
     auto_parser.add_argument("--approved", default="", help="JSON {prompt: resposta aprovada}")
     auto_parser.add_argument("--profile", default="", help="JSON {campo trivial: valor}")
     auto_parser.add_argument("--rules", default="", help="JSON {prompt: resposta regida}")
@@ -128,6 +131,15 @@ def main(argv: list[str] | None = None) -> int:
     auto_parser.add_argument("--max-failures", type=int, default=None)
     auto_parser.add_argument("--parallelism", type=int, default=None)
     auto_parser.add_argument("--human-wait", type=int, default=10 * 60 * 1000, help="ms para resolver desafio humano")
+    resume_parser = sub.add_parser("prepare-resume", help="gera e valida um currículo factual por vaga")
+    resume_parser.add_argument("--job-id", required=True)
+    resume_parser.add_argument("--title", required=True)
+    resume_parser.add_argument("--company", required=True)
+    resume_parser.add_argument("--description", default="")
+    resume_parser.add_argument("--profile", default="profile/career_profile.local.yaml")
+    resume_parser.add_argument("--store", default="data/v2-resumes")
+    resume_parser.add_argument("--language", default="")
+    resume_parser.add_argument("--force", action="store_true")
     decide = sub.add_parser("apply", help="le a vaga real e decide (nao escreve)")
     _common(decide)
     write = sub.add_parser("fill", help="preenche a vaga real e sobe o curriculo (nao submete)")
@@ -337,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         report = run_auto_apply(
             load_pipeline(args.source),
             resume=args.resume,
+            resume_profile=args.resume_profile,
+            resume_store=args.resume_store,
             approved=_pairs(args.approved),
             profile=_pairs(args.profile),
             rules=_pairs(args.rules),
@@ -352,6 +366,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
         return 0 if report.to_dict()["counts"].get("SUBMITTED", 0) else 2
+
+    if args.command == "prepare-resume":
+        result = prepare_resume(
+            args.job_id,
+            args.title,
+            args.company,
+            args.description,
+            profile_path=args.profile,
+            output_dir=args.store,
+            language_override=args.language or None,
+            force=args.force,
+        )
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if result.ready else 2
 
     if args.command == "answers":
         library = AnswerLibrary.load(args.store)

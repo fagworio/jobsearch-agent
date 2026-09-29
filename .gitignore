@@ -12,6 +12,10 @@ data/browser_profiles/
 # Diario de envios do V2: marcador de exatamente-uma-vez, fora do git de
 # proposito (contem href/currículo/hashes do candidato).
 data/v2-submissions/
+# Relatórios e currículos personalizados V2 são dados operacionais locais.
+data/v2-auto/
+data/v2-discovery/
+data/v2-resumes/
 # Politica fail-closed para dados do candidato: qualquer arquivo novo em
 # profile/ fica IGNORADO por padrao e so entra no repositorio se for
 # explicitamente liberado abaixo. Um arquivo concreto de respostas

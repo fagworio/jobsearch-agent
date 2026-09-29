@@ -17,6 +17,7 @@ class PipelineItem:
     title: str
     company: str
     shortlist_score: float
+    description: str = ""
 
     def command_payload(self, action: str) -> dict[str, Any]:
         if action not in {"apply", "fill", "submit"}:
@@ -28,6 +29,7 @@ class PipelineItem:
             "title": self.title,
             "company": self.company,
             "shortlist_score": self.shortlist_score,
+            "description": self.description,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,6 +109,7 @@ def build_pipeline(
             title=entry["title"],
             company=entry["company"],
             shortlist_score=float(entry["shortlist_score"]),
+            description=str(entry.get("description") or ""),
         ))
     return PipelineManifest(str(shortlist_payload.get("source") or ""), tuple(items))
 
@@ -137,6 +140,7 @@ def load_pipeline(path: str | Path) -> PipelineManifest:
                 title=str(raw["title"]),
                 company=str(raw["company"]),
                 shortlist_score=float(raw["shortlist_score"]),
+                description=str(raw.get("description") or ""),
             ))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"pipeline items[{index}] is invalid") from exc

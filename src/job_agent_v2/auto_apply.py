@@ -16,6 +16,7 @@ from .answers import AnswerLibrary
 from .browser import NativeMessagingClient
 from .discovery.pipeline import PipelineManifest, PipelineItem
 from .facts import FactStore
+from .resume import prepare_resume
 from .submit import SubmitReport, submit
 
 
@@ -30,6 +31,8 @@ class AutoApplyItem:
     tab_id: int | None = None
     submit: dict[str, Any] | None = None
     missing_facts: tuple[str, ...] = ()
+    resume_path: str = ""
+    resume_identity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +43,8 @@ class AutoApplyItem:
             "state": self.state,
             "reason": self.reason,
             "missing_facts": list(self.missing_facts),
+            "resume_path": self.resume_path,
+            "resume_identity": self.resume_identity,
             "tab_id": self.tab_id,
             "submit": self.submit or {},
         }
@@ -113,6 +118,8 @@ def run_auto_apply(
     manifest: PipelineManifest,
     *,
     resume: str,
+    resume_profile: str = "",
+    resume_store: str = "data/v2-resumes",
     approved: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
@@ -135,8 +142,8 @@ def run_auto_apply(
         max_failures=max_failures,
         parallelism=parallelism,
     )
-    if not resume:
-        raise ValueError("resume is required for auto-apply")
+    if not resume and not resume_profile:
+        raise ValueError("resume or resume_profile is required for auto-apply")
 
     selected = _approved_items(manifest, max_jobs)
     results: list[AutoApplyItem] = []
@@ -150,6 +157,35 @@ def run_auto_apply(
         if submits >= max_submits:
             results.append(AutoApplyItem(item.job_id, item.title, item.company, item.url, "LIMIT_REACHED", "max_submits reached"))
             continue
+        resume_path = resume
+        resume_build: dict[str, Any] = {}
+        if not resume_path:
+            try:
+                prepared = prepare_resume(
+                    item.job_id,
+                    item.title,
+                    item.company,
+                    item.description,
+                    profile_path=resume_profile,
+                    output_dir=resume_store,
+                )
+                resume_build = prepared.to_dict()
+                if not prepared.ready:
+                    results.append(AutoApplyItem(
+                        item.job_id,
+                        item.title,
+                        item.company,
+                        item.url,
+                        "RESUME_NOT_READY",
+                        prepared.validation.code,
+                        submit=resume_build,
+                        resume_identity=prepared.identity,
+                    ))
+                    continue
+                resume_path = prepared.resume_path
+            except Exception as exc:  # noqa: BLE001 - material generation is isolated per job
+                results.append(AutoApplyItem(item.job_id, item.title, item.company, item.url, "RESUME_NOT_READY", str(exc)))
+                continue
         tab_id: int | None = None
         try:
             with NativeMessagingClient() as browser:
@@ -170,7 +206,7 @@ def run_auto_apply(
                 rules=rules,
                 library=library,
                 facts=facts,
-                resume=resume,
+                resume=resume_path,
                 store=marker_store,
                 settle_ms=settle_ms,
                 human_wait_ms=human_wait_ms,
@@ -185,6 +221,9 @@ def run_auto_apply(
                 state = "NEEDS_INPUT"
             elif report.state.value == "HUMAN_REQUIRED":
                 state = "WAITING_HUMAN"
+            report_payload = report.to_dict()
+            if resume_build:
+                report_payload["resume_build"] = resume_build
             results.append(AutoApplyItem(
                 item.job_id,
                 item.title,
@@ -193,8 +232,10 @@ def run_auto_apply(
                 state,
                 report.reason,
                 tab_id,
-                report.to_dict(),
+                report_payload,
                 report.missing_facts,
+                resume_path,
+                str(resume_build.get("identity") or ""),
             ))
             if state == "SUBMIT_UNKNOWN":
                 halted = True
