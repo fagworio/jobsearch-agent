@@ -72,6 +72,11 @@ pythonpath = ["src"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# V2 CI enforces correctness and unused-code checks. Formatting/modernization
+# rules remain opt-in so the new core is not blocked by legacy style debt.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.11"
 # O pacote de resolucao e novo e pequeno: ele nasce sob `strict`. O resto do

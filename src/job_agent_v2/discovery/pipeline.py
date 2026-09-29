@@ -92,7 +92,6 @@ def build_pipeline(
             continue
         if entry.get("applied") is True:
             continue
-        values = ("rank", "job_id", "url", "title", "company", "shortlist_score")
         if not isinstance(entry.get("job_id"), str) or not isinstance(entry.get("url"), str) or not entry["url"].strip():
             raise ValueError(f"shortlist entries[{index}] has no valid job URL")
         if not isinstance(entry.get("rank"), int) or not isinstance(entry.get("shortlist_score"), (int, float)):

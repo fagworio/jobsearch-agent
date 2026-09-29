@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 import socket
 import subprocess
-import sys
 from typing import Any, BinaryIO
 from uuid import uuid4
 

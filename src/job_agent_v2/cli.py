@@ -6,7 +6,6 @@ import argparse
 from dataclasses import replace
 import json
 from pathlib import Path
-import sys
 
 from .apply import apply
 from .auto_apply import run_auto_apply
@@ -79,9 +78,9 @@ def _batch_limits(path: str, overrides: dict[str, int | None]) -> dict[str, int]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="job-agent-v2")
     sub = parser.add_subparsers(dest="command", required=True)
-    login_status = sub.add_parser("login-status", help="verifica o login manual no MyGreenhouse na aba ativa")
-    discover = sub.add_parser("discover", help="extrai os cards da busca MyGreenhouse ativa (somente leitura)")
-    discover_filters = sub.add_parser("discover-filters", help="mapeia filtros e parâmetros da busca MyGreenhouse ativa (somente leitura)")
+    sub.add_parser("login-status", help="verifica o login manual no MyGreenhouse na aba ativa")
+    sub.add_parser("discover", help="extrai os cards da busca MyGreenhouse ativa (somente leitura)")
+    sub.add_parser("discover-filters", help="mapeia filtros e parâmetros da busca MyGreenhouse ativa (somente leitura)")
     discover_matrix = sub.add_parser("discover-matrix", help="executa a matriz de consultas remotas do perfil (somente leitura)")
     discover_matrix.add_argument("--store", default="data/v2-discovery/matrix.json", help="arquivo JSON do lote observado")
     discover_matrix.add_argument("--profile", default="profile/career_profile.local.yaml", help="Career Profile para parar ao atingir vagas prontas")
