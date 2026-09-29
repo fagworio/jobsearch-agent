@@ -6,6 +6,10 @@ from .models import ResumeClaim, ResumeDocument, ResumeProfile, ResumeStrategy
 from .selector import cluster_fact_ids
 
 
+def _normalise_tag(value: str) -> str:
+    return value.casefold().replace("-", " ").replace("_", " ").strip()
+
+
 def _localized(value: dict[str, str], language: str) -> str:
     return value.get(language) or value.get("en-US") or next(iter(value.values()), "")
 
@@ -13,7 +17,14 @@ def _localized(value: dict[str, str], language: str) -> str:
 def _dynamic_summary(profile: ResumeProfile, strategy: ResumeStrategy, selected: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     base_ids = tuple(fact_id for fact_id in profile.summary_fact_ids.get(strategy.language, ()) if fact_id in profile.facts and profile.facts[fact_id].verified)
     base = profile.summaries.get(strategy.language) or profile.summaries.get("en-US", "")
-    relevant = tuple(fact_id for fact_id in selected if fact_id in profile.facts and strategy.positioning in {tag.casefold() for tag in profile.facts[fact_id].tags})
+    positioning_tokens = set(_normalise_tag(strategy.positioning).split())
+    relevant = tuple(
+        fact_id
+        for fact_id in selected
+        if fact_id in profile.facts
+        and positioning_tokens
+        and any(positioning_tokens <= set(_normalise_tag(tag).split()) for tag in profile.facts[fact_id].tags)
+    )
     extra = profile.facts[relevant[0]].statement(strategy.language) if relevant else ""
     if extra and extra not in base:
         return f"{base} {extra}", tuple(dict.fromkeys(base_ids + relevant[:1]))

@@ -14,6 +14,7 @@ from job_agent_v2.resume import (
     select_fact_ids,
     validate_document,
 )
+from job_agent_v2.resume.renderer import render_text
 
 
 def _profile(tmp_path):
@@ -106,3 +107,16 @@ def test_resume_engine_writes_job_artifacts_and_reuses_cache(tmp_path, monkeypat
     assert (output / "greenhouse-example-1" / "job.json").exists()
     validation = json.loads((output / "greenhouse-example-1" / "validation.json").read_text(encoding="utf-8"))
     assert validation["valid"] is True
+
+
+def test_portuguese_renderer_uses_localized_headings(tmp_path):
+    profile = load_profile(_profile(tmp_path))
+    strategy = build_strategy(profile, "Desenvolvedor frontend", "experiência em desenvolvimento web", language_override="pt-BR")
+    document = generate_document("job-pt", strategy.target_role, "Example", profile, strategy, ("fact_frontend", "fact_education"))
+    rendered = render_text(document)
+
+    assert "Resumo profissional" in rendered
+    assert "Competências" in rendered
+    assert "Experiência profissional" in rendered
+    assert "Formação" in rendered
+    assert "Present" not in rendered

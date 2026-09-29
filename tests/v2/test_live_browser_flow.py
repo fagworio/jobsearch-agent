@@ -159,3 +159,26 @@ def test_submit_live_path_dispatches_one_authorized_action(monkeypatch, tmp_path
     assert result.state is SubmitState.SUBMITTED
     assert len(browser.submit_calls) == 1
     assert result.submission_writes == 1
+
+
+def test_submit_transport_failure_after_write_boundary_is_unknown(monkeypatch, tmp_path: Path):
+    browser = FakeBrowser()
+
+    def fail_after_dispatch(_payload: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("native messaging disconnected after dispatch")
+
+    browser.request_submit = fail_after_dispatch  # type: ignore[method-assign]
+    monkeypatch.setattr("job_agent_v2.submit.NativeMessagingClient", lambda: browser)
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"%PDF-1.7\nfake")
+
+    result = submit(
+        "https://job-boards.greenhouse.io/example/jobs/1",
+        profile={"First Name": "João"},
+        resume=str(resume),
+        store=str(tmp_path / "markers"),
+    )
+
+    assert result.state is SubmitState.SUBMIT_UNKNOWN
+    assert result.submission_writes == 1
+    assert result.write_possible_at

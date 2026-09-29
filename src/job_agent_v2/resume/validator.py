@@ -61,8 +61,10 @@ def quality_metrics(document: ResumeDocument, strategy: ResumeStrategy, job_text
     targets = [keyword for keyword in strategy.focus + strategy.secondary if keyword]
     covered = [keyword for keyword in targets if _tokens(keyword) & content]
     return {
-        "required_skills_covered": len(covered),
-        "required_skills_total": len(targets),
+        "target_skills_covered": len(covered),
+        "target_skills_total": len(targets),
+        "focus_skills_covered": len([keyword for keyword in strategy.focus if _tokens(keyword) & content]),
+        "focus_skills_total": len(strategy.focus),
         "preferred_skills_covered": len([keyword for keyword in strategy.secondary if _tokens(keyword) & content]),
         "preferred_skills_total": len(strategy.secondary),
         "unsupported_claims": 0,

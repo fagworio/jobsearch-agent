@@ -9,14 +9,21 @@ from pathlib import Path
 from .models import ResumeDocument
 
 
+def _labels(language: str) -> tuple[str, str, str, str, str]:
+    if language == "pt-BR":
+        return ("Resumo profissional", "Competências", "Experiência profissional", "Formação", "Atual")
+    return ("Summary", "Skills", "Experience", "Education", "Present")
+
+
 def render_text(document: ResumeDocument) -> str:
-    lines = [document.header.get("name", ""), document.header.get("email", ""), document.header.get("location", ""), "", "Summary", document.summary, "", "Skills", ", ".join(document.skills), "", "Experience"]
+    summary_label, skills_label, experience_label, education_label, present_label = _labels(document.language)
+    lines = [document.header.get("name", ""), document.header.get("email", ""), document.header.get("location", ""), "", summary_label, document.summary, "", skills_label, ", ".join(document.skills), "", experience_label]
     for row in document.experience:
-        lines.extend([f"{row['role']} | {row['company']} | {row['start_date']} - {row['end_date'] or 'Present'}"])
+        lines.extend([f"{row['role']} | {row['company']} | {row['start_date']} - {row['end_date'] or present_label}"])
         lines.extend(f"- {bullet}" for bullet in row.get("bullets", []))
         lines.append("")
     if document.education:
-        lines.append("Education")
+        lines.append(education_label)
         for row in document.education:
             lines.extend([f"{row['credential']}, {row['field_of_study']} | {row['institution']}", ""])
     return "\n".join(lines).strip() + "\n"
@@ -42,18 +49,19 @@ def render_docx(document: ResumeDocument, path: str | Path) -> Path:
     contact = " | ".join(value for value in (document.header.get("email", ""), document.header.get("phone", ""), document.header.get("location", "")) if value)
     if contact:
         doc.add_paragraph(contact)
-    doc.add_heading("Summary", level=1)
+    summary_label, skills_label, experience_label, education_label, present_label = _labels(document.language)
+    doc.add_heading(summary_label, level=1)
     doc.add_paragraph(document.summary)
-    doc.add_heading("Skills", level=1)
+    doc.add_heading(skills_label, level=1)
     doc.add_paragraph(", ".join(document.skills))
-    doc.add_heading("Experience", level=1)
+    doc.add_heading(experience_label, level=1)
     for row in document.experience:
         doc.add_heading(f"{row['role']} | {row['company']}", level=2)
-        doc.add_paragraph(f"{row['start_date']} - {row['end_date'] or 'Present'}")
+        doc.add_paragraph(f"{row['start_date']} - {row['end_date'] or present_label}")
         for bullet in row.get("bullets", []):
             doc.add_paragraph(str(bullet), style="List Bullet")
     if document.education:
-        doc.add_heading("Education", level=1)
+        doc.add_heading(education_label, level=1)
         for row in document.education:
             doc.add_paragraph(f"{row['credential']}, {row['field_of_study']} | {row['institution']}")
     doc.save(target)

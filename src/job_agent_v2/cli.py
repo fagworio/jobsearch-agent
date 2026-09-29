@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from .apply import apply
+from .autonomous import run_autonomous
 from .auto_apply import run_auto_apply
 from .answers import AnswerLibrary
 from .browser import NativeMessagingClient
@@ -131,6 +132,29 @@ def main(argv: list[str] | None = None) -> int:
     auto_parser.add_argument("--max-failures", type=int, default=None)
     auto_parser.add_argument("--parallelism", type=int, default=None)
     auto_parser.add_argument("--human-wait", type=int, default=10 * 60 * 1000, help="ms para resolver desafio humano")
+    run_parser = sub.add_parser("run", help="executa discovery → shortlist → pipeline em uma única execução")
+    run_parser.add_argument("--mode", choices=("plan", "auto-apply"), default="plan")
+    run_parser.add_argument("--profile", default="profile/career_profile.local.yaml")
+    run_parser.add_argument("--policy", default="profile/application_policy.yaml")
+    run_parser.add_argument("--matrix", default="data/v2-agent/matrix.json")
+    run_parser.add_argument("--shortlist", default="data/v2-agent/shortlist.json")
+    run_parser.add_argument("--pipeline", default="data/v2-agent/pipeline.json")
+    run_parser.add_argument("--state", default="data/v2-agent/state.json")
+    run_parser.add_argument("--target-ready-jobs", type=int, default=3)
+    run_parser.add_argument("--max-queries", type=int, default=20)
+    run_parser.add_argument("--max-jobs-inspected", type=int, default=250)
+    run_parser.add_argument("--max-pages", type=int, default=40)
+    run_parser.add_argument("--resume", default="")
+    run_parser.add_argument("--resume-profile", default="profile/career_profile.local.yaml")
+    run_parser.add_argument("--resume-store", default="data/v2-resumes")
+    run_parser.add_argument("--answers", default="")
+    run_parser.add_argument("--facts", default="profile/v2-facts.local.json")
+    run_parser.add_argument("--store", default="data/v2-submissions")
+    run_parser.add_argument("--report", default="data/v2-auto/auto-apply.json")
+    run_parser.add_argument("--max-jobs", type=int, default=5)
+    run_parser.add_argument("--max-submits", type=int, default=3)
+    run_parser.add_argument("--max-failures", type=int, default=2)
+    run_parser.add_argument("--human-wait", type=int, default=0)
     resume_parser = sub.add_parser("prepare-resume", help="gera e valida um currículo factual por vaga")
     resume_parser.add_argument("--job-id", required=True)
     resume_parser.add_argument("--title", required=True)
@@ -366,6 +390,36 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
         return 0 if report.to_dict()["counts"].get("SUBMITTED", 0) else 2
+
+    if args.command == "run":
+        run_answers = AnswerLibrary.load_required(args.answers) if args.answers else None
+        run_facts = FactStore.load_required(args.facts) if args.facts else None
+        report = run_autonomous(
+            mode=args.mode,
+            profile_path=args.profile,
+            matrix_path=args.matrix,
+            shortlist_path=args.shortlist,
+            pipeline_path=args.pipeline,
+            state_path=args.state,
+            policy_path=args.policy,
+            target_ready_jobs=args.target_ready_jobs,
+            max_queries=args.max_queries,
+            max_jobs_inspected=args.max_jobs_inspected,
+            max_pages=args.max_pages,
+            answers=run_answers,
+            facts=run_facts,
+            resume=args.resume,
+            resume_profile=args.resume_profile,
+            resume_store=args.resume_store,
+            marker_store=args.store,
+            report_store=args.report,
+            max_jobs=args.max_jobs,
+            max_submits=args.max_submits,
+            max_failures=args.max_failures,
+            human_wait_ms=args.human_wait,
+        )
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if report.state in {"PLANNED", "COMPLETED"} else 2
 
     if args.command == "prepare-resume":
         result = prepare_resume(

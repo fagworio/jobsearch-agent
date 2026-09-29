@@ -174,6 +174,11 @@ def submit(
 
     del headless, timeout_ms
     path = marker_path(store, url)
+    # This boundary is persisted immediately before the one-shot browser
+    # action. Any transport/runtime failure after it may have happened after
+    # the provider accepted the click, so it must never be reported as
+    # ``NO_WRITE``.
+    write_possible_at = ""
     existing = read_marker(path)
     if not _may_retry(existing, retry_failed=retry_failed):
         return _refusal(existing, path)
@@ -398,4 +403,14 @@ def submit(
                 submission_writes=1,
             )
     except Exception as exc:  # noqa: BLE001 - boundary becomes a safe report
-        return SubmitReport(state=SubmitState.NO_WRITE, reason=str(exc), job_url=url, marker=str(path))
+        state = SubmitState.SUBMIT_UNKNOWN if write_possible_at else SubmitState.NO_WRITE
+        return SubmitReport(
+            state=state,
+            reason=str(exc),
+            job_url=url,
+            marker=str(path),
+            write_possible_at=write_possible_at,
+            attempts=1 if write_possible_at else 0,
+            submission_writes=1 if write_possible_at else 0,
+            notes=("submit boundary was crossed; reconciliation is required",) if write_possible_at else (),
+        )
