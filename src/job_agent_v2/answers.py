@@ -110,7 +110,6 @@ def _deterministic_answer(
         # the provider list (including an unopened lazy combobox).
         if not field.options or len(other) == 1 or not exact:
             return other[0] if other else "Other"
-        return None
 
     if prompt in {"degree", "degree*"}:
         degree = (profile_index or {}).get("degree") or (profile_index or {}).get("degree*")
