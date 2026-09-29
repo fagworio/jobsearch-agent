@@ -37,6 +37,7 @@ from .discovery import (
     save_pipeline,
     save_shortlist,
 )
+from .discovery.greenhouse import DiscoveryInspectionError
 from .facts import FactStore
 
 
@@ -255,7 +256,15 @@ def run_autonomous(
     stop_unknown = False
 
     with NativeMessagingClient() as browser:
-        initial = adapter.inspect(browser.inspect_discovery_results())
+        try:
+            initial = adapter.inspect(browser.inspect_discovery_results())
+        except DiscoveryInspectionError as exc:
+            if "page type" not in str(exc):
+                raise
+            # A full unattended run may start on the dashboard or a job page.
+            # Open a real search before reading work_type; do not require an
+            # operator to prepare the tab manually.
+            initial = adapter.inspect(browser.discover_query("frontend", ["remote"]))
     work_type = initial.work_type or ("remote",)
     for item in build_query_matrix():
         if stop_unknown or jobs_processed >= max_jobs or submit_attempts >= max_submits:
