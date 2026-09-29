@@ -31,7 +31,15 @@ function controlsFor(fieldId: string): FormControl[] {
   const root = activeFormRoot();
   const controls = Array.from(root.querySelectorAll("input, textarea, select, [role=combobox]")).filter((element) => {
     const control = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    return (isVisible(element) || element instanceof HTMLInputElement && element.type === "file")
+    const style = window.getComputedStyle(element);
+    // A form control can be rendered inside a scrollable Easy Apply dialog
+    // while being outside the current viewport.  `getClientRects()` (used by
+    // isVisible) is too strict for that case and made a prior option-hydration
+    // scroll cause later fields to report "field not found".  Keep the active
+    // dialog as the scope, but accept rendered offscreen controls and still
+    // reject CSS/ARIA-hidden elements.
+    const rendered = style.display !== "none" && style.visibility !== "hidden";
+    return (rendered || element instanceof HTMLInputElement && element.type === "file")
       && !(element instanceof HTMLButtonElement && element.getAttribute("aria-label") === "Selected country")
       && (control.getAttribute("aria-hidden") !== "true")
       && !["hidden", "submit", "button"].includes(element.getAttribute("type") ?? "");
