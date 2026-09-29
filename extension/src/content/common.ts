@@ -217,7 +217,7 @@ async function fillOne(payload: FillPayload): Promise<void> {
     }
     target.checked = payload.action !== "uncheck";
     dispatchInput(target);
-    ensureReadBack(target, value, payload.action === "check");
+    ensureReadBack(target, value, payload.action === "check" || payload.action === "check_group");
     return;
   }
 
