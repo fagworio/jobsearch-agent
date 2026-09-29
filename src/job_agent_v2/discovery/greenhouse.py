@@ -32,12 +32,16 @@ def _job(value: object, index: int) -> DiscoveryJob:
     salary = value.get("salary")
     if salary is not None and not isinstance(salary, str):
         raise DiscoveryInspectionError(f"jobs[{index}].salary must be string or null")
+    description = value.get("description", "")
+    if not isinstance(description, str):
+        raise DiscoveryInspectionError(f"jobs[{index}].description must be a string")
     return DiscoveryJob(
         **strings,
         remote=_bool(value.get("remote"), f"jobs[{index}].remote"),
         salary=salary,
         applied=_bool(value.get("applied"), f"jobs[{index}].applied"),
         viewed=_bool(value.get("viewed"), f"jobs[{index}].viewed"),
+        description=description,
     )
 
 

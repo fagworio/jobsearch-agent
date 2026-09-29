@@ -20,6 +20,34 @@ class MatchProfile:
     role_terms: tuple[str, ...]
 
 
+_ROLE_FAMILY_TERMS = (
+    "wordpress",
+    "woocommerce",
+    "shopify",
+    "front end",
+    "frontend",
+    "web",
+    "php",
+    "cms",
+    "full stack",
+    "software engineer",
+    "application developer",
+)
+_ROLE_FAMILY_EXCLUSIONS = (
+    "project manager",
+    "program manager",
+    "product manager",
+    "marketing",
+    "growth manager",
+    "sales",
+    "recruiter",
+    "talent acquisition",
+    "account manager",
+    "customer success",
+    "business development",
+)
+
+
 def _normalise(value: str) -> str:
     folded = unicodedata.normalize("NFKD", value.casefold())
     without_marks = "".join(char for char in folded if not unicodedata.combining(char))
@@ -57,6 +85,15 @@ def _profile_role_terms(data: dict[str, Any]) -> tuple[str, ...]:
     return tuple(term for term in candidates if _contains(role_text, term))
 
 
+def role_family_compatible(title: str) -> bool:
+    """Reject adjacent job families before description skills can overmatch."""
+
+    normalized = _normalise(title)
+    if any(_contains(normalized, term) for term in _ROLE_FAMILY_EXCLUSIONS):
+        return False
+    return any(_contains(normalized, term) for term in _ROLE_FAMILY_TERMS)
+
+
 def load_match_profile(path: str | Path) -> MatchProfile:
     source = Path(path)
     payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
@@ -77,25 +114,31 @@ def load_match_profile(path: str | Path) -> MatchProfile:
 
 def match_occurrence(occurrence: DiscoveryJobOccurrence, profile: MatchProfile) -> DiscoveryMatch:
     title = _normalise(occurrence.job.title)
+    description = _normalise(occurrence.job.description)
     query_text = _normalise(" | ".join(occurrence.queries))
     title_skills: list[str] = []
+    description_skills: list[str] = []
     query_skills: list[str] = []
     for label, aliases in profile.skills:
         if any(_contains(title, alias) for alias in aliases):
             title_skills.append(label)
+        elif any(_contains(description, alias) for alias in aliases):
+            description_skills.append(label)
         elif any(_contains(query_text, alias) for alias in aliases):
             query_skills.append(label)
 
     matched_roles = tuple(term for term in profile.role_terms if _contains(title, term))
+    role_compatible = role_family_compatible(occurrence.job.title)
     generic_role = any(
         _contains(title, term)
         for term in ("developer", "engineer", "software", "web", "frontend", "front end", "architect", "designer")
     )
     title_points = min(66, len(title_skills) * 22)
+    description_points = min(24, len(description_skills) * 8)
     role_points = min(22, len(matched_roles) * 22)
     generic_points = 10 if generic_role else 0
     query_points = min(15, len(query_skills) * 5)
-    score = round(float(min(100, title_points + role_points + generic_points + query_points)), 1)
+    score = round(float(min(100, title_points + description_points + role_points + generic_points + query_points)), 1)
     if score >= 70:
         band = "STRONG"
     elif score >= 50:
@@ -110,21 +153,26 @@ def match_occurrence(occurrence: DiscoveryJobOccurrence, profile: MatchProfile) 
     evidence: list[str] = []
     if title_skills:
         evidence.append(f"title explicitly matches profile skills: {', '.join(title_skills)}")
+    if description_skills:
+        evidence.append(f"job description mentions profile skills: {', '.join(description_skills)}")
     if matched_roles:
         evidence.append(f"title aligns with profile roles: {', '.join(matched_roles)}")
     if query_skills:
         evidence.append(f"search provenance matches profile skills: {', '.join(query_skills)}")
     if not evidence:
         evidence.append("no explicit profile skill or role signal in the observed title/query")
+    if not role_compatible:
+        evidence.append("title is outside the configured technical role families")
     return DiscoveryMatch(
         job_id=occurrence.job.job_id,
         score=score,
         band=band,
-        matched_skills=tuple(title_skills + query_skills),
+        matched_skills=tuple(title_skills + description_skills + query_skills),
         matched_roles=matched_roles,
         query_signals=occurrence.queries,
         evidence=tuple(evidence),
-        basis="job card title plus search-query provenance; description and requirements were not observed",
+        basis="job card title, observed card description, and search-query provenance",
+        role_compatible=role_compatible,
     )
 
 

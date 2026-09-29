@@ -21,6 +21,10 @@ class DiscoveryJob:
     status: str
     applied: bool
     viewed: bool
+    # Texto descritivo observado no card de resultados. A página de busca não
+    # expõe o HTML completo da vaga, portanto este campo permanece
+    # explicitamente parcial até a inspeção da vaga aberta.
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -156,6 +160,7 @@ class DiscoveryMatch:
     query_signals: tuple[str, ...]
     evidence: tuple[str, ...]
     basis: str
+    role_compatible: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +172,7 @@ class DiscoveryMatch:
             "query_signals": list(self.query_signals),
             "evidence": list(self.evidence),
             "basis": self.basis,
+            "role_compatible": self.role_compatible,
         }
 
     @classmethod
@@ -189,6 +195,7 @@ class DiscoveryMatch:
             query_signals=tuple(value["query_signals"]),
             evidence=tuple(value["evidence"]),
             basis=value["basis"],
+            role_compatible=bool(value.get("role_compatible", True)),
         )
 
 
@@ -265,7 +272,7 @@ class DiscoveryMatrix:
                 match_counts[match.band] = match_counts.get(match.band, 0) + 1
             payload["matching"] = {
                 "profile": self.match_profile,
-                "basis": "job card title plus search-query provenance; description and requirements were not observed",
+                "basis": "job card title, observed card description, and search-query provenance",
                 "counts_by_band": match_counts,
                 "matches": [match.to_dict() for match in self.matches],
             }

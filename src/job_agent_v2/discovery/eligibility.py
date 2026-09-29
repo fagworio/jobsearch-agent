@@ -160,9 +160,10 @@ def assess_geography(job: DiscoveryJob) -> GeographyAssessment:
     """
 
     location = _normalise(f"{job.location} {job.work_type}")
+    description = _normalise(job.description)
     remote = job.remote or "remote" in location or "work from home" in location
 
-    exclusions = _matches(location, _EXCLUSION_TERMS)
+    exclusions = _matches(location, _EXCLUSION_TERMS) + _matches(description, _EXCLUSION_TERMS)
     if exclusions:
         return GeographyAssessment(
             GeoEligibility.INELIGIBLE,
@@ -172,14 +173,18 @@ def assess_geography(job: DiscoveryJob) -> GeographyAssessment:
         )
 
     brazil = _matches(location, _BRAZIL_TERMS) + _code_matches(location, _BRAZIL_CODES)
+    if not brazil:
+        brazil = _matches(description, _BRAZIL_TERMS)
     if brazil:
         return GeographyAssessment(GeoEligibility.ELIGIBLE, "brazil", "explicit Brazil location or scope", brazil)
 
     latam = _matches(location, _LATAM_TERMS) + _code_matches(location, _LATAM_CODES)
+    if not latam:
+        latam = _matches(description, _LATAM_TERMS)
     if latam:
         return GeographyAssessment(GeoEligibility.ELIGIBLE, "latam", "explicit LATAM location or scope", latam)
 
-    worldwide = _matches(location, _WORLDWIDE_TERMS)
+    worldwide = _matches(location, _WORLDWIDE_TERMS) + _matches(description, _WORLDWIDE_TERMS)
     if worldwide:
         return GeographyAssessment(GeoEligibility.ELIGIBLE, "worldwide", "explicit worldwide or international scope", worldwide)
 

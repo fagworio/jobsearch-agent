@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from job_agent_v2.discovery import DiscoveryMatrix, DiscoverySearchRun, GeoEligibility, GreenhouseDiscoveryAdapter, assess_geography, build_query_matrix, deduplicate_runs, load_match_profile, match_matrix, save_matrix
+from job_agent_v2.discovery import DiscoveryJob, DiscoveryMatrix, DiscoverySearchRun, GeoEligibility, GreenhouseDiscoveryAdapter, assess_geography, build_query_matrix, deduplicate_runs, load_match_profile, match_matrix, rank_shortlist, save_matrix
 from job_agent_v2.discovery.greenhouse import DiscoveryInspectionError
 
 
@@ -143,7 +143,7 @@ def test_greenhouse_filter_discovery_rejects_malformed_parameters():
 
 def test_search_matrix_is_stable_and_deduplicated():
     matrix = build_query_matrix()
-    assert len(matrix) == 22
+    assert len(matrix) == 25
     assert matrix[0].family == "primary"
     assert matrix[0].query == "wordpress developer"
     assert matrix[-1].family == "broader"
@@ -252,7 +252,7 @@ experience:
     assert match["job_id"] == "realchemistry:5431230008"
     assert match["matched_skills"] == ["Wordpress", "Php"]
     assert match["matched_roles"] == ["wordpress"]
-    assert "description and requirements were not observed" in match["basis"]
+    assert "observed card description" in match["basis"]
     assert payload["deduplicated_jobs"][0]["match"]["score"] == match["score"]
 
 
@@ -268,4 +268,75 @@ def test_match_does_not_invent_missing_skills(tmp_path):
     match = matched.to_dict()["matching"]["matches"][0]
     assert match["matched_skills"] == ["Wordpress"]
     assert match["matched_roles"] == []
-    assert match["basis"].startswith("job card title plus search-query provenance")
+    assert match["basis"].startswith("job card title, observed card description")
+
+
+def test_match_uses_observed_description_without_accepting_adjacent_role(tmp_path):
+    profile_path = tmp_path / "career_profile.yaml"
+    profile_path.write_text(
+        """
+skills:
+  wordpress: {tags: [wordpress]}
+  react: {tags: [react]}
+experience:
+  - role: Front-End Developer
+""",
+        encoding="utf-8",
+    )
+    adapter = GreenhouseDiscoveryAdapter()
+    technical = adapter.inspect({
+        **SNAPSHOT,
+        "jobs": [{
+            **SNAPSHOT["jobs"][0],
+            "title": "Frontend Developer",
+            "applied": False,
+            "status": "Posted",
+            "description": "Build React interfaces and custom WordPress integrations.",
+        }],
+    })
+    adjacent = adapter.inspect({
+        **SNAPSHOT,
+        "jobs": [{
+            **SNAPSHOT["jobs"][0],
+            "job_id": "example:2",
+            "title": "Project Manager",
+            "applied": False,
+            "status": "Posted",
+            "description": "Manage WordPress and React delivery across clients.",
+        }],
+    })
+    matrix = DiscoveryMatrix(
+        "greenhouse",
+        ("remote",),
+        (
+            DiscoverySearchRun("frontend", "frontend developer", technical),
+            DiscoverySearchRun("broader", "web developer", adjacent),
+        ),
+    )
+    matches = match_matrix(matrix, load_match_profile(profile_path))
+    by_id = {match.job_id: match for match in matches.matches}
+    assert "React" in by_id["realchemistry:5431230008"].matched_skills
+    assert by_id["realchemistry:5431230008"].role_compatible is True
+    assert by_id["example:2"].role_compatible is False
+    report = rank_shortlist(matches)
+    assert {entry.job_id: entry.selection for entry in report.entries}["example:2"] == "REJECTED"
+
+
+def test_geography_rejects_explicit_description_restriction():
+    job = DiscoveryJob(
+        provider="greenhouse",
+        job_id="restricted:1",
+        title="WordPress Developer",
+        company="Example",
+        href="https://my.greenhouse.io/jobs/example/1",
+        remote=True,
+        work_type="Remote",
+        location="Remote",
+        salary=None,
+        posted="Posted",
+        status="Posted",
+        applied=False,
+        viewed=False,
+        description="Remote, but must be based in the United States.",
+    )
+    assert assess_geography(job).status is GeoEligibility.INELIGIBLE

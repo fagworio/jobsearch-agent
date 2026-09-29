@@ -13,6 +13,7 @@ DEFAULT_SEARCH_FAMILIES: Mapping[str, tuple[str, ...]] = {
         "senior wordpress developer",
         "wordpress",
         "woocommerce developer",
+        "web developer",
     ),
     "frontend": (
         "frontend developer",
@@ -21,11 +22,13 @@ DEFAULT_SEARCH_FAMILIES: Mapping[str, tuple[str, ...]] = {
         "front end engineer",
         "web developer",
         "senior web developer",
+        "full stack web developer",
     ),
     "php": (
         "php developer",
         "php engineer",
         "wordpress php",
+        "php wordpress",
         "cms developer",
     ),
     "ecommerce": (
@@ -38,6 +41,7 @@ DEFAULT_SEARCH_FAMILIES: Mapping[str, tuple[str, ...]] = {
         "full stack developer",
         "web applications developer",
         "web engineer",
+        "web architect",
     ),
 }
 

@@ -12,6 +12,7 @@ export type DiscoveryJobSnapshot = {
   status: string;
   applied: boolean;
   viewed: boolean;
+  description: string;
 };
 
 export type MyGreenhouseResultsSnapshot = {
@@ -76,6 +77,16 @@ function isSalary(value: string): boolean {
   return /[$€£]|\b(?:USD|EUR|GBP)\b|\d[\d,.]*\s*[-–]\s*\d/i.test(value);
 }
 
+function cardDescription(card: HTMLAnchorElement, title: string, company: string, tags: string[], status: string): string {
+  // Cards also contain a short role description. Remove known metadata so
+  // matching does not mistake a location/status label for requirements.
+  let value = text(card);
+  for (const token of [title, company, ...tags, status]) {
+    if (token) value = value.replace(token, " ");
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function parseJob(card: HTMLAnchorElement): DiscoveryJobSnapshot | null {
   const titleElement = card.querySelector("h4[title], h4");
   const href = card.href;
@@ -107,6 +118,7 @@ function parseJob(card: HTMLAnchorElement): DiscoveryJobSnapshot | null {
     status,
     applied: /\bApplied\b/i.test(status),
     viewed: /\bViewed\b/i.test(status),
+    description: cardDescription(card, title, company, tags, status),
   };
 }
 

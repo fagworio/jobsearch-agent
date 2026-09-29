@@ -2,7 +2,7 @@
 
 from .greenhouse import GreenhouseDiscoveryAdapter
 from .eligibility import GeoEligibility, GeographyAssessment, assess_geography
-from .matching import MatchProfile, load_match_profile, match_matrix, match_occurrence
+from .matching import MatchProfile, load_match_profile, match_matrix, match_occurrence, role_family_compatible
 from .shortlist import ShortlistEntry, ShortlistReport, rank_shortlist, save_shortlist
 from .pipeline import PipelineItem, PipelineManifest, build_pipeline, load_pipeline, load_shortlist, save_pipeline
 from .batch import BatchReport, load_policy, plan_batch, save_batch
@@ -38,6 +38,7 @@ __all__ = [
     "load_match_profile",
     "match_matrix",
     "match_occurrence",
+    "role_family_compatible",
     "ShortlistEntry",
     "ShortlistReport",
     "rank_shortlist",

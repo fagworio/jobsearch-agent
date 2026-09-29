@@ -32,6 +32,7 @@ class ShortlistEntry:
     matched_roles: tuple[str, ...]
     queries: tuple[str, ...]
     justification: tuple[str, ...]
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class ShortlistEntry:
             "matched_roles": list(self.matched_roles),
             "queries": list(self.queries),
             "justification": list(self.justification),
+            "description": self.description,
         }
 
 
@@ -127,6 +129,11 @@ def rank_shortlist(
             fit_decision = "REJECTED"
             application_readiness = "UNSUPPORTED"
             reasons.append(f"match score {match.score:.1f} is below the minimum {min_match_score:.1f}")
+        elif not match.role_compatible:
+            selection = "REJECTED"
+            fit_decision = "REJECTED"
+            application_readiness = "UNSUPPORTED"
+            reasons.append("title is outside the configured technical role families")
         elif (
             geography.status.value in {"ELIGIBLE", "LIKELY_ELIGIBLE"}
             and match.score >= auto_approve_score
@@ -161,6 +168,7 @@ def rank_shortlist(
             matched_roles=match.matched_roles,
             queries=occurrence.queries,
             justification=tuple(dict.fromkeys(reasons)),
+            description=job.description,
         ))
 
     ordered = sorted(pending, key=lambda item: (-item.shortlist_score, -item.match_score, item.job_id))
@@ -185,6 +193,7 @@ def rank_shortlist(
             matched_roles=entry.matched_roles,
             queries=entry.queries,
             justification=entry.justification,
+            description=entry.description,
         )
         for index, entry in enumerate(ordered, 1)
     )
