@@ -102,13 +102,19 @@ async function inspectFieldOptions(payload: FillPayload): Promise<Record<string,
     return { field_id: payload.field_id, options: options.map((option) => option.label), option_values: options };
   }
   if (first.getAttribute("role") !== "combobox") throw new Error("field does not expose choices");
-  first.scrollIntoView({ block: "center", inline: "nearest" });
+  const trigger = first instanceof HTMLInputElement
+    ? first.closest('[class*="select__control"]') ?? first
+    : first;
+  trigger.scrollIntoView({ block: "center", inline: "nearest" });
   for (const type of ["mousedown", "mouseup", "click"] as const) {
-    first.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
+    trigger.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
   }
   await new Promise((resolve) => window.setTimeout(resolve, 100));
   const options = visibleChoiceOptions();
-  first.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  trigger.dispatchEvent(new Event("blur", { bubbles: true }));
+  document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+  await new Promise((resolve) => window.setTimeout(resolve, 50));
   if (!options.length) throw new Error("choice options are not visible");
   return { field_id: payload.field_id, options: options.map((option) => option.label), option_values: options };
 }
@@ -125,6 +131,8 @@ async function selectCombobox(control: HTMLInputElement, value: string): Promise
   // the transparent input alone only focuses it and leaves the menu closed.
   // It also relies on the complete pointer sequence; a click on the internal
   // indicator button alone does not transition the controlled component.
+  const normalize = (text: string): string => text.replace(/\s+/g, "").trim().toLowerCase();
+  if (normalize(String(readBackValue(control))) === normalize(value) || normalize(control.value) === normalize(value)) return;
   const selectControl = control.closest('[class*="select__control"]');
   if (selectControl instanceof HTMLElement) {
     selectControl.scrollIntoView({ block: "center", inline: "nearest" });
@@ -148,10 +156,14 @@ async function selectCombobox(control: HTMLInputElement, value: string): Promise
   // The control remains inside the Easy Apply dialog, but the options do not.
   // Search the document for the active visible option while keeping the
   // control lookup scoped to the active form root.
-  const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
-  const option = Array.from(document.querySelectorAll('[role="option"]'))
-    .filter((element) => isVisible(element))
-    .find((element) => normalize(element.textContent ?? "") === normalize(value));
+  const normalizeOption = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+  let option: HTMLElement | undefined;
+  for (let attempt = 0; attempt < 20 && !option; attempt += 1) {
+    option = Array.from(document.querySelectorAll('[role="option"]'))
+      .filter(isVisible)
+      .find((element) => normalizeOption(element.textContent ?? "") === normalizeOption(value)) as HTMLElement | undefined;
+    if (!option) await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
   if (!(option instanceof HTMLElement)) {
     const diagnostics = {
       field_id: control.id || control.name || "",

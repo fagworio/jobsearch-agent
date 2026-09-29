@@ -24,7 +24,7 @@ from .questions import canonical_fact_for
 from .questions.normalize import normalize_question
 
 #: Tipos em que um valor do profile pode ser usado sem julgamento.
-TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea", "combobox"})
+TRIVIAL_KINDS = frozenset({"text", "email", "tel", "url", "textarea", "combobox", "number"})
 
 
 def _norm(value: str) -> str:
@@ -83,6 +83,91 @@ def _option_value(field: Field, value: str) -> str | None:
         if len(numeric_matches) == 1:
             return numeric_matches[0]
     return None
+
+
+def _deterministic_answer(
+    field: Field,
+    facts: FactStore | None,
+    profile_index: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve only safe provider conventions with observable evidence.
+
+    These rules deliberately require real options for provider choice widgets;
+    a guessed label is never sent to the form.
+    """
+
+    prompt = _norm(field.prompt)
+    if prompt in {"school", "school*"}:
+        institution = (profile_index or {}).get("school") or (profile_index or {}).get("school*")
+        if not institution:
+            return None
+        exact = _option_value(field, institution) if field.options else None
+        if exact is not None:
+            return exact
+        other = [option for option in field.options if _norm(option) == "other"]
+        # The profile confirms the actual institution. ``Other`` is used only
+        # as the user's explicit fallback when that institution is absent from
+        # the provider list (including an unopened lazy combobox).
+        if not field.options or len(other) == 1 or not exact:
+            return other[0] if other else "Other"
+        return None
+
+    if prompt in {"degree", "degree*"}:
+        degree = (profile_index or {}).get("degree") or (profile_index or {}).get("degree*")
+        if not degree:
+            return None
+        return _option_value(field, degree) if field.options and _option_value(field, degree) is not None else degree
+
+    if "how did you hear about" in prompt or "how did you find out" in prompt:
+        if not field.options:
+            return None
+        normalized = [(option, _norm(option)) for option in field.options]
+        job_board = [option for option, value in normalized if "job board" in value]
+        if len(job_board) == 1:
+            return job_board[0]
+        greenhouse = [option for option, value in normalized if "greenhouse" in value or "mygreenhouse" in value]
+        if len(greenhouse) == 1:
+            return greenhouse[0]
+        return None
+
+    if "additional details" in prompt and any(token in prompt for token in ("job board", "employee referral", "other")):
+        if field.kind in {"text", "textarea"}:
+            return "MyGreenhouse"
+        return None
+
+    if "region where you currently live" in prompt or "current region" in prompt:
+        country = facts.get("identity.country") if facts is not None else None
+        if country is None or _norm(country.value) not in {"brazil", "brasil"} or not field.options:
+            return None
+        normalized = [(option, _norm(option)) for option in field.options]
+        regional = [
+            option for option, value in normalized
+            if "latin america" in value or value == "latam" or value == "brazil"
+        ]
+        return regional[0] if len(regional) == 1 else None
+
+    if prompt in {"location", "location*"}:
+        country = facts.get("identity.country") if facts is not None else None
+        if country is None or _norm(country.value) not in {"brazil", "brasil"}:
+            return None
+        if field.options:
+            matches = [option for option in field.options if "brazil" in _norm(option) or "brasil" in _norm(option)]
+            return matches[0] if len(matches) == 1 else None
+        return "Brazil"
+    return None
+
+
+def _provider_value(field: Field, value: str) -> str:
+    """Adapt a confirmed profile value to the provider's visible label."""
+
+    if field.kind == "combobox" and _norm(field.prompt) in {"country", "country*"} and not field.options:
+        if _norm(value) in {"brazil", "brasil"}:
+            return "Brazil+55"
+    if field.kind == "tel" and _norm(field.prompt) in {"phone", "mobile", "telephone"}:
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 13 and digits.startswith("55"):
+            return f"+55 {digits[2:4]} {digits[4:9]}-{digits[9:]}"
+    return value
 
 
 class AnswerLibrary:
@@ -183,6 +268,8 @@ def resolve(
         fact = facts.get(fact_id) if facts is not None and fact_id else None
         if fact is not None:
             value = _option_value(field, fact.value)
+            if value is not None:
+                value = _provider_value(field, value)
             if value is None and field.required:
                 add_missing(field, fact.fact_id)
                 continue
@@ -200,7 +287,14 @@ def resolve(
             resolved_from[field.key] = "approved_answer_library"
             continue
         if field.kind in TRIVIAL_KINDS and identity in profile_index:
-            value = _option_value(field, profile_index[identity])
+            if _norm(field.prompt) in {"school", "school*"}:
+                value = _deterministic_answer(field, facts, profile_index)
+            else:
+                value = _option_value(field, profile_index[identity])
+                if value is None:
+                    value = _deterministic_answer(field, facts, profile_index)
+            if value is not None:
+                value = _provider_value(field, value)
             if value is None and field.required:
                 add_missing(field)
                 continue
@@ -214,6 +308,11 @@ def resolve(
                 continue
             answers[field.key] = value if value is not None else rules_index[identity]
             resolved_from[field.key] = "rule"
+            continue
+        deterministic = _deterministic_answer(field, facts, profile_index)
+        if deterministic is not None:
+            answers[field.key] = deterministic
+            resolved_from[field.key] = "deterministic_rule"
             continue
         if field.required:
             add_missing(field)

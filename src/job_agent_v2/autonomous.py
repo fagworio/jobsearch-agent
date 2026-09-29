@@ -39,6 +39,7 @@ from .discovery import (
 )
 from .discovery.greenhouse import DiscoveryInspectionError
 from .facts import FactStore
+from .version import ENGINE_VERSION
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,11 @@ class AutonomousRunReport:
     search_errors: tuple[str, ...] = ()
     auto_apply: AutoApplyReport | None = None
     reason: str = ""
+    campaign_path: str = ""
+    submitted_this_run: int = 0
+    submitted_total: int = 0
+    remaining_target: int = 0
+    submit_attempts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -83,11 +89,17 @@ class AutonomousRunReport:
             "approved": self.approved,
             "approved_unapplied": self.approved_unapplied,
             "submitted": self.submitted,
+            "submitted_this_run": self.submitted_this_run,
+            "submitted_total": self.submitted_total,
+            "remaining_target": self.remaining_target,
+            "submit_attempts": self.submit_attempts,
             "target_reached": self.target_reached,
             "counts": dict(self.counts),
             "pending_questions_count": self.pending_questions_count,
             "search_errors": list(self.search_errors),
         }
+        if self.campaign_path:
+            payload["artifacts"]["campaign"] = self.campaign_path
         if self.auto_apply is not None:
             payload["auto_apply"] = self.auto_apply.to_dict()
         return payload
@@ -101,6 +113,95 @@ def _write_state(path: str | Path, payload: dict[str, Any]) -> Path:
     temporary.replace(destination)
     destination.chmod(0o600)
     return destination
+
+
+def _load_campaign(
+    path: str | Path,
+    *,
+    target_total: int,
+    state_path: str | Path,
+    marker_store: str | Path,
+) -> dict[str, Any]:
+    """Load progress without counting unrelated historical submissions.
+
+    The first campaign is bootstrapped from the previous autonomous report,
+    not from every marker in ``data/v2-submissions``. This preserves the
+    meaning of a campaign target when the account already contains older
+    applications.
+    """
+
+    destination = Path(path)
+    if destination.exists():
+        try:
+            payload = json.loads(destination.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                ids = payload.get("submitted_job_ids")
+                campaign = {
+                    "campaign_id": str(payload.get("campaign_id") or uuid4().hex),
+                    "target_total": int(payload.get("target_total", target_total)),
+                    "submitted_job_ids": sorted({str(item) for item in ids or [] if str(item)}),
+                    "submit_attempts_total": int(payload.get("submit_attempts_total", 0)),
+                    "started_at": str(payload.get("started_at") or datetime.now(timezone.utc).isoformat()),
+                }
+                return _reconcile_recent_markers(campaign, marker_store)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+    submitted_ids: set[str] = set()
+    previous = Path(state_path)
+    if previous.exists():
+        try:
+            payload = json.loads(previous.read_text(encoding="utf-8"))
+            items = ((payload.get("auto_apply") or {}).get("items") or [])
+            submitted_ids.update(
+                str(item.get("job_id"))
+                for item in items
+                if isinstance(item, dict) and item.get("state") == "SUBMITTED" and item.get("job_id")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    return {
+        "campaign_id": uuid4().hex,
+        "target_total": target_total,
+        "submitted_job_ids": sorted(submitted_ids),
+        "submit_attempts_total": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _reconcile_recent_markers(campaign: dict[str, Any], marker_store: str | Path) -> dict[str, Any]:
+    """Recover confirmed writes if the process stopped before campaign save."""
+
+    started_at = str(campaign.get("started_at") or "")
+    ids = {str(item) for item in campaign.get("submitted_job_ids", []) if str(item)}
+    if not started_at:
+        return campaign
+    try:
+        marker_paths = Path(marker_store).glob("*.json")
+        for path in marker_paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("outcome") != "SUBMITTED":
+                continue
+            if str(payload.get("write_possible_at") or "") < started_at:
+                continue
+            job_id = str(payload.get("job_id") or "")
+            if job_id:
+                ids.add(job_id)
+    except OSError:
+        return campaign
+    campaign["submitted_job_ids"] = sorted(ids)
+    return campaign
+
+
+def _save_campaign(path: str | Path, campaign: dict[str, Any]) -> Path:
+    payload = dict(campaign)
+    payload["submitted_job_ids"] = sorted({str(item) for item in payload.get("submitted_job_ids", []) if str(item)})
+    payload["submitted_total"] = len(payload["submitted_job_ids"])
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return _write_state(path, payload)
 
 
 def _load_form_profile(path: str | Path) -> dict[str, str]:
@@ -129,6 +230,23 @@ def _load_form_profile(path: str | Path) -> dict[str, str]:
         if isinstance(value, str) and value.strip():
             for label in labels:
                 values[label] = value
+    education = payload.get("education")
+    if isinstance(education, list) and education and isinstance(education[0], dict):
+        first_education = education[0]
+        institution = first_education.get("institution")
+        credential = first_education.get("credential")
+        if isinstance(institution, str) and institution.strip():
+            values["School"] = institution
+            values["School*"] = institution
+        if isinstance(credential, dict):
+            credential = credential.get("en-US") or credential.get("pt-BR")
+        if isinstance(credential, str) and credential.strip():
+            values["Degree"] = credential
+            values["Degree*"] = credential
+        for key, label in (("start_date", "Start date year"), ("end_date", "End date year")):
+            value = first_education.get(key)
+            if isinstance(value, str) and value[:4].isdigit():
+                values[label] = value[:4]
     return values
 
 
@@ -202,8 +320,10 @@ def run_autonomous(
     resume_store: str = "data/v2-resumes",
     marker_store: str = "data/v2-submissions",
     report_store: str | Path = "data/v2-auto/auto-apply.json",
+    campaign_path: str | Path | None = None,
     max_jobs: int = 5,
     max_submits: int = 3,
+    max_submit_attempts: int | None = None,
     max_failures: int = 2,
     human_wait_ms: int = 0,
 ) -> AutonomousRunReport:
@@ -236,6 +356,22 @@ def run_autonomous(
     configuration_error = execution_enabled and (answers is None or facts is None)
     if configuration_error:
         execution_enabled = False
+    effective_campaign_path = campaign_path or Path(state_path).with_name("campaign.json")
+    campaign = _load_campaign(
+        effective_campaign_path,
+        target_total=target_submissions,
+        state_path=state_path,
+        marker_store=marker_store,
+    ) if execution_enabled else {
+        "campaign_id": "",
+        "target_total": target_submissions,
+        "submitted_job_ids": [],
+        "submit_attempts_total": 0,
+    }
+    target_total = int(campaign.get("target_total", target_submissions))
+    submitted_ids = set(str(item) for item in campaign.get("submitted_job_ids", []))
+    submitted_before = len(submitted_ids)
+    remaining_target = max(target_total - submitted_before, 0)
     # In execution mode we cannot stop when the first target-sized shortlist is
     # found: a blocker must be replaceable by a later search result.
     search_target = max_jobs_inspected + 1 if execution_enabled else target_submissions
@@ -266,8 +402,10 @@ def run_autonomous(
             # operator to prepare the tab manually.
             initial = adapter.inspect(browser.discover_query("frontend", ["remote"]))
     work_type = initial.work_type or ("remote",)
+    attempt_budget = max_submit_attempts if max_submit_attempts is not None else max_submits
+    success_budget = min(max_submits, remaining_target)
     for item in build_query_matrix():
-        if stop_unknown or jobs_processed >= max_jobs or submit_attempts >= max_submits:
+        if stop_unknown or jobs_processed >= max_jobs or submit_attempts >= attempt_budget or submitted >= success_budget:
             break
         if not cursor.should_continue(budget):
             break
@@ -293,11 +431,16 @@ def run_autonomous(
                 ready_jobs=ready_count,
             )
             if execution_enabled:
-                candidate_manifest = build_pipeline(shortlist.to_dict(), submission_store=marker_store)
+                candidate_manifest = build_pipeline(
+                    shortlist.to_dict(),
+                    submission_store=marker_store,
+                    current_engine_version=ENGINE_VERSION,
+                )
                 candidates = tuple(item for item in candidate_manifest.items if item.job_id not in processed_ids)
                 batch_size = min(max_jobs - jobs_processed, len(candidates))
-                attempts_left = max_submits - submit_attempts
-                if batch_size > 0 and attempts_left > 0:
+                attempts_left = attempt_budget - submit_attempts
+                successes_left = success_budget - submitted
+                if batch_size > 0 and attempts_left > 0 and successes_left > 0:
                     batch_manifest = type(candidate_manifest)(candidate_manifest.source, candidates[:batch_size])
                     batch_report = run_auto_apply(
                         batch_manifest,
@@ -310,20 +453,27 @@ def run_autonomous(
                         marker_store=marker_store,
                         report_store=report_store,
                         max_jobs=batch_size,
-                        max_submits=attempts_left,
+                        max_submits=successes_left,
+                        max_submit_attempts=attempts_left,
                         max_failures=max_failures,
                         human_wait_ms=human_wait_ms,
                     )
                     applied_items.extend(batch_report.items)
                     processed_ids.update(item.job_id for item in batch_report.items)
                     jobs_processed += len(batch_report.items)
-                    submit_attempts += sum(
-                        int((item.submit or {}).get("submission_writes", 0))
-                        for item in batch_report.items
-                    )
-                    submitted += sum(1 for item in batch_report.items if item.state == "SUBMITTED")
+                    submit_attempts += batch_report.submit_attempts
+                    newly_submitted = [item.job_id for item in batch_report.items if item.state == "SUBMITTED"]
+                    submitted += len(newly_submitted)
+                    submitted_ids.update(newly_submitted)
                     stop_unknown = any(item.state == "SUBMIT_UNKNOWN" for item in batch_report.items)
-                    if submitted >= target_submissions:
+                    if execution_enabled:
+                        campaign["submitted_job_ids"] = sorted(submitted_ids)
+                        campaign["submit_attempts_total"] = int(campaign.get("submit_attempts_total", 0)) + sum(
+                            int((item.submit or {}).get("submission_writes", 0))
+                            for item in batch_report.items
+                        )
+                        _save_campaign(effective_campaign_path, campaign)
+                    if submitted >= remaining_target:
                         break
         except Exception as exc:  # noqa: BLE001 - uma consulta não bloqueia o lote
             errors.append(f"{item.query}: {exc}")
@@ -339,10 +489,17 @@ def run_autonomous(
     saved_matrix = save_matrix(matched, matrix_path)
     shortlist = rank_shortlist(matched, source=str(saved_matrix))
     saved_shortlist = save_shortlist(shortlist, shortlist_path)
-    manifest = build_pipeline(shortlist.to_dict(), submission_store=marker_store)
+    manifest = build_pipeline(
+        shortlist.to_dict(),
+        submission_store=marker_store,
+        current_engine_version=ENGINE_VERSION,
+    )
     saved_pipeline = save_pipeline(manifest, pipeline_path)
-    approved = len(manifest.items)
     approved_unapplied = sum(1 for item in shortlist.entries if item.selection == "APPROVED" and not item.applied)
+    # ``approved`` is a shortlist metric, not the post-marker pipeline size.
+    # An old SUBMIT_FAILED marker must not make an approved job disappear from
+    # the operational report while it is being retried.
+    approved = approved_unapplied
     counts: dict[str, int] = {}
     for item in applied_items:
         counts[item.state] = counts.get(item.state, 0) + 1
@@ -356,10 +513,12 @@ def run_autonomous(
             max_failures,
             1,
             tuple(applied_items),
+            submit_attempts,
         )
         _write_report(auto_report, report_store)
-        state = "COMPLETED" if submitted >= target_submissions else ("SUBMIT_UNKNOWN" if stop_unknown else "TARGET_NOT_REACHED")
-        reason = "" if state == "COMPLETED" else "search or application budgets exhausted before target_submissions"
+        submitted_total = len(submitted_ids)
+        state = "COMPLETED" if submitted_total >= target_total else ("SUBMIT_UNKNOWN" if stop_unknown else "TARGET_NOT_REACHED")
+        reason = "" if state == "COMPLETED" else "search or application budgets exhausted before campaign target"
     elif mode == "auto-apply" and not policy_allows_execution:
         state = "POLICY_BLOCKED"
         reason = "autonomy and Greenhouse provider policies must both allow search, fill, and submit"
@@ -383,15 +542,20 @@ def run_autonomous(
         jobs_discovered=matched.raw_job_count,
         jobs_unique=len(matched.unique_jobs),
         approved=approved,
-        target_submissions=target_submissions,
+        target_submissions=target_total,
         approved_unapplied=approved_unapplied,
         submitted=submitted,
-        target_reached=submitted >= target_submissions,
+        target_reached=(len(submitted_ids) >= target_total) if execution_enabled else submitted >= target_total,
         counts=counts,
         pending_questions_count=(len(auto_report.to_dict().get("pending_questions", [])) if auto_report else 0),
         search_errors=tuple(errors),
         auto_apply=auto_report,
         reason=reason,
+        campaign_path=str(effective_campaign_path) if execution_enabled else "",
+        submitted_this_run=submitted,
+        submitted_total=len(submitted_ids) if execution_enabled else submitted,
+        remaining_target=max(target_total - len(submitted_ids), 0) if execution_enabled else max(target_total - submitted, 0),
+        submit_attempts=submit_attempts,
     )
     _write_state(state_path, {"run_id": run_id, "started_at": datetime.now(timezone.utc).isoformat(), **report.to_dict()})
     return report

@@ -92,6 +92,26 @@ def test_pipeline_excludes_jobs_with_submission_markers(tmp_path):
     assert manifest.items == ()
 
 
+def test_pipeline_retries_old_submit_failed_when_engine_changes(tmp_path):
+    report = rank_shortlist(_matrix())
+    url = next(entry.url for entry in report.entries if entry.job_id == "br:1")
+    marker = tmp_path / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.json"
+    marker.write_text(json.dumps({"outcome": "SUBMIT_FAILED", "engine_version": "v1"}), encoding="utf-8")
+    manifest = build_pipeline(report.to_dict(), submission_store=tmp_path, current_engine_version="v2-ready-001")
+    assert [item.job_id for item in manifest.items] == ["br:1"]
+    assert manifest.items[0].retry_failed is True
+
+
+def test_pipeline_never_retries_submitted_or_unknown(tmp_path):
+    report = rank_shortlist(_matrix())
+    url = next(entry.url for entry in report.entries if entry.job_id == "br:1")
+    marker = tmp_path / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.json"
+    for outcome in ("SUBMITTED", "SUBMIT_UNKNOWN"):
+        marker.write_text(json.dumps({"outcome": outcome}), encoding="utf-8")
+        manifest = build_pipeline(report.to_dict(), submission_store=tmp_path, current_engine_version="v2-ready-001")
+        assert manifest.items == ()
+
+
 def test_partial_fit_in_eligible_latam_is_approved_for_readiness_evaluation():
     job = _job("latam:partial", "Full Stack Web Engineer", "Bogota, CO")
     results = DiscoveryResults("greenhouse", "search", "document", "https://my.greenhouse.io/jobs/search", "MyGreenhouse", True, "web engineer", ("remote",), (job,))

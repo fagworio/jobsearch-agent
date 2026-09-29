@@ -130,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     auto_parser.add_argument("--policy", default="profile/application_policy.yaml", help="política e budgets do lote")
     auto_parser.add_argument("--max-jobs", type=int, default=None)
     auto_parser.add_argument("--max-submits", type=int, default=None)
+    auto_parser.add_argument("--max-submit-attempts", type=int, default=None)
     auto_parser.add_argument("--max-failures", type=int, default=None)
     auto_parser.add_argument("--parallelism", type=int, default=None)
     auto_parser.add_argument("--human-wait", type=int, default=10 * 60 * 1000, help="ms para resolver desafio humano")
@@ -142,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--shortlist", default="data/v2-agent/shortlist.json")
     run_parser.add_argument("--pipeline", default="data/v2-agent/pipeline.json")
     run_parser.add_argument("--state", default="data/v2-agent/state.json")
+    run_parser.add_argument("--campaign", default="data/v2-agent/campaign.json", help="progresso persistente da campanha")
     run_parser.add_argument("--target-submissions", type=int, default=3)
     run_parser.add_argument("--target-ready-jobs", dest="target_submissions", type=int, help=argparse.SUPPRESS)
     run_parser.add_argument("--max-queries", type=int, default=20)
@@ -157,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--report", default="data/v2-auto/auto-apply.json")
     run_parser.add_argument("--max-jobs", type=int, default=5)
     run_parser.add_argument("--max-submits", type=int, default=3)
+    run_parser.add_argument("--max-submit-attempts", type=int, default=6, help="limite de tentativas de submit; falhas não consomem o alvo")
     run_parser.add_argument("--max-failures", type=int, default=2)
     run_parser.add_argument("--human-wait", type=int, default=0)
     resume_parser = sub.add_parser("prepare-resume", help="gera e valida um currículo factual por vaga")
@@ -388,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             report_store=args.report,
             max_jobs=limits["max_jobs"],
             max_submits=limits["max_submits"],
+            max_submit_attempts=args.max_submit_attempts,
             max_failures=limits["max_failures"],
             parallelism=limits["parallelism"],
             human_wait_ms=args.human_wait,
@@ -424,8 +428,10 @@ def main(argv: list[str] | None = None) -> int:
             resume_store=args.resume_store,
             marker_store=args.store,
             report_store=args.report,
+            campaign_path=args.campaign,
             max_jobs=args.max_jobs,
             max_submits=args.max_submits,
+            max_submit_attempts=args.max_submit_attempts,
             max_failures=args.max_failures,
             human_wait_ms=args.human_wait,
         )
@@ -434,7 +440,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.interactive and report.auto_apply is not None:
             pending = report.auto_apply.to_dict().get("pending_questions", [])
             if pending:
-                collected = collect_pending_questions(pending, library=run_answers, facts=run_facts)
+                collected = collect_pending_questions(
+                    pending,
+                    library=run_answers,
+                    facts=run_facts,
+                    save_fn=lambda: (run_answers.save(args.answers), run_facts.save(args.facts)),
+                )
                 run_answers.save(args.answers)
                 run_facts.save(args.facts)
                 resumed = run_autonomous(
@@ -456,8 +467,10 @@ def main(argv: list[str] | None = None) -> int:
                     resume_store=args.resume_store,
                     marker_store=args.store,
                     report_store=args.report,
+                    campaign_path=args.campaign,
                     max_jobs=args.max_jobs,
                     max_submits=args.max_submits,
+                    max_submit_attempts=args.max_submit_attempts,
                     max_failures=args.max_failures,
                     human_wait_ms=args.human_wait,
                 )

@@ -18,6 +18,7 @@ class PipelineItem:
     company: str
     shortlist_score: float
     description: str = ""
+    retry_failed: bool = False
 
     def command_payload(self, action: str) -> dict[str, Any]:
         if action not in {"apply", "fill", "submit"}:
@@ -30,6 +31,7 @@ class PipelineItem:
             "company": self.company,
             "shortlist_score": self.shortlist_score,
             "description": self.description,
+            "retry_failed": self.retry_failed,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +42,7 @@ class PipelineItem:
             "title": self.title,
             "company": self.company,
             "shortlist_score": self.shortlist_score,
+            "retry_failed": self.retry_failed,
             "commands": {action: self.command_payload(action) for action in ("apply", "fill", "submit")},
         }
 
@@ -58,28 +61,45 @@ class PipelineManifest:
         }
 
 
-def _submission_was_processed(url: str, store: str | Path) -> bool:
-    """Retorna true para qualquer tentativa que exige reconciliação explícita."""
+def _submission_was_processed(
+    url: str,
+    store: str | Path,
+    *,
+    current_engine_version: str | None = None,
+) -> tuple[bool, bool]:
+    """Retorna ``(bloqueado, retry_failed)`` para o marcador da vaga.
+
+    Marcadores antigos de ``SUBMIT_FAILED`` podem ser reavaliados quando um
+    motor novo está rodando. ``SUBMITTED`` e ``SUBMIT_UNKNOWN`` permanecem
+    bloqueios permanentes até reconciliação explícita.
+    """
     key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     marker = Path(store) / f"{key}.json"
     if not marker.exists():
-        return False
+        return False, False
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         # Um marcador ilegível é fail-closed: não reencaminhar a vaga.
-        return True
-    return isinstance(payload, dict) and payload.get("outcome") in {
-        "SUBMITTED",
-        "SUBMIT_FAILED",
-        "SUBMIT_UNKNOWN",
-    }
+        return True, False
+    if not isinstance(payload, dict):
+        return True, False
+    outcome = payload.get("outcome")
+    if outcome in {"SUBMITTED", "SUBMIT_UNKNOWN"}:
+        return True, False
+    if outcome == "SUBMIT_FAILED":
+        marker_engine = payload.get("engine_version")
+        if current_engine_version and marker_engine != current_engine_version:
+            return False, True
+        return True, False
+    return False, False
 
 
 def build_pipeline(
     shortlist_payload: dict[str, Any],
     *,
     submission_store: str | Path | None = None,
+    current_engine_version: str | None = None,
 ) -> PipelineManifest:
     if shortlist_payload.get("provider") != "greenhouse":
         raise ValueError("shortlist provider must be greenhouse")
@@ -100,8 +120,15 @@ def build_pipeline(
             raise ValueError(f"shortlist entries[{index}] has invalid ranking fields")
         if not all(isinstance(entry.get(key), str) for key in ("title", "company")):
             raise ValueError(f"shortlist entries[{index}] has invalid display fields")
-        if submission_store is not None and _submission_was_processed(entry["url"], submission_store):
-            continue
+        retry_failed = False
+        if submission_store is not None:
+            blocked, retry_failed = _submission_was_processed(
+                entry["url"],
+                submission_store,
+                current_engine_version=current_engine_version,
+            )
+            if blocked:
+                continue
         items.append(PipelineItem(
             rank=entry["rank"],
             job_id=entry["job_id"],
@@ -110,6 +137,7 @@ def build_pipeline(
             company=entry["company"],
             shortlist_score=float(entry["shortlist_score"]),
             description=str(entry.get("description") or ""),
+            retry_failed=retry_failed,
         ))
     return PipelineManifest(str(shortlist_payload.get("source") or ""), tuple(items))
 
@@ -141,6 +169,7 @@ def load_pipeline(path: str | Path) -> PipelineManifest:
                 company=str(raw["company"]),
                 shortlist_score=float(raw["shortlist_score"]),
                 description=str(raw.get("description") or ""),
+                retry_failed=bool(raw.get("retry_failed", False)),
             ))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"pipeline items[{index}] is invalid") from exc

@@ -39,6 +39,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "country where you currently work",
         "country of residence",
         "current country",
+        "what country are you located in please write out the full name no abbreviations",
     ),
     "identity.location": (
         "current location",

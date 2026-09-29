@@ -165,3 +165,60 @@ def test_policy_loop_replaces_needs_input_with_next_candidate(monkeypatch, tmp_p
     assert report.state == "COMPLETED"
     assert report.submitted == 1
     assert calls == ["example:wordpress developer", "example:wordpress engineer"]
+
+
+def test_campaign_counts_previous_success_and_keeps_submit_target_total(monkeypatch, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump({
+        "identity": {"name": "Candidate", "email": "candidate@example.test"},
+        "experience": [{"id": "exp-1", "company": "Example", "role": "Frontend Engineer", "facts": []}],
+        "skills": {"frontend": {"tags": ["frontend"]}},
+    }), encoding="utf-8")
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(yaml.safe_dump({
+        "autonomy": {key: "auto" for key in (
+            "search", "analyze", "generate_resume", "answer_known_questions", "fill_forms", "submit",
+        )},
+        "providers": {"greenhouse": {"fill_forms": "auto", "submit": "auto"}},
+    }), encoding="utf-8")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({
+        "auto_apply": {"items": [{"job_id": "previous:1", "state": "SUBMITTED"}]},
+    }), encoding="utf-8")
+    campaign = tmp_path / "campaign.json"
+    calls = []
+
+    def fake_apply(manifest, **_kwargs):
+        item = manifest.items[0]
+        calls.append(item.job_id)
+        return AutoApplyReport(
+            manifest.source, "auto-apply", 1, 1, 2, 1,
+            (AutoApplyItem(item.job_id, item.title, item.company, item.url, "SUBMITTED", submit={"submission_writes": 1}),),
+            submit_attempts=1,
+        )
+
+    monkeypatch.setattr("job_agent_v2.autonomous.NativeMessagingClient", FakeDiscoveryBrowser)
+    monkeypatch.setattr("job_agent_v2.autonomous.run_auto_apply", fake_apply)
+    report = run_autonomous(
+        profile_path=str(profile),
+        policy_path=str(policy),
+        state_path=state,
+        campaign_path=campaign,
+        target_submissions=2,
+        max_queries=1,
+        max_jobs_inspected=10,
+        max_pages=1,
+        max_jobs=1,
+        max_submits=1,
+        max_submit_attempts=1,
+        answers=object(),
+        facts=object(),
+    )
+
+    payload = json.loads(campaign.read_text(encoding="utf-8"))
+    assert report.target_reached is True
+    assert report.submitted == 1
+    assert report.submitted_total == 2
+    assert payload["submitted_total"] == 2
+    assert len(payload["submitted_job_ids"]) == 2
+    assert calls

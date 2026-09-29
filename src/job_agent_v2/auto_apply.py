@@ -61,6 +61,7 @@ class AutoApplyReport:
     max_failures: int
     parallelism: int
     items: tuple[AutoApplyItem, ...]
+    submit_attempts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         counts: dict[str, int] = {}
@@ -105,6 +106,7 @@ class AutoApplyReport:
                 "max_failures": self.max_failures,
                 "parallelism": self.parallelism,
             },
+            "submit_attempts": self.submit_attempts,
             "counts": counts,
             "pending_facts": sorted(pending_facts),
             "pending_questions_count": len(pending_questions),
@@ -159,6 +161,7 @@ def run_auto_apply(
     report_store: str | Path = "data/v2-auto/auto-apply.json",
     max_jobs: int = 5,
     max_submits: int = 3,
+    max_submit_attempts: int | None = None,
     max_failures: int = 2,
     parallelism: int = 1,
     human_wait_ms: int = 10 * 60 * 1000,
@@ -176,15 +179,22 @@ def run_auto_apply(
         raise ValueError("resume or resume_profile is required for auto-apply")
 
     selected = _approved_items(manifest, max_jobs)
+    attempt_limit = max_submit_attempts if max_submit_attempts is not None else max_submits
+    if attempt_limit < 0:
+        raise ValueError("max_submit_attempts must be non-negative")
     results: list[AutoApplyItem] = []
-    submits = 0
+    submit_attempts = 0
+    successful_submits = 0
     failures = 0
     halted = False
     for item in selected:
         if halted:
             results.append(AutoApplyItem(item.job_id, item.title, item.company, item.url, "BATCH_HALTED", "previous item produced SUBMIT_UNKNOWN"))
             continue
-        if submits >= max_submits:
+        if submit_attempts >= attempt_limit:
+            results.append(AutoApplyItem(item.job_id, item.title, item.company, item.url, "LIMIT_REACHED", "max_submit_attempts reached"))
+            continue
+        if successful_submits >= max_submits:
             results.append(AutoApplyItem(item.job_id, item.title, item.company, item.url, "LIMIT_REACHED", "max_submits reached"))
             continue
         resume_path = resume
@@ -244,9 +254,8 @@ def run_auto_apply(
                 provider="greenhouse",
                 canonical_job_id=item.job_id,
                 resume_identity=str(resume_build.get("identity") or ""),
+                retry_failed=item.retry_failed,
             )
-            if report.submission_writes:
-                submits += 1
             state = report.state.value
             if report.reason == "missing_answer":
                 state = "NEEDS_INPUT"
@@ -269,6 +278,9 @@ def run_auto_apply(
                 str(resume_build.get("identity") or ""),
                 tuple(item.to_dict() for item in report.missing_questions),
             ))
+            submit_attempts += int(report.submission_writes)
+            if state == "SUBMITTED":
+                successful_submits += 1
             if state == "SUBMIT_UNKNOWN":
                 halted = True
             elif _is_hard_failure(state):
@@ -288,7 +300,16 @@ def run_auto_apply(
             if failures >= max_failures:
                 halted = True
 
-    report = AutoApplyReport(manifest.source, "auto-apply", max_jobs, max_submits, max_failures, parallelism, tuple(results))
+    report = AutoApplyReport(
+        manifest.source,
+        "auto-apply",
+        max_jobs,
+        max_submits,
+        max_failures,
+        parallelism,
+        tuple(results),
+        submit_attempts,
+    )
     _write_report(report, report_store)
     return report
 

@@ -14,6 +14,7 @@ from enum import Enum
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 
@@ -27,8 +28,16 @@ from .confirmation import ConfirmationState, classify_browser_result
 from .facts import FactStore
 from .fill import _action_for, _snapshot_field_value
 from .models import Form, MissingQuestion, State
+from .version import ENGINE_VERSION
 
 POST_SUBMIT_SETTLE_MS = 20_000
+
+
+def _values_match(actual: str, expected: str) -> bool:
+    """Compare provider read-back labels without treating whitespace as data."""
+
+    compact = lambda value: re.sub(r"\s+", "", str(value or "")).casefold()
+    return compact(actual) == compact(expected)
 
 
 class SubmitState(str, Enum):
@@ -162,7 +171,12 @@ def _hydrate_choice_options(
             continue
         field = dict(raw)
         field_type = str(field.get("type") or "")
-        if field_type in {"select", "combobox", "radio", "checkbox_group"} and not field.get("options"):
+        # React Select menus are lazy, virtualized and rendered in a portal.
+        # Opening them during a full-form pass can leave a stale provider
+        # dropdown active and invalidate subsequent field identities. Known
+        # answers can still be selected by the typed fill path; unknown
+        # comboboxes remain NEEDS_INPUT until a real option is observed.
+        if field_type in {"select", "radio", "checkbox_group"} and not field.get("options"):
             try:
                 result = browser.inspect_field_options(str(field.get("id") or ""), tab_id=tab_id)
                 options = result.get("options")
@@ -300,7 +314,7 @@ def submit(
                 # important for provider widgets such as React Select: the
                 # browser-native interaction may be complete even when the
                 # content-script mutation path cannot reproduce it.
-                if _snapshot_field_value(uploaded, field.key) == value:
+                if _values_match(_snapshot_field_value(uploaded, field.key), value):
                     verified += 1
                     continue
                 fill_payload = {
@@ -309,7 +323,7 @@ def submit(
                     "value": value,
                 }
                 observed = browser.fill_form(fill_payload, tab_id=tab_id) if tab_id is not None else browser.fill_form(fill_payload)
-                if _snapshot_field_value(observed, field.key) != value:
+                if not _values_match(_snapshot_field_value(observed, field.key), value):
                     return SubmitReport(
                         state=SubmitState.NO_WRITE,
                         reason=f"FIELD_MISMATCH: {field.key}",
@@ -326,7 +340,10 @@ def submit(
 
             read_back = browser.read_form(tab_id=tab_id) if tab_id is not None else browser.read_form()
             for field in answer_form.fields:
-                if field.key in resolution.answers and _snapshot_field_value(read_back, field.key) != resolution.answers[field.key]:
+                if field.key in resolution.answers and not _values_match(
+                    _snapshot_field_value(read_back, field.key),
+                    resolution.answers[field.key],
+                ):
                     return SubmitReport(
                         state=SubmitState.NO_WRITE,
                         reason=f"FIELD_MISMATCH: {field.key}",
@@ -391,6 +408,8 @@ def submit(
                 "verified": verified,
                 "answers_fingerprint": answers_fp,
                 "job_id": canonical_job_id,
+                "engine_version": ENGINE_VERSION,
+                "form_fingerprint": form_fp,
                 "write_possible_at": write_possible_at,
                 "outcome": "",
                 "observation_complete": False,

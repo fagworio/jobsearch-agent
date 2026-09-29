@@ -34,6 +34,7 @@ def collect_pending_questions(
     facts: FactStore,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
+    save_fn: Callable[[], object] | None = None,
 ) -> int:
     """Pergunta cada blocker único e grava somente respostas explícitas.
 
@@ -75,6 +76,8 @@ def collect_pending_questions(
                 facts.remember(fact_id, value, source="user")
             else:
                 library.remember(question, value)
+            if save_fn is not None:
+                save_fn()
             collected += 1
             break
     return collected

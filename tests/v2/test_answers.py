@@ -79,3 +79,40 @@ def test_year_fact_maps_to_one_numeric_range_option():
     form = Form((Field("q1", "How many years of experience with WordPress?", options=("0-5 years", "10+ years"), required=True, kind="select"),))
     result = resolve(form, facts=facts)
     assert result.answers == {"q1": "10+ years"}
+
+
+def test_deterministic_source_uses_real_job_board_option():
+    form = Form((Field("q1", "How did you hear about this opportunity?", options=("Job Board", "Employee Referral"), required=True, kind="combobox"),))
+    result = resolve(form)
+    assert result.answers == {"q1": "Job Board"}
+    assert result.resolved_from == {"q1": "deterministic_rule"}
+
+
+def test_deterministic_region_requires_real_latam_option():
+    facts = FactStore({"identity.country": {"value": "Brazil", "approved": True, "source": "user"}})
+    form = Form((Field("q1", "Please select the region where you currently live", options=("Latin America", "Europe"), required=True, kind="combobox"),))
+    result = resolve(form, facts=facts)
+    assert result.answers == {"q1": "Latin America"}
+
+
+def test_school_falls_back_to_other_and_degree_uses_profile_fact():
+    profile = {"School*": "Faculdade Pitagoras Betim", "Degree*": "Bachelor's Degree"}
+    form = Form((
+        Field("school", "School*", options=("Other", "Aalto University"), required=True, kind="combobox"),
+        Field("degree", "Degree*", required=True, kind="combobox"),
+    ))
+    result = resolve(form, profile=profile)
+    assert result.answers == {"school": "Other", "degree": "Bachelor's Degree"}
+    assert result.complete
+
+
+def test_country_combobox_uses_provider_visible_label():
+    form = Form((Field("country", "Country", required=True, kind="combobox"),))
+    result = resolve(form, profile={"Country": "Brazil"})
+    assert result.answers == {"country": "Brazil+55"}
+
+
+def test_phone_uses_provider_mask_without_changing_digits():
+    form = Form((Field("phone", "Phone", required=True, kind="tel"),))
+    result = resolve(form, profile={"Phone": "+5531987617143"})
+    assert result.answers == {"phone": "+55 31 98761-7143"}
