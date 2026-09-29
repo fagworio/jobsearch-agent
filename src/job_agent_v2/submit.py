@@ -351,6 +351,16 @@ def submit(
                 ):
                     verified += 1
                     continue
+                if field.kind == "combobox" and _action_for(field, value) == "select":
+                    # React Select can leave a previous inspection menu in a
+                    # portal after the form was scrolled. Re-anchor the
+                    # current field immediately before selection so its own
+                    # listbox receives focus and option clicks are scoped to
+                    # the current control.
+                    try:
+                        browser.inspect_field_options(field.key, tab_id=tab_id)
+                    except (AttributeError, RuntimeError, ValueError):
+                        pass
                 fill_payload = {
                     "field_id": field.key,
                     "action": _action_for(field, value),
