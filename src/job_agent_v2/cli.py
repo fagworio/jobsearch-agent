@@ -133,14 +133,16 @@ def main(argv: list[str] | None = None) -> int:
     auto_parser.add_argument("--parallelism", type=int, default=None)
     auto_parser.add_argument("--human-wait", type=int, default=10 * 60 * 1000, help="ms para resolver desafio humano")
     run_parser = sub.add_parser("run", help="executa discovery → shortlist → pipeline em uma única execução")
-    run_parser.add_argument("--mode", choices=("plan", "auto-apply"), default="plan")
+    run_parser.add_argument("--mode", choices=("policy", "plan", "auto-apply"), default="policy")
+    run_parser.add_argument("--plan", action="store_true", help="força somente discovery/shortlist/pipeline")
     run_parser.add_argument("--profile", default="profile/career_profile.local.yaml")
     run_parser.add_argument("--policy", default="profile/application_policy.yaml")
     run_parser.add_argument("--matrix", default="data/v2-agent/matrix.json")
     run_parser.add_argument("--shortlist", default="data/v2-agent/shortlist.json")
     run_parser.add_argument("--pipeline", default="data/v2-agent/pipeline.json")
     run_parser.add_argument("--state", default="data/v2-agent/state.json")
-    run_parser.add_argument("--target-ready-jobs", type=int, default=3)
+    run_parser.add_argument("--target-submissions", type=int, default=3)
+    run_parser.add_argument("--target-ready-jobs", dest="target_submissions", type=int, help=argparse.SUPPRESS)
     run_parser.add_argument("--max-queries", type=int, default=20)
     run_parser.add_argument("--max-jobs-inspected", type=int, default=250)
     run_parser.add_argument("--max-pages", type=int, default=40)
@@ -395,14 +397,14 @@ def main(argv: list[str] | None = None) -> int:
         run_answers = AnswerLibrary.load_required(args.answers) if args.answers else None
         run_facts = FactStore.load_required(args.facts) if args.facts else None
         report = run_autonomous(
-            mode=args.mode,
+            mode="plan" if args.plan else args.mode,
             profile_path=args.profile,
             matrix_path=args.matrix,
             shortlist_path=args.shortlist,
             pipeline_path=args.pipeline,
             state_path=args.state,
             policy_path=args.policy,
-            target_ready_jobs=args.target_ready_jobs,
+            target_submissions=args.target_submissions,
             max_queries=args.max_queries,
             max_jobs_inspected=args.max_jobs_inspected,
             max_pages=args.max_pages,
