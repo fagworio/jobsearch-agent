@@ -3,8 +3,8 @@ autonomy:
   analyze: auto
   generate_resume: auto
   answer_known_questions: auto
-  fill_forms: review
-  submit: manual
+  fill_forms: auto
+  submit: auto
 
 # Identidade operacional do projeto. O executor é um agente autônomo que
 # raciocina, resolve respostas aprovadas e opera um navegador real; não é uma
@@ -18,8 +18,8 @@ agent:
 
 providers:
   greenhouse:
-    fill_forms: review
-    submit: manual
+    fill_forms: auto
+    submit: auto
     batch:
       max_jobs: 5
       max_submits: 3
