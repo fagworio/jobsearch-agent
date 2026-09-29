@@ -36,7 +36,9 @@ POST_SUBMIT_SETTLE_MS = 20_000
 def _values_match(actual: str, expected: str) -> bool:
     """Compare provider read-back labels without treating whitespace as data."""
 
-    compact = lambda value: re.sub(r"\s+", "", str(value or "")).casefold()
+    def compact(value: str) -> str:
+        return re.sub(r"\s+", "", str(value or "")).casefold()
+
     return compact(actual) == compact(expected)
 
 
