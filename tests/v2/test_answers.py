@@ -123,6 +123,32 @@ def test_deterministic_source_uses_real_job_board_option():
     assert result.resolved_from == {"q1": "deterministic_rule"}
 
 
+def test_known_profile_facts_resolve_provider_variants():
+    facts = FactStore({
+        "identity.pronouns": {"value": "Decline To Self Identify", "approved": True, "source": "user"},
+        "identity.linkedin": {"value": "https://www.linkedin.com/in/joao-fagner/", "approved": True, "source": "profile"},
+        "languages.english": {"value": "advanced", "approved": True, "source": "career_profile"},
+    })
+    form = Form((
+        Field("pronouns", "Pronouns", options=("He/Him", "Decline To Self Identify"), required=True, kind="combobox"),
+        Field("linkedin", "Link to LinkedIn page", required=True, kind="url"),
+        Field("english", "Level of English", options=("Basic", "Advanced"), required=True, kind="select"),
+    ))
+    result = resolve(form, facts=facts)
+    assert result.answers == {
+        "pronouns": "Decline To Self Identify",
+        "linkedin": "https://www.linkedin.com/in/joao-fagner/",
+        "english": "Advanced",
+    }
+    assert result.complete
+
+
+def test_deterministic_source_can_fill_a_free_text_variant():
+    form = Form((Field("source", "How did you hear about us?", required=True, kind="text"),))
+    result = resolve(form)
+    assert result.answers == {"source": "Job Board"}
+
+
 def test_deterministic_region_requires_real_latam_option():
     facts = FactStore({"identity.country": {"value": "Brazil", "approved": True, "source": "user"}})
     form = Form((Field("q1", "Please select the region where you currently live", options=("Latin America", "Europe"), required=True, kind="combobox"),))

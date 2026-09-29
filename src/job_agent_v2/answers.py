@@ -132,6 +132,10 @@ def _deterministic_answer(
 
     if "how did you hear about" in prompt or "how did you find out" in prompt:
         if not field.options:
+            # The user's approved Answer Bank says Job Board. Some providers
+            # render this as a free-text field instead of exposing choices.
+            if field.kind in {"text", "textarea"}:
+                return "Job Board"
             return None
         normalized = [(option, _norm(option)) for option in field.options]
         job_board = [option for option, value in normalized if "job board" in value]

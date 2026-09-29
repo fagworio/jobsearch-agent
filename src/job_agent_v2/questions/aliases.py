@@ -11,6 +11,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "how much notice do you need to provide before you can start",
     ),
     "identity.pronouns": (
+        "pronouns",
         "what are your pronouns",
         "preferred pronouns",
         "please select your pronouns",
@@ -47,9 +48,23 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "where are you currently located",
     ),
     "identity.linkedin": (
+        "link to linkedin page",
+        "linkedin page",
         "linkedin profile",
         "linkedin profile url",
         "link to your linkedin profile",
+    ),
+    "identity.first_name": (
+        "legal first name",
+    ),
+    "identity.last_name": (
+        "legal last name",
+    ),
+    "languages.english": (
+        "level of english",
+        "what is your english proficiency",
+        "what's your level of english",
+        "english proficiency",
     ),
     "employment.work_authorization": (
         "legally authorized to work",

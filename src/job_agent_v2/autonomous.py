@@ -213,8 +213,8 @@ def _load_form_profile(path: str | Path) -> dict[str, str]:
         return {}
     values: dict[str, str] = {}
     aliases = {
-        "first_name": ("First Name",),
-        "last_name": ("Last Name",),
+        "first_name": ("First Name", "Legal First Name"),
+        "last_name": ("Last Name", "Legal Last Name"),
         "name": ("Name",),
         "email": ("Email",),
         "phone": ("Phone", "Mobile", "Telephone"),
@@ -293,6 +293,10 @@ def _facts_from_profile(path: str | Path, facts: FactStore | None) -> FactStore 
         data = skills.get(skill) if isinstance(skills, dict) else None
         if isinstance(data, dict) and isinstance(data.get("years"), (str, int, float)):
             explicit[fact_id] = str(data["years"])
+    languages = payload.get("languages") if isinstance(payload.get("languages"), dict) else {}
+    english = languages.get("english") if isinstance(languages, dict) else None
+    if isinstance(english, dict) and isinstance(english.get("level"), str) and english["level"].strip():
+        explicit["languages.english"] = english["level"]
     for fact_id, value in explicit.items():
         if result.get(fact_id) is None:
             result.remember(fact_id, value, source="career_profile")
