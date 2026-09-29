@@ -277,13 +277,21 @@ async function handleRequest(message: unknown): Promise<Response> {
     if (!token || usedSubmitTokens.has(token)) {
       return { version: 1, request_id: requestId, ok: false, error: "submit authorization was already used or is missing" };
     }
-  } else if (type !== "GET_AUTH_STATE" && type !== "GET_PAGE" && type !== "GET_DISCOVERY_RESULTS" && type !== "GET_DISCOVERY_FILTERS" && type !== "DISCOVER_QUERY" && type !== "OPEN_JOB" && type !== "GET_TAB_CONTEXT" && type !== "WAIT_FOR_APPLICATION" && type !== "REMOVE_REPEATABLE_ENTRY" && type !== "INSPECT_FORM" && type !== "GET_FIELD_OPTIONS" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE" && type !== "GET_SUBMIT_RESULT") {
+  } else if (type !== "GET_AUTH_STATE" && type !== "GET_PAGE" && type !== "GET_DISCOVERY_RESULTS" && type !== "GET_DISCOVERY_FILTERS" && type !== "DISCOVER_QUERY" && type !== "OPEN_JOB" && type !== "GET_JOB_DETAILS" && type !== "GET_TAB_CONTEXT" && type !== "WAIT_FOR_APPLICATION" && type !== "REMOVE_REPEATABLE_ENTRY" && type !== "INSPECT_FORM" && type !== "GET_FIELD_OPTIONS" && type !== "READ_FORM" && type !== "FILL_FORM" && type !== "UPLOAD_ARTIFACT" && type !== "GET_CHALLENGE_STATE" && type !== "GET_SUBMIT_RESULT") {
     return { version: 1, request_id: requestId, ok: false, error: "command disabled in read-only phase" };
   }
 
   try {
     if (type === "OPEN_JOB") {
       return { version: 1, request_id: requestId, ok: true, result: await openJob(input.payload ?? {}) };
+    }
+    if (type === "GET_JOB_DETAILS") {
+      const context = requireContext(input.payload ?? {});
+      const tab = await chrome.tabs.get(context.tab_id);
+      if (!tab.id) throw new Error("context tab is unavailable");
+      const reply = response(crypto.randomUUID(), await chrome.tabs.sendMessage(tab.id, { type, payload: {} }));
+      if (!reply.ok) throw new Error(reply.error ?? "job detail inspection failed");
+      return { version: 1, request_id: requestId, ok: true, result: { ...contextPayload(context), ...reply.result } };
     }
     if (type === "GET_TAB_CONTEXT") {
       return { version: 1, request_id: requestId, ok: true, result: contextPayload(requireContext(input.payload ?? {})) };

@@ -113,6 +113,13 @@ class NativeMessagingClient:
     def open_job(self, job_id: str, url: str, provider: str = "greenhouse") -> dict[str, Any]:
         return self.call(Command.OPEN_JOB, {"job_id": job_id, "url": url, "provider": provider})
 
+    def inspect_job_details(self, *, tab_id: int, job_id: str, provider: str = "greenhouse") -> dict[str, Any]:
+        return self.call(Command.GET_JOB_DETAILS, {
+            "tab_id": tab_id,
+            "job_id": job_id,
+            "provider": provider,
+        })
+
     def get_tab_context(self, tab_id: int) -> dict[str, Any]:
         return self.call(Command.GET_TAB_CONTEXT, {"tab_id": tab_id})
 

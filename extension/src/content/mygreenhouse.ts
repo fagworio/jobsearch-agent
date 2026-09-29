@@ -54,6 +54,16 @@ export type MyGreenhouseFiltersSnapshot = {
   filters: DiscoveryFilterSnapshot[];
 };
 
+export type MyGreenhouseJobDetailsSnapshot = {
+  provider: "greenhouse";
+  page_type: "job" | "unknown";
+  surface: "document" | "easy_apply_dialog";
+  url: string;
+  title: string;
+  ready: boolean;
+  description: string;
+};
+
 function text(element: Element | null | undefined): string {
   return element?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 }
@@ -66,6 +76,23 @@ function visible(element: Element): boolean {
     && style.opacity !== "0"
     && rect.width > 0
     && rect.height > 0;
+}
+
+export function inspectMyGreenhouseJobDetails(documentRef: Document = document): MyGreenhouseJobDetailsSnapshot {
+  const url = new URL(documentRef.location.href);
+  const dialog = Array.from(documentRef.querySelectorAll('[role="dialog"]')).find(visible);
+  const root = dialog ?? documentRef.querySelector("main") ?? documentRef.body;
+  const description = (root?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 100_000);
+  const isJob = url.hostname === "my.greenhouse.io" && /^\/jobs\//.test(url.pathname);
+  return {
+    provider: "greenhouse",
+    page_type: isJob && description ? "job" : "unknown",
+    surface: dialog ? "easy_apply_dialog" : "document",
+    url: url.href,
+    title: documentRef.title,
+    ready: isJob && Boolean(description),
+    description,
+  };
 }
 
 function jobId(href: string): string {

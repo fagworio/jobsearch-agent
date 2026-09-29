@@ -1,5 +1,5 @@
 import { activeFormRoot, fieldIdFor, formFingerprintInput, inspectAuth, inspectChallenge, inspectGreenhouse, inspectSubmitResult, isVisible, labelFor } from "./greenhouse";
-import { inspectMyGreenhouseFilters, inspectMyGreenhouseResults } from "./mygreenhouse";
+import { inspectMyGreenhouseFilters, inspectMyGreenhouseJobDetails, inspectMyGreenhouseResults } from "./mygreenhouse";
 
 type FillPayload = {
   field_id?: unknown;
@@ -413,6 +413,10 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   }
   if (type === "GET_DISCOVERY_RESULTS") {
     sendResponse({ ok: true, result: inspectMyGreenhouseResults() });
+    return true;
+  }
+  if (type === "GET_JOB_DETAILS") {
+    sendResponse({ ok: true, result: inspectMyGreenhouseJobDetails() });
     return true;
   }
   if (type === "GET_DISCOVERY_FILTERS") {

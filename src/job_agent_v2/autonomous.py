@@ -8,7 +8,7 @@ declara ``submit: auto``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -390,6 +390,20 @@ def run_autonomous(
     submit_attempts = 0
     submitted = 0
     stop_unknown = False
+    detail_by_job_id: dict[str, str] = {}
+    detail_inspected: set[str] = set()
+
+    def enrich_runs() -> None:
+        """Attach read-only job-page descriptions to all matching occurrences."""
+
+        for index, run in enumerate(runs):
+            jobs = tuple(
+                replace(job, description=detail_by_job_id[job.job_id])
+                if job.job_id in detail_by_job_id else job
+                for job in run.results.jobs
+            )
+            if jobs != run.results.jobs:
+                runs[index] = replace(run, results=replace(run.results, jobs=jobs))
 
     with NativeMessagingClient() as browser:
         try:
@@ -419,6 +433,39 @@ def run_autonomous(
             partial = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
             matched = match_matrix(partial, load_match_profile(profile_path))
             shortlist = rank_shortlist(matched)
+
+            # Cards frequently show only ``Remote``. Before rejecting a
+            # technical candidate for unknown geography, inspect its opened
+            # job description read-only. This is the final-fit step; it does
+            # not open an application form or submit anything.
+            detail_candidates = [
+                entry for entry in shortlist.entries
+                if entry.selection == "REVIEW"
+                and entry.match_score >= 30.0
+                and entry.geography_status == "UNKNOWN"
+                and not entry.applied
+                and entry.job_id not in detail_inspected
+            ][:3]
+            for entry in detail_candidates:
+                detail_inspected.add(entry.job_id)
+                try:
+                    with NativeMessagingClient() as browser:
+                        context = browser.open_job(entry.job_id, entry.url)
+                        tab_id = context.get("tab_id")
+                        if not isinstance(tab_id, int):
+                            raise RuntimeError("OPEN_JOB did not return a valid tab_id")
+                        details = browser.inspect_job_details(tab_id=tab_id, job_id=entry.job_id)
+                    description = details.get("description")
+                    if not isinstance(description, str) or not description.strip():
+                        raise RuntimeError("job detail description was not observed")
+                    detail_by_job_id[entry.job_id] = description
+                except Exception as exc:  # noqa: BLE001 - one detail must not stop discovery
+                    errors.append(f"{entry.job_id}: job detail inspection failed: {exc}")
+            if detail_candidates:
+                enrich_runs()
+                partial = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
+                matched = match_matrix(partial, load_match_profile(profile_path))
+                shortlist = rank_shortlist(matched)
             ready_count = sum(
                 1
                 for entry in shortlist.entries
