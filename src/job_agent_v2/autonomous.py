@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
+
 from .answers import AnswerLibrary
 from .auto_apply import AutoApplyItem, AutoApplyReport, _write_report, run_auto_apply
 from .browser import NativeMessagingClient
@@ -98,6 +100,35 @@ def _write_state(path: str | Path, payload: dict[str, Any]) -> Path:
     return destination
 
 
+def _load_form_profile(path: str | Path) -> dict[str, str]:
+    """Mapeia somente identidade explícita do Career Profile para o formulário."""
+
+    payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    identity = payload.get("identity") if isinstance(payload, dict) else {}
+    if not isinstance(identity, dict):
+        return {}
+    values: dict[str, str] = {}
+    aliases = {
+        "first_name": ("First Name",),
+        "last_name": ("Last Name",),
+        "name": ("Name",),
+        "email": ("Email",),
+        "phone": ("Phone", "Mobile", "Telephone"),
+        "country": ("Country", "Country of residence"),
+        "current_location": ("Location", "Location*", "Current Location"),
+        "location": ("Location", "Location*", "Current Location"),
+        "linkedin": ("LinkedIn Profile", "LinkedIn Profile URL"),
+        "github": ("GitHub", "GitHub Profile"),
+        "website": ("Website", "Portfolio", "Portfolio URL"),
+    }
+    for key, labels in aliases.items():
+        value = identity.get(key)
+        if isinstance(value, str) and value.strip():
+            for label in labels:
+                values[label] = value
+    return values
+
+
 def run_autonomous(
     *,
     mode: str = "policy",
@@ -163,6 +194,7 @@ def run_autonomous(
     errors: list[str] = []
     cursor = SearchCursor()
     processed_ids: set[str] = set()
+    form_profile = _load_form_profile(resume_profile)
     applied_items: list[AutoApplyItem] = []
     jobs_processed = 0
     submit_attempts = 0
@@ -171,79 +203,74 @@ def run_autonomous(
 
     with NativeMessagingClient() as browser:
         initial = adapter.inspect(browser.inspect_discovery_results())
-        work_type = initial.work_type or ("remote",)
+    work_type = initial.work_type or ("remote",)
+    for item in build_query_matrix():
+        if stop_unknown or jobs_processed >= max_jobs or submit_attempts >= max_submits:
+            break
+        if not cursor.should_continue(budget):
+            break
         try:
-            for item in build_query_matrix():
-                if stop_unknown or jobs_processed >= max_jobs or submit_attempts >= max_submits:
-                    break
-                if not cursor.should_continue(budget):
-                    break
-                try:
-                    snapshot = browser.discover_query(item.query, list(work_type))
-                    result = adapter.inspect(snapshot)
-                    runs.append(DiscoverySearchRun(item.family, item.query, result))
-                    partial = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
-                    matched = match_matrix(partial, load_match_profile(profile_path))
-                    shortlist = rank_shortlist(matched)
-                    ready_count = sum(
-                        1
-                        for entry in shortlist.entries
-                        if entry.selection == "APPROVED" and not entry.applied
+            # The bridge permits one backend connection at a time. Close the
+            # discovery connection before auto-apply opens its own connection.
+            with NativeMessagingClient() as browser:
+                snapshot = browser.discover_query(item.query, list(work_type))
+            result = adapter.inspect(snapshot)
+            runs.append(DiscoverySearchRun(item.family, item.query, result))
+            partial = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
+            matched = match_matrix(partial, load_match_profile(profile_path))
+            shortlist = rank_shortlist(matched)
+            ready_count = sum(
+                1
+                for entry in shortlist.entries
+                if entry.selection == "APPROVED" and not entry.applied
+            )
+            cursor = SearchCursor(
+                queries_processed=len(runs),
+                jobs_inspected=partial.raw_job_count,
+                pages=len(runs),
+                ready_jobs=ready_count,
+            )
+            if execution_enabled:
+                candidate_manifest = build_pipeline(shortlist.to_dict(), submission_store=marker_store)
+                candidates = tuple(item for item in candidate_manifest.items if item.job_id not in processed_ids)
+                batch_size = min(max_jobs - jobs_processed, len(candidates))
+                attempts_left = max_submits - submit_attempts
+                if batch_size > 0 and attempts_left > 0:
+                    batch_manifest = type(candidate_manifest)(candidate_manifest.source, candidates[:batch_size])
+                    batch_report = run_auto_apply(
+                        batch_manifest,
+                        resume=resume,
+                        resume_profile=resume_profile,
+                        resume_store=resume_store,
+                        library=answers,
+                        facts=facts,
+                        profile=form_profile,
+                        marker_store=marker_store,
+                        report_store=report_store,
+                        max_jobs=batch_size,
+                        max_submits=attempts_left,
+                        max_failures=max_failures,
+                        human_wait_ms=human_wait_ms,
                     )
-                    cursor = SearchCursor(
-                        queries_processed=len(runs),
-                        jobs_inspected=partial.raw_job_count,
-                        pages=len(runs),
-                        ready_jobs=ready_count,
+                    applied_items.extend(batch_report.items)
+                    processed_ids.update(item.job_id for item in batch_report.items)
+                    jobs_processed += len(batch_report.items)
+                    submit_attempts += sum(
+                        int((item.submit or {}).get("submission_writes", 0))
+                        for item in batch_report.items
                     )
-                    if execution_enabled:
-                        candidate_manifest = build_pipeline(shortlist.to_dict(), submission_store=marker_store)
-                        candidates = tuple(item for item in candidate_manifest.items if item.job_id not in processed_ids)
-                        batch_size = min(max_jobs - jobs_processed, len(candidates))
-                        attempts_left = max_submits - submit_attempts
-                        if batch_size > 0 and attempts_left > 0:
-                            batch_manifest = type(candidate_manifest)(candidate_manifest.source, candidates[:batch_size])
-                            batch_report = run_auto_apply(
-                                batch_manifest,
-                                resume=resume,
-                                resume_profile=resume_profile,
-                                resume_store=resume_store,
-                                library=answers,
-                                facts=facts,
-                                marker_store=marker_store,
-                                report_store=report_store,
-                                max_jobs=batch_size,
-                                max_submits=attempts_left,
-                                max_failures=max_failures,
-                                human_wait_ms=human_wait_ms,
-                            )
-                            applied_items.extend(batch_report.items)
-                            processed_ids.update(item.job_id for item in batch_report.items)
-                            jobs_processed += len(batch_report.items)
-                            submit_attempts += sum(
-                                int((item.submit or {}).get("submission_writes", 0))
-                                for item in batch_report.items
-                            )
-                            submitted += sum(1 for item in batch_report.items if item.state == "SUBMITTED")
-                            stop_unknown = any(item.state == "SUBMIT_UNKNOWN" for item in batch_report.items)
-                            if submitted >= target_submissions:
-                                break
-                except Exception as exc:  # noqa: BLE001 - uma consulta não bloqueia o lote
-                    errors.append(f"{item.query}: {exc}")
-                    cursor = SearchCursor(
-                        queries_processed=cursor.queries_processed + 1,
-                        jobs_inspected=cursor.jobs_inspected,
-                        pages=cursor.pages + 1,
-                        ready_jobs=cursor.ready_jobs,
-                    )
-        finally:
-            try:
-                browser.discover_query(initial.query or "frontend", list(work_type))
-            except (OSError, RuntimeError) as exc:
-                # Restoring the operator's original search is best effort. A
-                # Chrome/native-host disconnect here must not erase the
-                # ledger or hide results already persisted by auto-apply.
-                errors.append(f"restore initial query: {exc}")
+                    submitted += sum(1 for item in batch_report.items if item.state == "SUBMITTED")
+                    stop_unknown = any(item.state == "SUBMIT_UNKNOWN" for item in batch_report.items)
+                    if submitted >= target_submissions:
+                        break
+        except Exception as exc:  # noqa: BLE001 - uma consulta não bloqueia o lote
+            errors.append(f"{item.query}: {exc}")
+            cursor = SearchCursor(
+                queries_processed=cursor.queries_processed + 1,
+                jobs_inspected=cursor.jobs_inspected,
+                pages=cursor.pages + 1,
+                ready_jobs=cursor.ready_jobs,
+            )
 
     matrix = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
     matched = match_matrix(matrix, load_match_profile(profile_path))
