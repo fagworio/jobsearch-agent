@@ -37,3 +37,17 @@ def test_greenhouse_adapter_does_not_invent_missing_fields():
     snapshot = dict(SNAPSHOT, fields=[])
     with pytest.raises(ATSInspectionError, match="no fields"):
         GreenhouseAdapter().inspect(snapshot)
+
+
+def test_greenhouse_adapter_accepts_semantic_checkbox_group_labels():
+    snapshot = dict(SNAPSHOT, fields=[{
+        "id": "question_1[]",
+        "type": "checkbox_group",
+        "label": "Which time zones can you work?",
+        "required": True,
+        "options": ["Eastern Time (ET)", "Central Time (CT)", "None of the above"],
+        "value": "",
+    }])
+    form = GreenhouseAdapter().to_form(snapshot)
+    assert form.fields[0].kind == "checkbox_group"
+    assert form.fields[0].options == ("Eastern Time (ET)", "Central Time (CT)", "None of the above")

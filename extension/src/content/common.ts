@@ -69,6 +69,50 @@ function readBackValue(control: FormControl): string | boolean {
     : control.value;
 }
 
+function normalizeText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function visibleChoiceOptions(): Array<{ label: string; value: string }> {
+  return Array.from(document.querySelectorAll('[role="option"]'))
+    .filter((element) => isVisible(element))
+    .map((element) => ({
+      label: element.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      value: element.getAttribute("data-value") || element.getAttribute("value") || element.textContent?.replace(/\s+/g, " ").trim() || "",
+    }))
+    .filter((option) => option.label);
+}
+
+async function inspectFieldOptions(payload: FillPayload): Promise<Record<string, unknown>> {
+  if (typeof payload.field_id !== "string" || !payload.field_id.trim()) throw new Error("field_id is required");
+  const controls = controlsFor(payload.field_id);
+  if (!controls.length) throw new Error("field not found");
+  const first = controls[0];
+  if (first instanceof HTMLSelectElement) {
+    const options = Array.from(first.options)
+      .filter((option) => option.textContent?.trim())
+      .map((option) => ({ label: option.textContent?.replace(/\s+/g, " ").trim() ?? "", value: option.value }));
+    return { field_id: payload.field_id, options: options.map((option) => option.label), option_values: options };
+  }
+  if (first instanceof HTMLInputElement && ["checkbox", "radio"].includes(first.type)) {
+    const options = controls
+      .filter((control): control is HTMLInputElement => control instanceof HTMLInputElement)
+      .map((control) => ({ label: labelFor(control, document) || control.value, value: control.value }))
+      .filter((option) => option.label && option.value);
+    return { field_id: payload.field_id, options: options.map((option) => option.label), option_values: options };
+  }
+  if (first.getAttribute("role") !== "combobox") throw new Error("field does not expose choices");
+  first.scrollIntoView({ block: "center", inline: "nearest" });
+  for (const type of ["mousedown", "mouseup", "click"] as const) {
+    first.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: 1, detail: 1, view: window }));
+  }
+  await new Promise((resolve) => window.setTimeout(resolve, 100));
+  const options = visibleChoiceOptions();
+  first.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  if (!options.length) throw new Error("choice options are not visible");
+  return { field_id: payload.field_id, options: options.map((option) => option.label), option_values: options };
+}
+
 function ensureReadBack(control: FormControl, expected: string, checked?: boolean): void {
   const actual = readBackValue(control);
   if (typeof checked === "boolean" ? actual !== checked : actual !== expected) {
@@ -136,12 +180,14 @@ async function fillOne(payload: FillPayload): Promise<void> {
   const controls = controlsFor(payload.field_id);
   if (!controls.length) throw new Error("field not found");
 
-  if (payload.action === "check" || payload.action === "uncheck") {
-    const target = controls.find((control) => control instanceof HTMLInputElement && (!value || control.value === value));
+  if (payload.action === "check" || payload.action === "uncheck" || payload.action === "check_group") {
+    const target = controls.find((control) => control instanceof HTMLInputElement && (!value
+      || control.value === value
+      || normalizeText(labelFor(control, document)) === normalizeText(value)));
     if (!(target instanceof HTMLInputElement) || !["checkbox", "radio"].includes(target.type)) {
       throw new Error("field is not a checkable control");
     }
-    target.checked = payload.action === "check";
+    target.checked = payload.action !== "uncheck";
     dispatchInput(target);
     ensureReadBack(target, value, payload.action === "check");
     return;
@@ -310,6 +356,12 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   }
   if (type === "INSPECT_FORM" || type === "GET_PAGE" || type === "READ_FORM") {
     sendResponse({ ok: true, result: inspectGreenhouse() });
+    return true;
+  }
+  if (type === "GET_FIELD_OPTIONS") {
+    void inspectFieldOptions(((message as { payload?: unknown }).payload ?? {}) as FillPayload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
   if (type === "WAIT_FOR_APPLICATION") {

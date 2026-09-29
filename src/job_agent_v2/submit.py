@@ -143,6 +143,40 @@ def _refusal(existing: dict[str, Any], path: Path) -> SubmitReport:
     )
 
 
+def _hydrate_choice_options(
+    browser: NativeMessagingClient,
+    snapshot: dict[str, Any],
+    *,
+    tab_id: int | None,
+) -> dict[str, Any]:
+    """Abre choices fechados somente para observá-los antes da resolução."""
+
+    raw_fields = snapshot.get("fields")
+    if not isinstance(raw_fields, list):
+        return snapshot
+    hydrated = dict(snapshot)
+    fields: list[dict[str, Any]] = []
+    for raw in raw_fields:
+        if not isinstance(raw, dict):
+            fields.append(raw)
+            continue
+        field = dict(raw)
+        field_type = str(field.get("type") or "")
+        if field_type in {"select", "combobox", "radio", "checkbox_group"} and not field.get("options"):
+            try:
+                result = browser.inspect_field_options(str(field.get("id") or ""), tab_id=tab_id)
+                options = result.get("options")
+                if isinstance(options, list) and all(isinstance(option, str) for option in options):
+                    field["options"] = options
+            except (RuntimeError, ValueError):
+                # An unopened/unsupported widget remains a genuine unresolved
+                # field; never invent an option to make it pass.
+                pass
+        fields.append(field)
+    hydrated["fields"] = fields
+    return hydrated
+
+
 def _wait_for_human(browser: NativeMessagingClient, budget_ms: int, *, tab_id: int | None = None) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, budget_ms) / 1000
     latest: dict[str, Any] = {}
@@ -201,6 +235,7 @@ def submit(
                     marker=str(path),
                 )
             snapshot = browser.inspect_form(tab_id=tab_id) if tab_id is not None else browser.inspect_form()
+            snapshot = _hydrate_choice_options(browser, snapshot, tab_id=tab_id)
             form = GreenhouseAdapter().to_form(snapshot)
             apply_url = str(snapshot.get("url") or url)
             # A resume is an artifact, not an answer. Easy Apply can expose

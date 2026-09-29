@@ -4,6 +4,7 @@ export type FieldSnapshot = {
   label: string;
   required: boolean;
   options: string[];
+  option_values?: Array<{ label: string; value: string }>;
   value: string;
   checked: boolean;
   structured?: StructuredControlSnapshot;
@@ -102,12 +103,25 @@ export function labelFor(element: Element, documentRef: Document): string {
   return wrapperLabel?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 }
 
-function optionsFor(element: Element): string[] {
+function choiceLabelFor(element: HTMLInputElement, documentRef: Document): string {
+  const label = labelFor(element, documentRef);
+  if (label && label !== element.name && label !== element.id) return label;
+  return element.value;
+}
+
+function choiceOptions(elements: HTMLInputElement[], documentRef: Document): Array<{ label: string; value: string }> {
+  return elements
+    .map((input) => ({ label: choiceLabelFor(input, documentRef), value: input.value }))
+    .filter((option) => option.label && option.value)
+    .filter((option, index, all) => all.findIndex((candidate) => candidate.value === option.value) === index);
+}
+
+function optionsFor(element: Element, documentRef: Document): string[] {
   if (element instanceof HTMLSelectElement) {
     return Array.from(element.options).map((option) => option.textContent?.trim() ?? "").filter(Boolean);
   }
   return Array.from(element.parentElement?.querySelectorAll("input[type=radio], input[type=checkbox]") ?? [])
-    .map((input) => input.getAttribute("value") ?? "")
+    .map((input) => choiceLabelFor(input as HTMLInputElement, documentRef))
     .filter(Boolean);
 }
 
@@ -195,15 +209,36 @@ function radioGroupLabel(radios: HTMLInputElement[], documentRef: Document): str
 function radioGroupSnapshot(radios: HTMLInputElement[], index: number, documentRef: Document): FieldSnapshot {
   const first = radios[0];
   const selected = radios.find((radio) => radio.checked);
-  const options = Array.from(new Set(radios.map((radio) => radio.value).filter(Boolean)));
+  const optionValues = choiceOptions(radios, documentRef);
   return {
     id: first.name || first.id || `field-${index + 1}`,
     type: "radio",
     label: radioGroupLabel(radios, documentRef),
     required: radios.some((radio) => radio.required || radio.getAttribute("aria-required") === "true"),
-    options,
+    options: optionValues.map((option) => option.label),
+    option_values: optionValues,
     value: selected?.value ?? "",
     checked: Boolean(selected),
+  };
+}
+
+function checkboxGroupLabel(checkboxes: HTMLInputElement[], documentRef: Document): string {
+  return radioGroupLabel(checkboxes, documentRef);
+}
+
+function checkboxGroupSnapshot(checkboxes: HTMLInputElement[], index: number, documentRef: Document): FieldSnapshot {
+  const first = checkboxes[0];
+  const optionValues = choiceOptions(checkboxes, documentRef);
+  const selected = new Set(checkboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value));
+  return {
+    id: first.name || first.id || `field-${index + 1}`,
+    type: "checkbox_group",
+    label: checkboxGroupLabel(checkboxes, documentRef),
+    required: checkboxes.some((checkbox) => checkbox.required || checkbox.getAttribute("aria-required") === "true"),
+    options: optionValues.map((option) => option.label),
+    option_values: optionValues,
+    value: optionValues.filter((option) => selected.has(option.value)).map((option) => option.label).join(", "),
+    checked: selected.size > 0,
   };
 }
 
@@ -216,20 +251,29 @@ export function inspectGreenhouse(documentRef: Document = document): PageSnapsho
     .filter((element) => !(element instanceof HTMLButtonElement && element.getAttribute("aria-label") === "Selected country"));
   const fields: FieldSnapshot[] = [];
   const seenRadioGroups = new Set<string>();
+  const seenCheckboxGroups = new Set<string>();
   const fieldOccurrences = new Map<string, number>();
   controls.forEach((element, index) => {
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    if (input instanceof HTMLInputElement && input.type === "radio") {
+    if (input instanceof HTMLInputElement && ["radio", "checkbox"].includes(input.type) && input.name) {
       const groupKey = input.name || input.id || `field-${index + 1}`;
-      if (seenRadioGroups.has(groupKey)) return;
-      seenRadioGroups.add(groupKey);
-      const radios = controls.filter((candidate): candidate is HTMLInputElement => {
+      const group = controls.filter((candidate): candidate is HTMLInputElement => {
         return candidate instanceof HTMLInputElement
-          && candidate.type === "radio"
+          && candidate.type === input.type
           && (candidate.name || candidate.id || `field-${index + 1}`) === groupKey;
       });
-      fields.push(radioGroupSnapshot(radios, index, documentRef));
-      return;
+      if (input.type === "radio" && group.length > 1) {
+        if (seenRadioGroups.has(groupKey)) return;
+        seenRadioGroups.add(groupKey);
+        fields.push(radioGroupSnapshot(group, index, documentRef));
+        return;
+      }
+      if (input.type === "checkbox" && group.length > 1) {
+        if (seenCheckboxGroups.has(groupKey)) return;
+        seenCheckboxGroups.add(groupKey);
+        fields.push(checkboxGroupSnapshot(group, index, documentRef));
+        return;
+      }
     }
     const role = element.getAttribute("role");
     const label = labelFor(element, rootDocument(root));
@@ -241,7 +285,7 @@ export function inspectGreenhouse(documentRef: Document = document): PageSnapsho
       type: role === "combobox" ? "combobox" : input.getAttribute("type") || element.tagName.toLowerCase(),
       label,
       required: requiredFor(element, label),
-      options: optionsFor(element),
+      options: optionsFor(element, documentRef),
       value: valueFor(element),
       checked: input instanceof HTMLInputElement && ["checkbox", "radio"].includes(input.type)
         ? input.checked

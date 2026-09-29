@@ -35,6 +35,9 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(greenhouse, /aria-labelledby/);
   assert.match(greenhouse, /aria-required/);
   assert.match(greenhouse, /seenRadioGroups/);
+  assert.match(greenhouse, /seenCheckboxGroups/);
+  assert.match(greenhouse, /checkboxGroupSnapshot/);
+  assert.match(greenhouse, /option_values/);
   assert.match(greenhouse, /radioGroupSnapshot/);
   assert.match(source, /getAttribute\("role"\) === "combobox"/);
   assert.match(source, /\[role="option"\]/);
@@ -42,6 +45,8 @@ test("extension exposes typed fill/read/challenge commands and guarded submit", 
   assert.match(source, /type === "GET_AUTH_STATE"/);
   assert.match(source, /type === "GET_DISCOVERY_RESULTS"/);
   assert.match(source, /type === "GET_DISCOVERY_FILTERS"/);
+  assert.match(source, /type === "GET_FIELD_OPTIONS"/);
+  assert.match(worker, /GET_FIELD_OPTIONS/);
   assert.match(worker, /type === "DISCOVER_QUERY"/);
   assert.match(worker, /type === "OPEN_JOB"/);
   assert.match(worker, /type === "GET_TAB_CONTEXT"/);

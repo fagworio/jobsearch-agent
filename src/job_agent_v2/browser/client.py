@@ -140,6 +140,9 @@ class NativeMessagingClient:
     def inspect_form(self, *, tab_id: int | None = None) -> dict[str, Any]:
         return self.call(Command.INSPECT_FORM, self._tab_payload(tab_id=tab_id))
 
+    def inspect_field_options(self, field_id: str, *, tab_id: int | None = None) -> dict[str, Any]:
+        return self.call(Command.GET_FIELD_OPTIONS, self._tab_payload({"field_id": field_id}, tab_id))
+
     def fill_form(self, payload: dict[str, Any], *, tab_id: int | None = None) -> dict[str, Any]:
         return self.call(Command.FILL_FORM, self._tab_payload(payload, tab_id))
 

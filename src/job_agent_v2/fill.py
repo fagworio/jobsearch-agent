@@ -266,6 +266,8 @@ def fill(
 
 
 def _action_for(field: Field, value: str) -> str:
+    if field.kind == "checkbox_group":
+        return "check_group"
     if field.kind in {"select", "combobox"} or field.options:
         return "select"
     if field.kind in {"checkbox", "radio"}:
