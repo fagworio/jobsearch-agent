@@ -134,7 +134,10 @@ async function inspectFieldOptions(payload: FillPayload): Promise<Record<string,
 
 function ensureReadBack(control: FormControl, expected: string, checked?: boolean): void {
   const actual = readBackValue(control);
-  if (typeof checked === "boolean" ? actual !== checked : actual !== expected) {
+  const matches = typeof checked === "boolean"
+    ? actual === checked
+    : normalizeText(String(actual)) === normalizeText(expected);
+  if (!matches) {
     throw new Error(`FIELD_MISMATCH: expected ${expected || String(checked)} but read ${String(actual)}`);
   }
 }
