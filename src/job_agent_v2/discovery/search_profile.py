@@ -55,7 +55,9 @@ class SearchQuery:
 @dataclass(frozen=True)
 class SearchBudget:
     target_ready_jobs: int = 3
-    max_queries: int = 20
+    # Keep the default above the expanded matrix so a normal run exercises
+    # every declared query family without requiring a hidden CLI override.
+    max_queries: int = 30
     max_jobs_inspected: int = 250
     max_pages: int = 40
 

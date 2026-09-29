@@ -310,7 +310,7 @@ def run_autonomous(
     policy_path: str = "profile/application_policy.yaml",
     target_submissions: int = 3,
     target_ready_jobs: int | None = None,
-    max_queries: int = 20,
+    max_queries: int = 30,
     max_jobs_inspected: int = 250,
     max_pages: int = 40,
     answers: AnswerLibrary | None = None,
