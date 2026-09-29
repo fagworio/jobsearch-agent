@@ -18,7 +18,7 @@ from .models import (
     DiscoverySearchRun,
     deduplicate_runs,
 )
-from .search_profile import DEFAULT_SEARCH_FAMILIES, SearchQuery, build_query_matrix
+from .search_profile import DEFAULT_SEARCH_FAMILIES, SearchBudget, SearchCursor, SearchQuery, build_query_matrix
 from .store import load_matrix, save_matrix
 
 __all__ = [
@@ -56,6 +56,8 @@ __all__ = [
     "DEFAULT_SEARCH_FAMILIES",
     "GreenhouseDiscoveryAdapter",
     "SearchQuery",
+    "SearchBudget",
+    "SearchCursor",
     "build_query_matrix",
     "load_matrix",
     "save_matrix",

@@ -49,6 +49,7 @@ class SubmitReport:
     fields: int = 0
     verified: int = 0
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
+    missing_facts: tuple[str, ...] = ()
     resume: str = ""
     resume_attached: bool = False
     marker: str = ""
@@ -73,6 +74,7 @@ class SubmitReport:
             "fields": self.fields,
             "verified": self.verified,
             "resolved_fact_ids": dict(self.resolved_fact_ids or {}),
+            "missing_facts": list(self.missing_facts),
             "resume": self.resume,
             "resume_attached": self.resume_attached,
             "marker": self.marker,
@@ -207,6 +209,7 @@ def submit(
                     apply_url=apply_url,
                     fields=len(form.fields),
                     resolved_fact_ids=resolution.resolved_fact_ids,
+                    missing_facts=tuple(resolution.missing_fact_ids.values()),
                     marker=str(path),
                 )
 

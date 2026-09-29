@@ -36,6 +36,11 @@ def _index(items: Mapping[str, str] | Iterable[tuple[str, str]] | None) -> dict[
     return {_norm(key): str(value) for key, value in source}
 
 
+def missing_fact_key(field: Field) -> str:
+    """Stable blocker key; unknown questions remain grouped by normalized prompt."""
+    return canonical_fact_for(field.prompt) or f"question:{field.identity}"
+
+
 class AnswerLibrary:
     """Biblioteca local de respostas aprovadas explicitamente pelo usuário.
 
@@ -102,6 +107,7 @@ def resolve(
     answers: dict[str, str] = {}
     resolved_from: dict[str, str] = {}
     resolved_fact_ids: dict[str, str] = {}
+    missing_fact_ids: dict[str, str] = {}
     missing: list[Field] = []
     for field in form.fields:
         identity = field.identity
@@ -131,9 +137,11 @@ def resolve(
             continue
         if field.required:
             missing.append(field)
+            missing_fact_ids[field.key] = missing_fact_key(field)
     return Resolution(
         answers=answers,
         resolved_from=resolved_from,
         resolved_fact_ids=resolved_fact_ids,
+        missing_fact_ids=missing_fact_ids,
         missing=tuple(missing),
     )

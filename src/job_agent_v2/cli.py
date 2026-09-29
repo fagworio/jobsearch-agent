@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -13,6 +14,7 @@ from .answers import AnswerLibrary
 from .browser import NativeMessagingClient
 from .fill import fill
 from .facts import FactStore
+from .facts_migration import load_approved_answers, migrate_answers
 from .discovery import (
     DiscoveryMatrix,
     DiscoverySearchRun,
@@ -27,6 +29,8 @@ from .discovery import (
     match_matrix,
     plan_batch,
     rank_shortlist,
+    SearchBudget,
+    SearchCursor,
     save_batch,
     save_matrix,
     save_pipeline,
@@ -49,6 +53,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--approved", default="", help="caminho para JSON {prompt: resposta aprovada}")
     parser.add_argument("--profile", default="", help="caminho para JSON {campo trivial: valor}")
     parser.add_argument("--answers", default="", help="caminho para a biblioteca JSON de respostas aprovadas")
+    parser.add_argument("--facts", default="profile/v2-facts.local.json", help="FactStore JSON de fatos aprovados")
 
 
 def _library(path: str) -> AnswerLibrary | None:
@@ -79,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     discover_filters = sub.add_parser("discover-filters", help="mapeia filtros e parâmetros da busca MyGreenhouse ativa (somente leitura)")
     discover_matrix = sub.add_parser("discover-matrix", help="executa a matriz de consultas remotas do perfil (somente leitura)")
     discover_matrix.add_argument("--store", default="data/v2-discovery/matrix.json", help="arquivo JSON do lote observado")
+    discover_matrix.add_argument("--profile", default="profile/career_profile.local.yaml", help="Career Profile para parar ao atingir vagas prontas")
+    discover_matrix.add_argument("--target-ready-jobs", type=int, default=3)
+    discover_matrix.add_argument("--max-queries", type=int, default=20)
+    discover_matrix.add_argument("--max-jobs-inspected", type=int, default=250)
+    discover_matrix.add_argument("--max-pages", type=int, default=40)
     deduplicate_matrix = sub.add_parser("deduplicate-matrix", help="deduplica um lote salvo por job ID")
     deduplicate_matrix.add_argument("--source", default="data/v2-discovery/matrix.json", help="lote JSON de origem")
     deduplicate_matrix.add_argument("--store", default="", help="destino JSON; por padrão sobrescreve a origem atomicamente")
@@ -136,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     answer_set.add_argument("--store", default="data/v2-answers.json")
     answer_set.add_argument("--prompt", required=True)
     answer_set.add_argument("--answer", required=True)
+    migrate = sub.add_parser("migrate-facts", help="migra respostas aprovadas para fatos canônicos, sem inferência")
+    migrate.add_argument("--answers", required=True, help="AnswerLibrary JSON de origem")
+    migrate.add_argument("--facts", required=True, help="FactStore JSON de destino")
     args = parser.parse_args(argv)
 
     if args.command == "login-status":
@@ -162,13 +175,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "discover-matrix":
         adapter = GreenhouseDiscoveryAdapter()
         runs: list[DiscoverySearchRun] = []
+        budget = SearchBudget(args.target_ready_jobs, args.max_queries, args.max_jobs_inspected, args.max_pages)
+        budget.validate()
+        cursor = SearchCursor()
         with NativeMessagingClient() as browser:
             initial = adapter.inspect(browser.inspect_discovery_results())
             work_type = initial.work_type or ("remote",)
             try:
                 for item in build_query_matrix():
+                    if not cursor.should_continue(budget):
+                        break
                     snapshot = browser.discover_query(item.query, list(work_type))
                     runs.append(DiscoverySearchRun(item.family, item.query, adapter.inspect(snapshot)))
+                    partial = DiscoveryMatrix("greenhouse", work_type, tuple(runs))
+                    cursor = SearchCursor(
+                        queries_processed=len(runs),
+                        jobs_inspected=partial.raw_job_count,
+                        pages=len(runs),
+                    )
+                    if args.target_ready_jobs > 0:
+                        matched = match_matrix(partial, load_match_profile(args.profile))
+                        ready = rank_shortlist(matched, min_match_score=30.0, auto_approve_score=40.0)
+                        ready_count = sum(
+                            1 for entry in ready.entries
+                            if entry.selection == "APPROVED" and not entry.applied
+                        )
+                        cursor = replace(cursor, ready_jobs=ready_count)
             finally:
                 # Return the dedicated browser to the query the user had open.
                 browser.discover_query(initial.query or "frontend", list(work_type))
@@ -178,6 +210,16 @@ def main(argv: list[str] | None = None) -> int:
             "provider": result.provider,
             "work_type": list(result.work_type),
             "query_count": len(result.runs),
+            "queries_processed": cursor.queries_processed,
+            "jobs_inspected": cursor.jobs_inspected,
+            "pages": cursor.pages,
+            "ready_jobs": cursor.ready_jobs,
+            "budgets": {
+                "target_ready_jobs": budget.target_ready_jobs,
+                "max_queries": budget.max_queries,
+                "max_jobs_inspected": budget.max_jobs_inspected,
+                "max_pages": budget.max_pages,
+            },
             "job_count": result.raw_job_count,
             "unique_job_count": len(result.unique_jobs),
             "duplicate_job_count": result.raw_job_count - len(result.unique_jobs),
@@ -319,19 +361,29 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"saved": True, "store": args.store, "prompt": args.prompt}, ensure_ascii=False))
         return 0
 
+    if args.command == "migrate-facts":
+        answers = load_approved_answers(args.answers)
+        facts = FactStore.load(args.facts)
+        report = migrate_answers(answers, facts)
+        facts.save(args.facts)
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
     approved = _pairs(args.approved)
     profile = _pairs(args.profile)
     library = _library(args.answers)
+    facts = FactStore.load(args.facts)
     if args.command == "apply":
-        result = apply(args.url, approved=approved, profile=profile, library=library)
+        result = apply(args.url, approved=approved, profile=profile, library=library, facts=facts)
     elif args.command == "fill":
-        result = fill(args.url, approved=approved, profile=profile, library=library, resume=args.resume)
+        result = fill(args.url, approved=approved, profile=profile, library=library, facts=facts, resume=args.resume)
     else:
         result = submit(
             args.url,
             approved=approved,
             profile=profile,
             library=library,
+            facts=facts,
             resume=args.resume,
             store=args.store,
             headless=not args.headful,

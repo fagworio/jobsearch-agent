@@ -29,6 +29,7 @@ class AutoApplyItem:
     reason: str = ""
     tab_id: int | None = None
     submit: dict[str, Any] | None = None
+    missing_facts: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class AutoApplyItem:
             "url": self.url,
             "state": self.state,
             "reason": self.reason,
+            "missing_facts": list(self.missing_facts),
             "tab_id": self.tab_id,
             "submit": self.submit or {},
         }
@@ -55,8 +57,11 @@ class AutoApplyReport:
 
     def to_dict(self) -> dict[str, Any]:
         counts: dict[str, int] = {}
+        pending_facts: set[str] = set()
         for item in self.items:
             counts[item.state] = counts.get(item.state, 0) + 1
+            if item.state == "NEEDS_INPUT":
+                pending_facts.update(item.missing_facts)
         return {
             "provider": "greenhouse",
             "source": self.source,
@@ -68,6 +73,7 @@ class AutoApplyReport:
                 "parallelism": self.parallelism,
             },
             "counts": counts,
+            "pending_facts": sorted(pending_facts),
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -188,6 +194,7 @@ def run_auto_apply(
                 report.reason,
                 tab_id,
                 report.to_dict(),
+                report.missing_facts,
             ))
             if state == "SUBMIT_UNKNOWN":
                 halted = True

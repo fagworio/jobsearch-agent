@@ -20,6 +20,7 @@ from .ats import find_apply_url, inspect_form
 from .ats.greenhouse import GreenhouseAdapter
 from .artifacts import ResumeArtifact
 from .browser import NativeMessagingClient
+from .facts import FactStore
 from .models import Field, Form, State
 
 
@@ -113,6 +114,7 @@ def prepare_page(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
     resume: str = "",
     timeout_ms: float = 45_000,
 ) -> Prepared:
@@ -126,7 +128,7 @@ def prepare_page(
     if not form.fields:
         return Prepared(form=form, job_url=url, apply_url=apply_url, reason="form_not_found")
 
-    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library, facts=facts)
     if not resolution.complete:
         # Falta fato da pessoa: nao se toca no formulario.
         return Prepared(
@@ -175,6 +177,7 @@ def fill(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
     resume: str = "",
     timeout_ms: float = 45_000,
 ) -> FillReport:
@@ -193,7 +196,7 @@ def fill(
                 )
             snapshot = browser.inspect_form()
             form = GreenhouseAdapter().to_form(snapshot)
-            resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+            resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library, facts=facts)
             apply_url = str(snapshot.get("url") or url)
             if not resolution.complete:
                 return FillReport(

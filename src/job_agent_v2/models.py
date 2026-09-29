@@ -53,6 +53,7 @@ class Resolution:
     answers: dict[str, str] = field(default_factory=dict)
     resolved_from: dict[str, str] = field(default_factory=dict)
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
+    missing_fact_ids: dict[str, str] = field(default_factory=dict)
     missing: tuple[Field, ...] = ()
 
     @property
@@ -70,6 +71,7 @@ class ApplyResult:
     answers: dict[str, str] = field(default_factory=dict)
     resolved_from: dict[str, str] = field(default_factory=dict)
     resolved_fact_ids: dict[str, str] = field(default_factory=dict)
+    missing_fact_ids: dict[str, str] = field(default_factory=dict)
     fields: int = 0
     job_url: str = ""
     apply_url: str = ""
@@ -84,6 +86,7 @@ class ApplyResult:
             "answers": dict(self.answers),
             "resolved_from": dict(self.resolved_from),
             "resolved_fact_ids": dict(self.resolved_fact_ids),
+            "missing_fact_ids": dict(self.missing_fact_ids),
             "fields": self.fields,
             "uploads": 0,
             "attempts": 0,

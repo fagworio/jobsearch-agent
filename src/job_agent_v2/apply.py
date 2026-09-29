@@ -8,6 +8,7 @@ from .answers import AnswerLibrary, resolve
 from .ats import find_apply_url, inspect_form
 from .ats.greenhouse import GreenhouseAdapter
 from .browser import NativeMessagingClient
+from .facts import FactStore
 from .models import ApplyResult, State
 
 PageLoader = Callable[[str], str]
@@ -20,6 +21,7 @@ def apply(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     library: AnswerLibrary | None = None,
+    facts: FactStore | None = None,
     open_page: PageLoader | None = None,
 ) -> ApplyResult:
     """Le a vaga real e decide. Para antes de qualquer escrita.
@@ -38,6 +40,7 @@ def apply(
             profile=profile,
             rules=rules,
             library=library,
+            facts=facts,
         )
 
     loader = open_page
@@ -55,7 +58,7 @@ def apply(
             apply_url=apply_url,
         )
 
-    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library, facts=facts)
     if not resolution.complete:
         return ApplyResult(
             state=State.NEEDS_INPUT,
@@ -64,6 +67,7 @@ def apply(
             answers=resolution.answers,
             resolved_from=resolution.resolved_from,
             resolved_fact_ids=resolution.resolved_fact_ids,
+            missing_fact_ids=resolution.missing_fact_ids,
             fields=len(form.fields),
             job_url=url,
             apply_url=apply_url,
@@ -86,6 +90,7 @@ def _apply_live(
     profile: Mapping[str, str] | Iterable[tuple[str, str]] | None,
     rules: Mapping[str, str] | Iterable[tuple[str, str]] | None,
     library: AnswerLibrary | None,
+    facts: FactStore | None,
 ) -> ApplyResult:
     """Inspeciona a aba do Chrome normal através da extensão carregada."""
 
@@ -117,7 +122,7 @@ def _apply_live(
             apply_url=str(snapshot.get("url") or url),
         )
 
-    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library)
+    resolution = resolve(form, approved=approved, profile=profile, rules=rules, library=library, facts=facts)
     if not resolution.complete:
         return ApplyResult(
             state=State.NEEDS_INPUT,
@@ -125,6 +130,8 @@ def _apply_live(
             missing=resolution.missing,
             answers=resolution.answers,
             resolved_from=resolution.resolved_from,
+            resolved_fact_ids=resolution.resolved_fact_ids,
+            missing_fact_ids=resolution.missing_fact_ids,
             fields=len(form.fields),
             job_url=url,
             apply_url=str(snapshot.get("url") or url),
@@ -133,6 +140,7 @@ def _apply_live(
         state=State.READY,
         answers=resolution.answers,
         resolved_from=resolution.resolved_from,
+        resolved_fact_ids=resolution.resolved_fact_ids,
         fields=len(form.fields),
         job_url=url,
         apply_url=str(snapshot.get("url") or url),
